@@ -1,0 +1,10 @@
+{
+  "id": "zoomwarriors-studio",
+  "name": "ZoomWarriors Studio",
+  "description": "Submit, monitor, and approve ZoomWarriors Developer Studio change requests from any messaging channel",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

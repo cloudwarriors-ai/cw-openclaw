@@ -1,0 +1,14 @@
+{
+  "name": "@openclaw/zoomwarriors-studio",
+  "version": "2026.2.24",
+  "description": "ZoomWarriors Developer Studio tools - submit, monitor, and approve AI-driven change requests",
+  "type": "module",
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

@@ -23,7 +23,7 @@ services:
       - BIGHEAD_API_URL=http://bighead:8000
       - ZW2_USERNAME=${ZW2_USERNAME}
       - ZW2_PASSWORD=${ZW2_PASSWORD}
-      - ZW2_URL=${ZW2_URL}
+      - ZW2_URL=http://zoomwarriors2-backend:8000
       - ZOOM_CLIENT_ID=${ZOOM_CLIENT_ID}
       - ZOOM_CLIENT_SECRET=${ZOOM_CLIENT_SECRET}
       - ZOOM_ACCOUNT_ID=${ZOOM_ACCOUNT_ID}
@@ -43,7 +43,18 @@ services:
       - "18789:18789"
       - "18790:18790"
       - "4000:4000"
-    command: ["node", "--max-old-space-size=3072", "dist/index.js", "gateway", "--bind", "lan", "--port", "18789", "--allow-unconfigured"]
+    command:
+      [
+        "node",
+        "--max-old-space-size=3072",
+        "dist/index.js",
+        "gateway",
+        "--bind",
+        "lan",
+        "--port",
+        "18789",
+        "--allow-unconfigured",
+      ]
     mem_limit: 4g
     memswap_limit: 4g
     restart: unless-stopped
