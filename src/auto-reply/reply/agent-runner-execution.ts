@@ -265,6 +265,11 @@ export async function runAgentTurnWithFallback(params: {
             groupSpace: params.sessionCtx.GroupSpace?.trim() ?? undefined,
             senderId: params.sessionCtx.SenderId?.trim() || undefined,
             senderName: params.sessionCtx.SenderName?.trim() || undefined,
+            senderEmail:
+              params.sessionCtx.SenderEmail?.trim() ||
+              (params.sessionCtx.SenderUsername?.includes("@")
+                ? params.sessionCtx.SenderUsername.trim()
+                : undefined),
             senderUsername: params.sessionCtx.SenderUsername?.trim() || undefined,
             senderE164: params.sessionCtx.SenderE164?.trim() || undefined,
             // Provider threading context for tool auto-injection

@@ -1,17 +1,32 @@
 import type { OpenClawConfig, RuntimeEnv, GroupPolicy } from "openclaw/plugin-sdk";
-
-import { persistApprovedQA, appendCustomerDetail, loadChannelTraining } from "./channel-memory.js";
 import type { ZoomConversationStore } from "./conversation-store.js";
-import { formatUnknownError } from "./errors.js";
 import type { ZoomMonitorLogger } from "./monitor-types.js";
-import { getDynamicObservePolicy, enableObserveChannel, toggleObserveChannel, setReviewChannel } from "./observe-config.js";
-import { getPendingApproval, peekPendingApproval, storePendingApproval } from "./pending-approvals.js";
+import type { ZoomConfig, ZoomCredentials, ZoomWebhookEvent } from "./types.js";
+import { persistApprovedQA, appendCustomerDetail, loadChannelTraining } from "./channel-memory.js";
+import { formatUnknownError } from "./errors.js";
+import {
+  getDynamicObservePolicy,
+  enableObserveChannel,
+  toggleObserveChannel,
+  setReviewChannel,
+} from "./observe-config.js";
+import {
+  getPendingApproval,
+  peekPendingApproval,
+  storePendingApproval,
+} from "./pending-approvals.js";
 import { getPendingShare } from "./pending-shares.js";
 import { consumeTrainingSession, storeTrainingSession } from "./pending-training.js";
-import { createUploadToken } from "./upload-tokens.js";
-import { isZoomGroupAllowed, resolveZoomAllowlistMatch, resolveZoomObservePolicy, resolveZoomReplyPolicy, resolveZoomRouteConfig } from "./policy.js";
-import type { ZoomConfig, ZoomCredentials, ZoomWebhookEvent } from "./types.js";
+import {
+  isZoomGroupAllowed,
+  resolveZoomAllowlistMatch,
+  resolveZoomObservePolicy,
+  resolveZoomReplyPolicy,
+  resolveZoomRouteConfig,
+} from "./policy.js";
 import { getZoomRuntime } from "./runtime.js";
+import { createUploadToken } from "./upload-tokens.js";
+import { zoomApiFetch } from "./api.js";
 
 export type ZoomMessageHandlerDeps = {
   cfg: OpenClawConfig;
@@ -26,11 +41,10 @@ export type ZoomMessageHandlerDeps = {
  * Extract mention of the bot from message text.
  * Zoom mentions format: @<display_name> or uses robot_jid in payload
  */
-function extractBotMention(params: {
-  text: string;
-  botJid: string;
-  robotJidInPayload?: string;
-}): { mentioned: boolean; cleanText: string } {
+function extractBotMention(params: { text: string; botJid: string; robotJidInPayload?: string }): {
+  mentioned: boolean;
+  cleanText: string;
+} {
   const { text, botJid, robotJidInPayload } = params;
 
   // Check if robot_jid in payload matches our bot
@@ -47,20 +61,587 @@ function extractBotMention(params: {
 /** Strip @mentions and extract a bare command name (e.g. "/observe" or "set-review-channel"). */
 function parseObserveCommand(text: string): "observe" | "set-review-channel" | null {
   const cleaned = text.replace(/@\S+/g, "").trim().toLowerCase();
-  if (cleaned === "/observe" || cleaned === "observe") return "observe";
-  if (cleaned === "/set-review-channel" || cleaned === "set-review-channel") return "set-review-channel";
+  if (cleaned === "/observe" || cleaned === "observe") {
+    return "observe";
+  }
+  if (cleaned === "/set-review-channel" || cleaned === "set-review-channel") {
+    return "set-review-channel";
+  }
   return null;
 }
 
+function buildPairingMeta(params: {
+  userName?: string;
+  userEmail?: string;
+}): Record<string, string> | undefined {
+  const meta: Record<string, string> = {};
+  if (params.userName) {
+    meta.name = params.userName;
+  }
+  if (params.userEmail) {
+    meta.email = params.userEmail;
+  }
+  return Object.keys(meta).length > 0 ? meta : undefined;
+}
+
+function asOptionalString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function isEmailLike(value: string | undefined): value is string {
+  if (!value) {
+    return false;
+  }
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function extractZoomUserIdFromJid(value: string | undefined): string | undefined {
+  const trimmed = asOptionalString(value);
+  if (!trimmed) {
+    return undefined;
+  }
+  const lower = trimmed.toLowerCase();
+  const suffix = "@xmpp.zoom.us";
+  if (!lower.endsWith(suffix)) {
+    return undefined;
+  }
+  const atIndex = trimmed.indexOf("@");
+  if (atIndex <= 0) {
+    return undefined;
+  }
+  return trimmed.slice(0, atIndex);
+}
+
+function normalizeZoomLookupId(value: unknown): string | undefined {
+  const trimmed = asOptionalString(value);
+  if (!trimmed) {
+    return undefined;
+  }
+  const fromJid = extractZoomUserIdFromJid(trimmed);
+  if (fromJid) {
+    return fromJid;
+  }
+  if (isEmailLike(trimmed)) {
+    return undefined;
+  }
+  return trimmed;
+}
+
+function toUniqueIds(values: Array<string | undefined>): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (!value) {
+      continue;
+    }
+    const normalized = value.trim();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
+}
+
+type ZoomUserRecord = {
+  id?: string;
+  email?: string;
+};
+
+type ZoomUsersListResponse = {
+  users?: ZoomUserRecord[];
+  next_page_token?: string;
+};
+
+const ZOOM_USER_EMAIL_CACHE_TTL_MS = 10 * 60 * 1000;
+const ZOOM_REPORT_TOKEN_EXPIRY_BUFFER_MS = 60_000;
+const ZOOM_REPORT_TOKEN_DEFAULT_TTL_MS = 55 * 60_000;
+const ZOOM_USERS_LIST_PAGE_SIZE = 300;
+const ZOOM_USERS_LIST_MAX_PAGES = 10;
+
+type ZoomReportCredentials = {
+  clientId: string;
+  clientSecret: string;
+  accountId: string;
+};
+
+function resolveZoomReportCredentials(defaultAccountId: string): ZoomReportCredentials | undefined {
+  const clientId = asOptionalString(process.env.ZOOM_REPORT_CLIENT_ID);
+  const clientSecret = asOptionalString(process.env.ZOOM_REPORT_CLIENT_SECRET);
+  const accountId =
+    asOptionalString(process.env.ZOOM_REPORT_ACCOUNT_ID) ?? asOptionalString(defaultAccountId);
+  if (!clientId || !clientSecret || !accountId) {
+    return undefined;
+  }
+  return { clientId, clientSecret, accountId };
+}
+
+function logEmailResolution(params: {
+  log: ZoomMonitorLogger;
+  eventType: string;
+  route: "bot_notification" | "channel_message" | "dm_message";
+  selectedEmail?: string;
+  candidates: Record<string, string | undefined>;
+  senderId?: string;
+  senderName?: string;
+}): void {
+  const presentCandidates = Object.entries(params.candidates)
+    .filter(([, value]) => Boolean(value))
+    .map(([key, value]) => `${key}=${value}`);
+  const candidatesSummary = presentCandidates.length > 0 ? presentCandidates.join("|") : "-";
+  const senderId = params.senderId ?? "-";
+  const senderName = params.senderName ?? "-";
+  const selectedEmail = params.selectedEmail ?? "-";
+
+  params.log.info(
+    `zoom sender email resolution route=${params.route} event=${params.eventType} senderId=${senderId} senderName=${senderName} selectedEmail=${selectedEmail} candidates=${candidatesSummary}`,
+  );
+
+  if (!params.selectedEmail) {
+    params.log.warn(
+      `zoom sender email missing after payload extraction route=${params.route} event=${params.eventType} senderId=${senderId} senderName=${senderName} candidates=${candidatesSummary}`,
+    );
+  }
+}
+
 export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
-  const { cfg, runtime, creds, textLimit, conversationStore, log } = deps;
+  const { cfg, creds, conversationStore, log } = deps;
   const zoomCfg = cfg.channels?.zoom as ZoomConfig | undefined;
   const core = getZoomRuntime();
+  const emailLookupCache = new Map<string, { email?: string; expiresAt: number }>();
+  const reportCredentials = resolveZoomReportCredentials(creds.accountId);
+  let reportAccessTokenCache: { token: string; expiresAt: number } | undefined;
+  let warnedClientCredentialsUsersApiUnsupported = false;
+  let warnedMissingReportCredentials = false;
+
+  function getCacheLookupKeys(value: string): string[] {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return [];
+    }
+    const lower = trimmed.toLowerCase();
+    if (lower === trimmed) {
+      return [trimmed];
+    }
+    return [trimmed, lower];
+  }
+
+  function hasCachedLookupId(lookupId: string): boolean {
+    const keys = getCacheLookupKeys(lookupId);
+    return keys.some((key) => emailLookupCache.has(key));
+  }
+
+  function readCachedEmail(lookupId: string): string | undefined {
+    for (const key of getCacheLookupKeys(lookupId)) {
+      const cached = emailLookupCache.get(key);
+      if (!cached) {
+        continue;
+      }
+      if (cached.expiresAt <= Date.now()) {
+        emailLookupCache.delete(key);
+        continue;
+      }
+      return cached.email;
+    }
+    return undefined;
+  }
+
+  function writeCachedEmail(lookupId: string, email?: string): void {
+    const entry = {
+      email,
+      expiresAt: Date.now() + ZOOM_USER_EMAIL_CACHE_TTL_MS,
+    };
+    for (const key of getCacheLookupKeys(lookupId)) {
+      emailLookupCache.set(key, entry);
+    }
+  }
+
+  async function getZoomReportAccessToken(forceRefresh = false): Promise<string | undefined> {
+    if (!reportCredentials) {
+      if (!warnedMissingReportCredentials) {
+        warnedMissingReportCredentials = true;
+        log.warn(
+          "zoom sender email lookup requires report app credentials when webhook payload omits email",
+          {
+            missingEnv: ["ZOOM_REPORT_CLIENT_ID", "ZOOM_REPORT_CLIENT_SECRET"],
+          },
+        );
+      }
+      return undefined;
+    }
+
+    if (!forceRefresh && reportAccessTokenCache && reportAccessTokenCache.expiresAt > Date.now()) {
+      return reportAccessTokenCache.token;
+    }
+
+    try {
+      const basic = Buffer.from(
+        `${reportCredentials.clientId}:${reportCredentials.clientSecret}`,
+      ).toString("base64");
+      const tokenUrl =
+        `https://zoom.us/oauth/token?grant_type=account_credentials&account_id=` +
+        `${encodeURIComponent(reportCredentials.accountId)}`;
+      const response = await fetch(tokenUrl, {
+        method: "POST",
+        headers: { Authorization: `Basic ${basic}` },
+      });
+      const bodyText = await response.text();
+      if (!response.ok) {
+        log.warn("zoom report token fetch failed", {
+          status: response.status,
+          body: bodyText.slice(0, 240),
+        });
+        return undefined;
+      }
+      const parsed = JSON.parse(bodyText) as { access_token?: string; expires_in?: number };
+      const token = asOptionalString(parsed.access_token);
+      if (!token) {
+        log.warn("zoom report token response missing access_token");
+        return undefined;
+      }
+      const expiresInMs = Math.max(
+        0,
+        (Number(parsed.expires_in) > 0 ? Number(parsed.expires_in) * 1000 : ZOOM_REPORT_TOKEN_DEFAULT_TTL_MS) -
+          ZOOM_REPORT_TOKEN_EXPIRY_BUFFER_MS,
+      );
+      reportAccessTokenCache = {
+        token,
+        expiresAt: Date.now() + expiresInMs,
+      };
+      return token;
+    } catch (err) {
+      log.warn("zoom report token fetch failed", {
+        error: formatUnknownError(err),
+      });
+      return undefined;
+    }
+  }
+
+  async function resolveSenderEmailFromZoomReportApi(params: {
+    lookupIds: string[];
+    eventType: string;
+    route: "bot_notification" | "channel_message" | "dm_message";
+    senderId?: string;
+    senderName?: string;
+  }): Promise<string | undefined> {
+    if (params.lookupIds.length === 0) {
+      return undefined;
+    }
+    let token = await getZoomReportAccessToken(false);
+    if (!token) {
+      return undefined;
+    }
+    for (const lookupId of params.lookupIds) {
+      let attemptedRefresh = false;
+      // Retry once with a refreshed token on 401.
+      for (;;) {
+        try {
+          const response = await fetch(
+            `https://api.zoom.us/v2/users/${encodeURIComponent(lookupId)}`,
+            {
+              headers: { Authorization: `Bearer ${token}` },
+            },
+          );
+          const bodyText = await response.text();
+          if (response.status === 401 && !attemptedRefresh) {
+            attemptedRefresh = true;
+            reportAccessTokenCache = undefined;
+            token = await getZoomReportAccessToken(true);
+            if (!token) {
+              break;
+            }
+            continue;
+          }
+          if (!response.ok) {
+            log.debug("zoom sender email report users API lookup returned non-ok", {
+              eventType: params.eventType,
+              route: params.route,
+              senderId: params.senderId,
+              senderName: params.senderName,
+              lookupId,
+              status: response.status,
+              error: bodyText.slice(0, 220),
+            });
+            break;
+          }
+          const parsed = JSON.parse(bodyText) as ZoomUserRecord;
+          const resolvedEmail = asOptionalString(parsed.email);
+          if (resolvedEmail) {
+            log.info("zoom sender email resolved via report users API", {
+              eventType: params.eventType,
+              route: params.route,
+              senderId: params.senderId,
+              senderName: params.senderName,
+              lookupId,
+              resolvedEmail,
+            });
+            return resolvedEmail;
+          }
+          break;
+        } catch (err) {
+          log.debug("zoom sender email report users API lookup failed", {
+            eventType: params.eventType,
+            route: params.route,
+            senderId: params.senderId,
+            senderName: params.senderName,
+            lookupId,
+            error: formatUnknownError(err),
+          });
+          break;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  async function resolveSenderEmailFromZoomApi(params: {
+    lookupIds: string[];
+    eventType: string;
+    route: "bot_notification" | "channel_message" | "dm_message";
+    senderId?: string;
+    senderName?: string;
+  }): Promise<string | undefined> {
+    const pendingLookupIds: string[] = [];
+    for (const lookupId of params.lookupIds) {
+      const cached = readCachedEmail(lookupId);
+      if (cached) {
+        return cached;
+      }
+      if (cached === undefined && hasCachedLookupId(lookupId)) {
+        continue;
+      }
+      pendingLookupIds.push(lookupId);
+    }
+    if (pendingLookupIds.length === 0) {
+      return undefined;
+    }
+
+    const pendingLookupIdsLower = new Set(pendingLookupIds.map((value) => value.toLowerCase()));
+
+    const resolveSenderEmailFromZoomUsersListApi = async (): Promise<string | undefined> => {
+      let nextPageToken: string | undefined;
+      for (let page = 0; page < ZOOM_USERS_LIST_MAX_PAGES; page++) {
+        const query = new URLSearchParams({
+          status: "active",
+          page_size: String(ZOOM_USERS_LIST_PAGE_SIZE),
+        });
+        if (nextPageToken) {
+          query.set("next_page_token", nextPageToken);
+        }
+
+        const response = await zoomApiFetch<ZoomUsersListResponse>(creds, `/users?${query}`);
+        if (!response.ok) {
+          const errorText = response.error ?? "";
+          const unsupportedClientCredentials =
+            response.status === 401 && /client credentials/i.test(errorText);
+          if (unsupportedClientCredentials && !warnedClientCredentialsUsersApiUnsupported) {
+            warnedClientCredentialsUsersApiUnsupported = true;
+            log.warn("zoom users API lookup is not available for client_credentials tokens", {
+              eventType: params.eventType,
+              route: params.route,
+              senderId: params.senderId,
+              senderName: params.senderName,
+              hint: "configure ZOOM_REPORT_CLIENT_ID/ZOOM_REPORT_CLIENT_SECRET for account_credentials lookup",
+            });
+          }
+          if (!unsupportedClientCredentials) {
+            log.debug("zoom sender email users list API lookup returned non-ok", {
+              eventType: params.eventType,
+              route: params.route,
+              senderId: params.senderId,
+              senderName: params.senderName,
+              status: response.status,
+              error: errorText.slice(0, 220),
+            });
+          }
+          return undefined;
+        }
+
+        const users = Array.isArray(response.data?.users) ? response.data.users : [];
+        for (const user of users) {
+          const userId = asOptionalString(user.id);
+          const userEmail = asOptionalString(user.email);
+          if (userId) {
+            writeCachedEmail(userId, userEmail);
+          }
+          if (!userId || !userEmail) {
+            continue;
+          }
+          if (!pendingLookupIdsLower.has(userId.toLowerCase())) {
+            continue;
+          }
+          log.info("zoom sender email resolved via users list API", {
+            eventType: params.eventType,
+            route: params.route,
+            senderId: params.senderId,
+            senderName: params.senderName,
+            lookupId: userId,
+            resolvedEmail: userEmail,
+          });
+          return userEmail;
+        }
+
+        nextPageToken = asOptionalString(response.data?.next_page_token);
+        if (!nextPageToken) {
+          break;
+        }
+      }
+
+      return undefined;
+    };
+
+    let shouldAttemptReportLookup = false;
+    for (const lookupId of pendingLookupIds) {
+      try {
+        const response = await zoomApiFetch<ZoomUserRecord>(
+          creds,
+          `/users/${encodeURIComponent(lookupId)}`,
+        );
+        if (!response.ok) {
+          const errorText = response.error ?? "";
+          const unsupportedClientCredentials =
+            response.status === 401 && /client credentials/i.test(errorText);
+          shouldAttemptReportLookup = true;
+          if (unsupportedClientCredentials && !warnedClientCredentialsUsersApiUnsupported) {
+            warnedClientCredentialsUsersApiUnsupported = true;
+            log.warn("zoom users API lookup is not available for client_credentials tokens", {
+              eventType: params.eventType,
+              route: params.route,
+              senderId: params.senderId,
+              senderName: params.senderName,
+              hint: "configure ZOOM_REPORT_CLIENT_ID/ZOOM_REPORT_CLIENT_SECRET for account_credentials lookup",
+            });
+          }
+          if (unsupportedClientCredentials) {
+          } else {
+            log.debug("zoom sender email users API lookup returned non-ok", {
+              eventType: params.eventType,
+              route: params.route,
+              senderId: params.senderId,
+              senderName: params.senderName,
+              lookupId,
+              status: response.status,
+              error: errorText.slice(0, 220),
+            });
+          }
+          continue;
+        }
+        const resolvedEmail = asOptionalString(response.data?.email);
+        if (resolvedEmail) {
+          writeCachedEmail(lookupId, resolvedEmail);
+          log.info("zoom sender email resolved via users API", {
+            eventType: params.eventType,
+            route: params.route,
+            senderId: params.senderId,
+            senderName: params.senderName,
+            lookupId,
+            resolvedEmail,
+          });
+          return resolvedEmail;
+        }
+      } catch (err) {
+        log.debug("zoom sender email users API lookup failed", {
+          eventType: params.eventType,
+          route: params.route,
+          senderId: params.senderId,
+          senderName: params.senderName,
+          lookupId,
+          error: formatUnknownError(err),
+        });
+      }
+    }
+
+    const resolvedViaUsersList = await resolveSenderEmailFromZoomUsersListApi();
+    if (resolvedViaUsersList) {
+      for (const lookupId of pendingLookupIds) {
+        writeCachedEmail(lookupId, resolvedViaUsersList);
+      }
+      return resolvedViaUsersList;
+    }
+
+    if (shouldAttemptReportLookup) {
+      const resolvedViaReport = await resolveSenderEmailFromZoomReportApi({
+        ...params,
+        lookupIds: pendingLookupIds,
+      });
+      if (resolvedViaReport) {
+        for (const lookupId of pendingLookupIds) {
+          writeCachedEmail(lookupId, resolvedViaReport);
+        }
+        return resolvedViaReport;
+      }
+    }
+
+    for (const lookupId of pendingLookupIds) {
+      writeCachedEmail(lookupId);
+    }
+    return undefined;
+  }
+
+  async function resolveSenderEmail(params: {
+    directEmail?: string;
+    userJid?: string;
+    senderId?: string;
+    lookupIds: string[];
+    eventType: string;
+    route: "bot_notification" | "channel_message" | "dm_message";
+    senderName?: string;
+  }): Promise<{ email?: string; source: "direct" | "store" | "api" | "none"; usedLookupId?: string }> {
+    if (isEmailLike(params.directEmail)) {
+      return { email: params.directEmail, source: "direct" };
+    }
+
+    const storeKeys = toUniqueIds([
+      asOptionalString(params.userJid),
+      asOptionalString(params.senderId),
+    ]);
+
+    for (const storeKey of storeKeys) {
+      try {
+        const existing = await conversationStore.findByUserJid(storeKey);
+        const storedEmail = asOptionalString(existing?.reference.userEmail);
+        if (isEmailLike(storedEmail)) {
+          return { email: storedEmail, source: "store" };
+        }
+      } catch {
+        // Ignore store read errors and continue to API lookup.
+      }
+    }
+
+    const normalizedLookupIds = toUniqueIds(
+      params.lookupIds.map((value) => normalizeZoomLookupId(value)),
+    );
+    if (normalizedLookupIds.length === 0) {
+      return { source: "none" };
+    }
+
+    const resolvedEmail = await resolveSenderEmailFromZoomApi({
+      lookupIds: normalizedLookupIds,
+      eventType: params.eventType,
+      route: params.route,
+      senderId: params.senderId,
+      senderName: params.senderName,
+    });
+
+    if (resolvedEmail) {
+      return { email: resolvedEmail, source: "api" };
+    }
+
+    return { source: "none" };
+  }
 
   return async (event: ZoomWebhookEvent) => {
     const eventType = event.event;
 
-    log.info(`webhook event received: ${eventType}`, { event: eventType, payload: JSON.stringify(event.payload).slice(0, 500) });
+    log.info(`webhook event received: ${eventType}`, {
+      event: eventType,
+      payload: JSON.stringify(event.payload).slice(0, 500),
+    });
 
     // Handle bot notification (slash commands / direct messages to bot)
     if (eventType === "bot_notification") {
@@ -75,7 +656,11 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
     }
 
     // Handle channel mentions (when bot is @mentioned in a channel)
-    if (eventType === "chat_message.posted" || eventType === "team_chat.app_mention" || eventType === "team_chat.channel_message_posted") {
+    if (
+      eventType === "chat_message.posted" ||
+      eventType === "team_chat.app_mention" ||
+      eventType === "team_chat.channel_message_posted"
+    ) {
       if (eventType === "team_chat.channel_message_posted") {
         log.info(`team_chat payload: ${JSON.stringify(event.payload)}`);
       }
@@ -83,8 +668,16 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
       return;
     }
 
+    if (eventType === "team_chat.dm_message_posted") {
+      await handleTeamChatDirectMessage(event);
+      return;
+    }
+
     // Handle bot added to a channel — auto-enable observe mode
-    if (eventType === "team_chat.app_conversation_opened" || eventType === "team_chat.app_invited") {
+    if (
+      eventType === "team_chat.app_conversation_opened" ||
+      eventType === "team_chat.app_invited"
+    ) {
       await handleAppConversationOpened(event);
       return;
     }
@@ -109,22 +702,79 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
       return;
     }
 
-    const userJid = payload.userJid ?? payload.operator;
+    const eventPayload = event.payload as Record<string, unknown>;
+    const payloadRecord = payload as Record<string, unknown>;
+    const userJid = payload.userJid ?? payload.user_jid ?? payload.operator;
     const userName = payload.userName ?? payload.user_name ?? payload.operator;
-    const userEmail = payload.user_email;
-    const toJid = payload.toJid;
-    const channelName = payload.channelName;
+
+    const directUserEmail = asOptionalString(payload.user_email ?? payload.userEmail);
+    const resolvedUserEmail = await resolveSenderEmail({
+      directEmail: directUserEmail,
+      userJid: asOptionalString(userJid),
+      senderId: asOptionalString(userJid),
+      lookupIds: [
+        asOptionalString(payloadRecord.user_id),
+        asOptionalString(payloadRecord.userId),
+        asOptionalString(payloadRecord.user_member_id),
+        asOptionalString(payloadRecord.userMemberId),
+        asOptionalString(eventPayload.user_id),
+        asOptionalString(eventPayload.userId),
+        asOptionalString(eventPayload.user_member_id),
+        asOptionalString(eventPayload.userMemberId),
+        asOptionalString(userJid),
+      ],
+      eventType: event.event,
+      route: "bot_notification",
+      senderName: asOptionalString(userName),
+    });
+    const userEmail = resolvedUserEmail.email;
+    const lookupUserIdFromJid = extractZoomUserIdFromJid(asOptionalString(userJid));
+    const userEmailCandidates = {
+      payload_user_email: asOptionalString(payloadRecord.user_email),
+      payload_userEmail: asOptionalString(payloadRecord.userEmail),
+      payload_operator_email: asOptionalString(payloadRecord.operator_email),
+      payload_operatorEmail: asOptionalString(payloadRecord.operatorEmail),
+      event_user_email: asOptionalString(eventPayload.user_email),
+      event_userEmail: asOptionalString(eventPayload.userEmail),
+      event_operator_email: asOptionalString(eventPayload.operator_email),
+      event_operatorEmail: asOptionalString(eventPayload.operatorEmail),
+      lookup_user_id: asOptionalString(payloadRecord.user_id),
+      lookup_userId: asOptionalString(payloadRecord.userId),
+      lookup_user_member_id: asOptionalString(payloadRecord.user_member_id),
+      lookup_userMemberId: asOptionalString(payloadRecord.userMemberId),
+      event_user_id: asOptionalString(eventPayload.user_id),
+      event_userId: asOptionalString(eventPayload.userId),
+      event_user_member_id: asOptionalString(eventPayload.user_member_id),
+      event_userMemberId: asOptionalString(eventPayload.userMemberId),
+      lookup_from_jid: lookupUserIdFromJid,
+      resolved_source: resolvedUserEmail.source,
+    };
+
+    logEmailResolution({
+      log,
+      eventType: event.event,
+      route: "bot_notification",
+      selectedEmail: userEmail,
+      candidates: userEmailCandidates,
+      senderId: userJid,
+      senderName: userName,
+    });
+
+    const toJid = payload.toJid ?? payload.to_jid;
+    const channelName = payload.channelName ?? payload.channel_name;
     // For bot notifications, text comes from payload.text or payload.cmd
     const messageText = payload.text ?? payload.cmd ?? "";
 
     if (!userJid || !messageText) {
-      log.debug("bot_notification missing required fields", { userJid, hasMessage: Boolean(messageText) });
+      log.debug("bot_notification missing required fields", {
+        userJid,
+        hasMessage: Boolean(messageText),
+      });
       return;
     }
 
     // Detect if this is a channel message (toJid contains @conference.)
     const isChannelMessage = toJid?.includes("@conference.") ?? false;
-    const conversationId = isChannelMessage ? toJid : userJid;
 
     log.debug("processing bot notification", {
       userJid,
@@ -136,10 +786,24 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
 
     if (isChannelMessage) {
       // Channel message - check group policy
-      const groupPolicy: GroupPolicy = zoomCfg?.groupPolicy ?? "open";
+      const groupPolicy: GroupPolicy = zoomCfg?.groupPolicy ?? "allowlist";
+      const groupAllowFrom = zoomCfg?.groupAllowFrom ?? [];
 
       if (groupPolicy === "disabled") {
         log.debug("group policy disabled, ignoring channel message");
+        return;
+      }
+
+      if (
+        !isZoomGroupAllowed({
+          groupPolicy,
+          allowFrom: groupAllowFrom,
+          senderId: userJid,
+          senderName: userName,
+          senderEmail: userEmail,
+        })
+      ) {
+        log.debug("sender not allowed in group", { userJid, userName, groupPolicy });
         return;
       }
 
@@ -195,6 +859,11 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
       // Direct message - check DM policy
       const dmPolicy = zoomCfg?.dmPolicy ?? "pairing";
       const allowFrom = zoomCfg?.allowFrom ?? [];
+      const storedAllowFrom =
+        dmPolicy !== "open"
+          ? await core.channel.pairing.readAllowFromStore("zoom").catch(() => [])
+          : [];
+      const effectiveAllowFrom = [...allowFrom.map((entry) => String(entry)), ...storedAllowFrom];
 
       if (dmPolicy === "disabled") {
         log.debug("dm policy disabled, ignoring message");
@@ -203,13 +872,41 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
 
       if (dmPolicy !== "open") {
         const match = resolveZoomAllowlistMatch({
-          allowFrom,
+          allowFrom: effectiveAllowFrom,
           senderId: userJid,
           senderName: userName,
           senderEmail: userEmail,
         });
 
         if (!match.allowed) {
+          if (dmPolicy === "pairing") {
+            const { code, created } = await core.channel.pairing.upsertPairingRequest({
+              channel: "zoom",
+              id: userJid,
+              meta: buildPairingMeta({ userName, userEmail }),
+            });
+            if (created) {
+              const pairingReply = core.channel.pairing.buildPairingReply({
+                channel: "zoom",
+                idLine: `Your Zoom user id: ${userJid}`,
+                code,
+              });
+              try {
+                const { sendZoomTextMessage } = await import("./send.js");
+                await sendZoomTextMessage({
+                  cfg,
+                  to: userJid,
+                  text: pairingReply,
+                  isChannel: false,
+                });
+              } catch (err) {
+                log.debug("failed to send pairing reply", {
+                  userJid,
+                  error: formatUnknownError(err),
+                });
+              }
+            }
+          }
           log.debug("sender not in allowlist", { userJid, userName });
           return;
         }
@@ -244,13 +941,164 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
     }
   }
 
+  async function handleTeamChatDirectMessage(event: ZoomWebhookEvent) {
+    const payload = event.payload?.object ?? event.payload;
+    if (!payload) {
+      log.debug("team_chat dm message missing payload object");
+      return;
+    }
+
+    const eventPayload = event.payload as Record<string, unknown>;
+    const payloadRecord = payload as Record<string, unknown>;
+    const operator = asOptionalString(eventPayload.operator);
+    const operatorEmail =
+      asOptionalString(eventPayload.operator_email) ?? asOptionalString(eventPayload.operatorEmail);
+    const senderId =
+      asOptionalString(eventPayload.operator_id) ??
+      asOptionalString(eventPayload.operator_member_id) ??
+      operator;
+    const senderName = operator;
+    const resolvedSenderEmail = await resolveSenderEmail({
+      directEmail: operatorEmail ?? (isEmailLike(operator) ? operator : undefined),
+      senderId,
+      lookupIds: [
+        asOptionalString(eventPayload.operator_id),
+        asOptionalString(eventPayload.operator_member_id),
+        operatorEmail,
+        operator,
+        senderId,
+      ],
+      eventType: event.event,
+      route: "dm_message",
+      senderName,
+    });
+    const senderEmail = resolvedSenderEmail.email;
+    const lookupUserIdFromSender = extractZoomUserIdFromJid(asOptionalString(senderId));
+    const senderEmailCandidates = {
+      event_operator: operator,
+      event_operator_email: operatorEmail,
+      event_operator_id: asOptionalString(eventPayload.operator_id),
+      event_operator_member_id: asOptionalString(eventPayload.operator_member_id),
+      lookup_from_sender_id: lookupUserIdFromSender,
+      resolved_source: resolvedSenderEmail.source,
+    };
+    logEmailResolution({
+      log,
+      eventType: event.event,
+      route: "dm_message",
+      selectedEmail: senderEmail,
+      candidates: senderEmailCandidates,
+      senderId,
+      senderName,
+    });
+    const messageText = asOptionalString(payloadRecord.message) ?? "";
+    const messageId = asOptionalString(payloadRecord.message_id);
+
+    if (!senderId || !messageText) {
+      log.debug("team_chat dm message missing required fields", {
+        hasSender: Boolean(senderId),
+        hasMessage: Boolean(messageText),
+      });
+      return;
+    }
+
+    log.debug("processing team_chat dm message", {
+      senderId,
+      senderName,
+      textLength: messageText.length,
+    });
+
+    const dmPolicy = zoomCfg?.dmPolicy ?? "pairing";
+    const allowFrom = zoomCfg?.allowFrom ?? [];
+    const storedAllowFrom =
+      dmPolicy !== "open" ? await core.channel.pairing.readAllowFromStore("zoom").catch(() => []) : [];
+    const effectiveAllowFrom = [...allowFrom.map((entry) => String(entry)), ...storedAllowFrom];
+
+    if (dmPolicy === "disabled") {
+      log.debug("dm policy disabled, ignoring team_chat dm message");
+      return;
+    }
+
+    if (dmPolicy !== "open") {
+      const match = resolveZoomAllowlistMatch({
+        allowFrom: effectiveAllowFrom,
+        senderId,
+        senderName,
+        senderEmail,
+      });
+
+      if (!match.allowed) {
+        if (dmPolicy === "pairing") {
+          const { code, created } = await core.channel.pairing.upsertPairingRequest({
+            channel: "zoom",
+            id: senderId,
+            meta: buildPairingMeta({ userName: senderName, userEmail: senderEmail }),
+          });
+          if (created) {
+            const pairingReply = core.channel.pairing.buildPairingReply({
+              channel: "zoom",
+              idLine: `Your Zoom user id: ${senderId}`,
+              code,
+            });
+            try {
+              const { sendZoomTextMessage } = await import("./send.js");
+              await sendZoomTextMessage({
+                cfg,
+                to: senderId,
+                text: pairingReply,
+                isChannel: false,
+              });
+            } catch (err) {
+              log.debug("failed to send pairing reply", {
+                senderId,
+                error: formatUnknownError(err),
+              });
+            }
+          }
+        }
+        log.debug("sender not in allowlist for team_chat dm message", { senderId, senderName });
+        return;
+      }
+    }
+
+    await conversationStore.upsert(senderId, {
+      userJid: senderId,
+      userName: senderName,
+      userEmail: senderEmail,
+      robotJid: creds.botJid,
+      accountId: creds.accountId,
+      conversationType: "direct",
+      lastMessageId: messageId,
+    });
+
+    const training = consumeTrainingSession(senderId);
+    if (training) {
+      await handleTrainingFeedback({
+        userJid: senderId,
+        userName: senderName,
+        feedback: messageText,
+        training,
+      });
+      return;
+    }
+
+    await routeToAgent({
+      conversationId: senderId,
+      senderId,
+      senderName,
+      senderEmail,
+      text: messageText,
+      isDirect: true,
+    });
+  }
+
   async function handleButtonAction(
     payload: NonNullable<ZoomWebhookEvent["payload"]["object"]>,
     actionItem: { text?: string; value?: string },
   ) {
-    const userJid = payload.userJid ?? payload.operator;
+    const userJid = payload.userJid ?? payload.user_jid ?? payload.operator;
     const userName = payload.userName ?? payload.user_name ?? payload.operator;
-    const userEmail = payload.user_email;
+    const userEmail = payload.user_email ?? payload.userEmail;
     const value = actionItem.value ?? "";
 
     if (!userJid) {
@@ -394,10 +1242,15 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
       }
 
       // Look up the review channel for this observed channel
-      const routeConfig = resolveZoomRouteConfig({ cfg: zoomCfg, channelJid: pending.originalChannelJid, channelName: pending.originalChannelName });
+      const routeConfig = resolveZoomRouteConfig({
+        cfg: zoomCfg,
+        channelJid: pending.originalChannelJid,
+        channelName: pending.originalChannelName,
+      });
       const staticObserve = resolveZoomObservePolicy({ channelConfig: routeConfig.channelConfig });
       const dynamicObserve = await getDynamicObservePolicy(pending.originalChannelJid);
-      const reviewChannelJid = staticObserve.reviewChannelJid ?? dynamicObserve.reviewChannelJid ?? "";
+      const reviewChannelJid =
+        staticObserve.reviewChannelJid ?? dynamicObserve.reviewChannelJid ?? "";
 
       storeTrainingSession(userJid, {
         approvalRefId: refId,
@@ -459,11 +1312,14 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
       return;
     }
 
-    // Support both chat_message.posted and team_chat.channel_message_posted formats
-    const isTeamChatEvent = event.event === "team_chat.channel_message_posted";
+    // Support chat_message.posted, team_chat.channel_message_posted, and team_chat.app_mention formats.
+    const isTeamChatEvent =
+      event.event === "team_chat.channel_message_posted" || event.event === "team_chat.app_mention";
     const rawChannelId = payload.channel_jid ?? (payload as Record<string, unknown>).channel_id;
     const channelJid = rawChannelId
-      ? String(rawChannelId).includes("@") ? String(rawChannelId) : `${rawChannelId}@conference.xmpp.zoom.us`
+      ? String(rawChannelId).includes("@")
+        ? String(rawChannelId)
+        : `${rawChannelId}@conference.xmpp.zoom.us`
       : undefined;
     const channelName = payload.channel_name;
 
@@ -471,20 +1327,72 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
     const eventPayload = event.payload as Record<string, unknown>;
     const message = isTeamChatEvent ? undefined : payload.message;
     const senderId = isTeamChatEvent
-      ? ((eventPayload.operator_id as string) || (eventPayload.operator_member_id as string) || (eventPayload.operator as string) || undefined)
+      ? (eventPayload.operator_id as string) ||
+        (eventPayload.operator_member_id as string) ||
+        (eventPayload.operator as string) ||
+        undefined
       : (message?.sender ?? message?.sender_member_id);
-    const senderName = isTeamChatEvent
-      ? ((eventPayload.operator as string) || undefined)
-      : message?.sender_display_name;
-    const robotJidInPayload = isTeamChatEvent ? undefined : (message?.robot_jid ?? payload.robot_jid);
+    const teamOperator = asOptionalString(eventPayload.operator);
+    const senderName = isTeamChatEvent ? teamOperator : message?.sender_display_name;
+    const messageSenderEmail = asOptionalString(message?.sender_email);
+    const resolvedSenderEmail = await resolveSenderEmail({
+      directEmail: isTeamChatEvent
+        ? (isEmailLike(teamOperator) ? teamOperator : undefined)
+        : messageSenderEmail,
+      senderId: asOptionalString(senderId),
+      lookupIds: isTeamChatEvent
+        ? [
+            asOptionalString(eventPayload.operator_id),
+            asOptionalString(eventPayload.operator_member_id),
+            teamOperator,
+            asOptionalString(senderId),
+          ]
+        : [
+            asOptionalString(message?.sender_member_id),
+            asOptionalString(message?.sender),
+            asOptionalString(senderId),
+          ],
+      eventType: event.event,
+      route: "channel_message",
+      senderName,
+    });
+    const senderEmail = resolvedSenderEmail.email;
+    const lookupUserIdFromSender = extractZoomUserIdFromJid(asOptionalString(senderId));
+    const senderEmailCandidates = isTeamChatEvent
+      ? {
+          event_operator: teamOperator,
+          event_operator_id: asOptionalString(eventPayload.operator_id),
+          event_operator_member_id: asOptionalString(eventPayload.operator_member_id),
+          lookup_from_sender_id: lookupUserIdFromSender,
+          resolved_source: resolvedSenderEmail.source,
+        }
+      : {
+          message_sender_email: messageSenderEmail,
+          message_sender: asOptionalString(message?.sender),
+          message_sender_member_id: asOptionalString(message?.sender_member_id),
+          lookup_from_sender_id: lookupUserIdFromSender,
+          resolved_source: resolvedSenderEmail.source,
+        };
+    logEmailResolution({
+      log,
+      eventType: event.event,
+      route: "channel_message",
+      selectedEmail: senderEmail,
+      candidates: senderEmailCandidates,
+      senderId,
+      senderName,
+    });
+    const robotJidInPayload = isTeamChatEvent
+      ? undefined
+      : (message?.robot_jid ?? payload.robot_jid);
     const messageText = isTeamChatEvent
-      ? String((payload as Record<string, unknown>).message ?? "")
+      ? asOptionalString((payload as Record<string, unknown>).message) ?? ""
       : (message?.message ?? "");
     const messageId = isTeamChatEvent
-      ? (payload as Record<string, unknown>).message_id as string | undefined
+      ? ((payload as Record<string, unknown>).message_id as string | undefined)
       : message?.id;
     const replyMainMessageId = isTeamChatEvent
-      ? (payload as Record<string, unknown>).reply_main_message_id as string | undefined
+      ? ((payload as Record<string, unknown>).reply_main_message_id as string | undefined)
       : message?.reply_main_message_id;
 
     if (!channelJid || !senderId || !messageText) {
@@ -540,7 +1448,8 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
     const staticObservePolicy = resolveZoomObservePolicy({ channelConfig });
     const dynamicObservePolicy = await getDynamicObservePolicy(channelJid);
     const observeMode = staticObservePolicy.observeMode || dynamicObservePolicy.observeMode;
-    const reviewChannelJid = staticObservePolicy.reviewChannelJid ?? dynamicObservePolicy.reviewChannelJid;
+    const reviewChannelJid =
+      staticObservePolicy.reviewChannelJid ?? dynamicObservePolicy.reviewChannelJid;
 
     if (observeMode && reviewChannelJid) {
       // Store conversation reference
@@ -557,6 +1466,7 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
         conversationId: channelJid,
         senderId,
         senderName,
+        senderEmail,
         text: messageText.trim(),
         channelJid,
         channelName,
@@ -570,12 +1480,15 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
     const groupPolicy: GroupPolicy = zoomCfg?.groupPolicy ?? "allowlist";
     const groupAllowFrom = zoomCfg?.groupAllowFrom ?? [];
 
-    if (!isZoomGroupAllowed({
-      groupPolicy,
-      allowFrom: groupAllowFrom,
-      senderId,
-      senderName,
-    })) {
+    if (
+      !isZoomGroupAllowed({
+        groupPolicy,
+        allowFrom: groupAllowFrom,
+        senderId,
+        senderName,
+        senderEmail,
+      })
+    ) {
       log.debug("sender not allowed in group", { senderId, senderName, groupPolicy });
       return;
     }
@@ -613,6 +1526,7 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
       conversationId: channelJid,
       senderId,
       senderName,
+      senderEmail,
       text: cleanText,
       isDirect: false,
       channelJid,
@@ -625,21 +1539,23 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
     const payload = event.payload?.object ?? event.payload;
     log.info(`app_invited/conversation_opened payload: ${JSON.stringify(event.payload)}`);
 
-    if (!payload) return;
+    if (!payload) {
+      return;
+    }
 
     const p = payload as Record<string, unknown>;
     // Extract channel info — try multiple field names across event types
     const rawChannelId = p.channel_id ?? p.toJid ?? p.to_jid;
     const channelName = (p.channel_name ?? p.name) as string | undefined;
-
-    if (!rawChannelId) {
+    const channelId = asOptionalString(rawChannelId);
+    if (!channelId) {
       log.debug("app_conversation_opened: no channel_id in payload, skipping");
       return;
     }
 
-    const channelJid = String(rawChannelId).includes("@")
-      ? String(rawChannelId)
-      : `${rawChannelId}@conference.xmpp.zoom.us`;
+    const channelJid = channelId.includes("@")
+      ? channelId
+      : `${channelId}@conference.xmpp.zoom.us`;
 
     // Auto-enable observe mode for this channel
     await enableObserveChannel(channelJid, channelName);
@@ -733,7 +1649,9 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
         core.channel.reply.createReplyDispatcherWithTyping({
           humanDelay: core.channel.reply.resolveHumanDelayConfig(cfg, route.agentId),
           deliver: async (payload) => {
-            if (payload.text) collectedParts.push(payload.text);
+            if (payload.text) {
+              collectedParts.push(payload.text);
+            }
           },
           onError: (err, info) => {
             const errMsg = err instanceof Error ? err.message : String(err);
@@ -799,7 +1717,10 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
         isChannel: false,
       });
 
-      log.info("training feedback processed, new review card sent", { newRefId, reviewChannelJid: training.reviewChannelJid });
+      log.info("training feedback processed, new review card sent", {
+        newRefId,
+        reviewChannelJid: training.reviewChannelJid,
+      });
     } catch (err) {
       log.error("failed to process training feedback", { error: formatUnknownError(err) });
       await sendZoomTextMessage({
@@ -815,16 +1736,31 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
     conversationId: string;
     senderId: string;
     senderName?: string;
+    senderEmail?: string;
     text: string;
     channelJid: string;
     channelName?: string;
     reviewChannelJid: string;
     isThreadReply?: boolean;
   }) {
-    const { conversationId, senderId, senderName, text, channelJid, channelName, reviewChannelJid, isThreadReply } = params;
+    const {
+      conversationId,
+      senderId,
+      senderName,
+      senderEmail,
+      text,
+      channelJid,
+      channelName,
+      reviewChannelJid,
+      isThreadReply,
+    } = params;
 
     try {
-      log.debug("routing to agent with observe mode", { conversationId, channelJid, isThreadReply });
+      log.debug("routing to agent with observe mode", {
+        conversationId,
+        channelJid,
+        isThreadReply,
+      });
 
       const route = core.channel.routing.resolveAgentRoute({
         cfg,
@@ -857,7 +1793,7 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
             "[CHANNEL OBSERVE — FOLLOW-UP] The user replied to your clarifying question.",
             "Use the channel training data below (if present) plus any memory_search results to give a tailored answer.",
             "Give a short, direct answer in 2-3 sentences max. No bullet points, no headers, no markdown formatting. Write like a knowledgeable coworker in a chat — brief and conversational.",
-            "When the request involves an order, SOW, or pricing change, invoke the appropriate ZW2 tool.",
+            "When the request involves an order, SOW, or pricing change, invoke the appropriate rapture/tesseract gateway tool (rapture_gateway_request or rapture_submit_workflow).",
             trainingBlock,
             `User reply: ${text}`,
           ].join("\n")
@@ -865,7 +1801,7 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
             "[CHANNEL OBSERVE MODE] A user posted a message in a channel you are monitoring.",
             "Use the channel training data below (if present) to match questions to known Q&A patterns and tool actions.",
             "If you find a matching Q&A pattern, give a brief response based on it (2-3 sentences, no formatting).",
-            "When the request involves an order, SOW, pricing, or configuration change, invoke the appropriate ZW2 tool.",
+            "When the request involves an order, SOW, pricing, or configuration change, invoke the appropriate rapture/tesseract gateway tool (rapture_gateway_request or rapture_submit_workflow).",
             "If the message shares factual details about the customer's environment (user count, platform, features, licensing, setup, infrastructure, etc.), respond with [CUSTOMER_CONTEXT] followed by each fact on its own line. Example:",
             "  [CUSTOMER_CONTEXT]",
             "  500 users",
@@ -888,6 +1824,8 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
         ConversationLabel: senderName ?? senderId,
         SenderName: senderName,
         SenderId: senderId,
+        SenderEmail: senderEmail,
+        SenderUsername: senderEmail,
         GroupSubject: channelName,
         GroupChannel: channelJid,
         Provider: "zoom" as const,
@@ -897,6 +1835,10 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
         OriginatingChannel: "zoom" as const,
         OriginatingTo: conversationId,
       });
+
+      log.info(
+        `zoom observe route context senderId=${senderId} senderEmail=${senderEmail ?? "-"} channelJid=${channelJid} sessionKey=${route.sessionKey}`,
+      );
 
       // Collect reply text instead of sending it directly
       const collectedParts: string[] = [];
@@ -962,7 +1904,10 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
             text: `**Customer Context Captured** — ${channelName ?? channelJid}\nFrom: ${senderName ?? senderId}\n\n${persisted.map((d) => `• ${d}`).join("\n")}`,
             isChannel: true,
           });
-          log.info("observe mode: persisted customer context", { channelJid, count: persisted.length });
+          log.info("observe mode: persisted customer context", {
+            channelJid,
+            count: persisted.length,
+          });
         }
         return;
       }
@@ -1019,7 +1964,17 @@ export async function routeMessageToAgent(params: {
   channelJid?: string;
   channelName?: string;
 }): Promise<void> {
-  const { deps, conversationId, senderId, senderName, text, isDirect, channelJid, channelName } = params;
+  const {
+    deps,
+    conversationId,
+    senderId,
+    senderName,
+    senderEmail,
+    text,
+    isDirect,
+    channelJid,
+    channelName,
+  } = params;
   const { cfg, log } = deps;
   const core = getZoomRuntime();
 
@@ -1052,6 +2007,8 @@ export async function routeMessageToAgent(params: {
       ConversationLabel: senderName ?? senderId,
       SenderName: senderName,
       SenderId: senderId,
+      SenderEmail: senderEmail,
+      SenderUsername: senderEmail,
       GroupSubject: isDirect ? undefined : channelName,
       GroupChannel: isDirect ? undefined : channelJid,
       Provider: "zoom" as const,
@@ -1061,6 +2018,10 @@ export async function routeMessageToAgent(params: {
       OriginatingChannel: "zoom" as const,
       OriginatingTo: conversationId,
     });
+
+    log.info(
+      `zoom route context senderId=${senderId} senderEmail=${senderEmail ?? "-"} isDirect=${isDirect} sessionKey=${route.sessionKey}`,
+    );
 
     const { dispatcher, replyOptions, markDispatchIdle } =
       core.channel.reply.createReplyDispatcherWithTyping({
@@ -1093,7 +2054,9 @@ export async function routeMessageToAgent(params: {
 
     if (queuedFinal) {
       const finalCount = counts.final;
-      log.info(`delivered ${finalCount} reply${finalCount === 1 ? "" : "ies"} to ${conversationId}`);
+      log.info(
+        `delivered ${finalCount} reply${finalCount === 1 ? "" : "ies"} to ${conversationId}`,
+      );
     }
   } catch (err) {
     log.error("failed to route to agent", { error: formatUnknownError(err) });
@@ -1109,16 +2072,30 @@ function extractCustomerDetails(question: string, answer: string): string[] {
   const details: string[] = [];
 
   // Platform / competitor mentions
-  const platformMatch = combined.match(/(?:using|running|on|from|migrating from|switching from)\s+(Microsoft Teams|Cisco|RingCentral|8x8|Avaya|Vonage|Mitel|Genesys|Five9|Dialpad)/i);
-  if (platformMatch) details.push(`Current/previous platform: ${platformMatch[1]}`);
+  const platformMatch = combined.match(
+    /(?:using|running|on|from|migrating from|switching from)\s+(Microsoft Teams|Cisco|RingCentral|8x8|Avaya|Vonage|Mitel|Genesys|Five9|Dialpad)/i,
+  );
+  if (platformMatch) {
+    details.push(`Current/previous platform: ${platformMatch[1]}`);
+  }
 
   // User count
-  const userCountMatch = combined.match(/(\d[\d,]*)\s*(?:users?|seats?|employees?|extensions?|agents?|lines?)/i);
-  if (userCountMatch) details.push(`Approximate size: ${userCountMatch[1]} ${userCountMatch[0].replace(userCountMatch[1], "").trim()}`);
+  const userCountMatch = combined.match(
+    /(\d[\d,]*)\s*(?:users?|seats?|employees?|extensions?|agents?|lines?)/i,
+  );
+  if (userCountMatch) {
+    details.push(
+      `Approximate size: ${userCountMatch[1]} ${userCountMatch[0].replace(userCountMatch[1], "").trim()}`,
+    );
+  }
 
   // License type
-  const licenseMatch = combined.match(/(?:on|have|using)\s+(?:the\s+)?(Pro|Business|Enterprise|Zoom\s+(?:One|Workplace|Phone)(?:\s+\w+)?)\s+(?:plan|license|tier)/i);
-  if (licenseMatch) details.push(`License/plan: ${licenseMatch[1]}`);
+  const licenseMatch = combined.match(
+    /(?:on|have|using)\s+(?:the\s+)?(Pro|Business|Enterprise|Zoom\s+(?:One|Workplace|Phone)(?:\s+\w+)?)\s+(?:plan|license|tier)/i,
+  );
+  if (licenseMatch) {
+    details.push(`License/plan: ${licenseMatch[1]}`);
+  }
 
   // Key features they care about
   const featurePatterns: [RegExp, string][] = [
@@ -1127,7 +2104,10 @@ function extractCustomerDetails(question: string, answer: string): string[] {
     [/auto[- ]?attendant|ivr/i, "Uses auto-attendant / IVR"],
     [/common\s*area\s*phone|lobby\s*phone/i, "Has common area phones"],
     [/contact\s*center|call\s*center/i, "Has contact center needs"],
-    [/international|global|multi[- ]?country|multiple\s*countries/i, "Multi-country / international deployment"],
+    [
+      /international|global|multi[- ]?country|multiple\s*countries/i,
+      "Multi-country / international deployment",
+    ],
     [/analog|ata\b|fax\s*machine/i, "Has analog/fax devices"],
     [/hot[- ]?desk/i, "Uses hot desking"],
     [/salesforce|hubspot|crm/i, "CRM integration required"],
@@ -1137,7 +2117,9 @@ function extractCustomerDetails(question: string, answer: string): string[] {
   ];
 
   for (const [re, label] of featurePatterns) {
-    if (re.test(combined)) details.push(label);
+    if (re.test(combined)) {
+      details.push(label);
+    }
   }
 
   return details;

@@ -150,6 +150,7 @@ export function createOpenClawCodingTools(options?: {
   senderId?: string | null;
   senderName?: string | null;
   senderUsername?: string | null;
+  senderEmail?: string | null;
   senderE164?: string | null;
   /** Reply-to mode for Slack auto-threading. */
   replyToMode?: "off" | "first" | "all";
@@ -326,6 +327,11 @@ export function createOpenClawCodingTools(options?: {
       agentSessionKey: options?.sessionKey,
       agentChannel: resolveGatewayMessageChannel(options?.messageProvider),
       agentAccountId: options?.agentAccountId,
+      senderId: options?.senderId ?? undefined,
+      senderName: options?.senderName ?? undefined,
+      senderUsername: options?.senderUsername ?? undefined,
+      senderEmail: options?.senderEmail ?? undefined,
+      senderE164: options?.senderE164 ?? undefined,
       agentTo: options?.messageTo,
       agentThreadId: options?.messageThreadId,
       agentGroupId: options?.groupId ?? null,

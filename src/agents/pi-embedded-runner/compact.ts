@@ -88,6 +88,11 @@ export type CompactEmbeddedPiSessionParams = {
   groupSpace?: string | null;
   /** Parent session key for subagent policy inheritance. */
   spawnedBy?: string | null;
+  senderId?: string | null;
+  senderName?: string | null;
+  senderEmail?: string | null;
+  senderUsername?: string | null;
+  senderE164?: string | null;
   sessionFile: string;
   workspaceDir: string;
   agentDir?: string;
@@ -333,6 +338,13 @@ export async function compactEmbeddedPiSessionDirect(
       reasoningLevel: params.reasoningLevel ?? "off",
       extraSystemPrompt: params.extraSystemPrompt,
       ownerNumbers: params.ownerNumbers,
+      currentSender: {
+        id: params.senderId ?? undefined,
+        name: params.senderName ?? undefined,
+        email: params.senderEmail ?? undefined,
+        username: params.senderUsername ?? undefined,
+        e164: params.senderE164 ?? undefined,
+      },
       reasoningTagHint,
       heartbeatPrompt: isDefaultAgent
         ? resolveHeartbeatPrompt(params.config?.agents?.defaults?.heartbeat?.prompt)

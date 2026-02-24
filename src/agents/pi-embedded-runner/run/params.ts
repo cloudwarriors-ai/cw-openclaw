@@ -37,6 +37,7 @@ export type RunEmbeddedPiAgentParams = {
   spawnedBy?: string | null;
   senderId?: string | null;
   senderName?: string | null;
+  senderEmail?: string | null;
   senderUsername?: string | null;
   senderE164?: string | null;
   /** Current channel ID for auto-threading (Slack). */

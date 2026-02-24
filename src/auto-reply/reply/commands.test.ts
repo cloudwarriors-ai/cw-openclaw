@@ -197,6 +197,23 @@ describe("handleCommands identity", () => {
     expect(result.reply?.text).toContain("Username: @TestUser");
     expect(result.reply?.text).toContain("AllowFrom: 12345");
   });
+
+  it("includes sender email and preserves email-style usernames", async () => {
+    const cfg = {
+      commands: { text: true },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/whoami", cfg, {
+      SenderId: "mczsbukyqle4uyqbhcew3q@xmpp.zoom.us",
+      SenderEmail: "trent.charlton@cloudwarriors.ai",
+      SenderUsername: "trent.charlton@cloudwarriors.ai",
+      ChatType: "direct",
+    });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("Email: trent.charlton@cloudwarriors.ai");
+    expect(result.reply?.text).toContain("Username: trent.charlton@cloudwarriors.ai");
+  });
 });
 
 describe("handleCommands hooks", () => {

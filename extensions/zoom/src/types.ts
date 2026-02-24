@@ -59,6 +59,7 @@ export type ZoomChatMessage = {
   sender?: string;
   sender_member_id?: string;
   sender_display_name?: string;
+  sender_email?: string;
   robot_jid?: string;
 };
 
@@ -67,6 +68,13 @@ export type ZoomWebhookEvent = {
   event_ts: number;
   payload: {
     accountId?: string;
+    operator?: string;
+    operator_id?: string;
+    operator_member_id?: string;
+    operator_email?: string;
+    operatorEmail?: string;
+    user_email?: string;
+    userEmail?: string;
     object?: {
       type?: string;
       channel_jid?: string;
@@ -76,10 +84,15 @@ export type ZoomWebhookEvent = {
       operator_member_id?: string;
       /** For channel messages, this is the message object */
       message?: ZoomChatMessage;
+      user_jid?: string;
       userJid?: string;
       user_id?: string;
+      userId?: string;
       user_name?: string;
       user_email?: string;
+      userEmail?: string;
+      user_member_id?: string;
+      userMemberId?: string;
       robot_jid?: string;
       /** For bot notifications, this is the message text */
       text?: string;
@@ -89,6 +102,7 @@ export type ZoomWebhookEvent = {
       actionItem?: { text?: string; value?: string };
       fieldEditItem?: { key?: string; value?: string; newValue?: string };
       selectedItem?: { value?: string; text?: string };
+      to_jid?: string;
       toJid?: string;
       messageId?: string;
       original?: { body?: Array<Record<string, unknown>> };

@@ -182,6 +182,7 @@ export async function dispatchReplyFromConfig(params: {
             messageId: messageIdForHook,
             senderId: ctx.SenderId,
             senderName: ctx.SenderName,
+            senderEmail: ctx.SenderEmail,
             senderUsername: ctx.SenderUsername,
             senderE164: ctx.SenderE164,
           },

@@ -1,0 +1,17 @@
+{
+  "name": "@openclaw/rapture-gateway",
+  "version": "2026.2.3",
+  "description": "Rapture and Tesseract gateway workflow tools",
+  "type": "module",
+  "dependencies": {
+    "redis": "^4.7.1"
+  },
+  "peerDependencies": {
+    "openclaw": "*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

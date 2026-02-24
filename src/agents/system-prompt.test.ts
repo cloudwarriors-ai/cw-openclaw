@@ -14,6 +14,24 @@ describe("buildAgentSystemPrompt", () => {
     );
   });
 
+  it("includes current sender identity when provided", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      currentSender: {
+        name: "Trent Charlton",
+        email: "trent.charlton@cloudwarriors.ai",
+        username: "tcharlton",
+        id: "mczsbukyqle4uyqbhcew3q@xmpp.zoom.us",
+      },
+    });
+
+    expect(prompt).toContain("## User Identity");
+    expect(prompt).toContain(
+      "Current sender: name=Trent Charlton, email=trent.charlton@cloudwarriors.ai, username=tcharlton, id=mczsbukyqle4uyqbhcew3q@xmpp.zoom.us.",
+    );
+    expect(prompt).toContain("Current sender metadata is authoritative for this message.");
+  });
+
   it("omits owner section when numbers are missing", () => {
     const prompt = buildAgentSystemPrompt({
       workspaceDir: "/tmp/openclaw",
@@ -28,6 +46,9 @@ describe("buildAgentSystemPrompt", () => {
       workspaceDir: "/tmp/openclaw",
       promptMode: "minimal",
       ownerNumbers: ["+123"],
+      currentSender: {
+        username: "trent.charlton@cloudwarriors.ai",
+      },
       skillsPrompt:
         "<available_skills>\n  <skill>\n    <name>demo</name>\n  </skill>\n</available_skills>",
       heartbeatPrompt: "ping",
@@ -38,6 +59,7 @@ describe("buildAgentSystemPrompt", () => {
     });
 
     expect(prompt).not.toContain("## User Identity");
+    expect(prompt).not.toContain("Current sender:");
     expect(prompt).not.toContain("## Skills");
     expect(prompt).not.toContain("## Memory Recall");
     expect(prompt).not.toContain("## Documentation");

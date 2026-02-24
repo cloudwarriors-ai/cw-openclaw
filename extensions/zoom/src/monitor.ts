@@ -1,5 +1,6 @@
 import type { Request, Response } from "express";
 import type { OpenClawConfig, RuntimeEnv } from "openclaw/plugin-sdk";
+import { createHash, createHmac } from "node:crypto";
 
 import type { ZoomConversationStore } from "./conversation-store.js";
 import { createZoomConversationStoreFs } from "./conversation-store-fs.js";
@@ -41,6 +42,17 @@ export async function monitorZoomProvider(
   if (!creds) {
     log.error("zoom credentials not configured");
     return { app: null, shutdown: async () => {} };
+  }
+  if (creds.webhookSecretToken) {
+    const secretFingerprint = createHash("sha256")
+      .update(creds.webhookSecretToken)
+      .digest("hex")
+      .slice(0, 12);
+    log.debug(
+      `zoom webhook signature verification enabled (secretLength=${creds.webhookSecretToken.length}, secretFp=${secretFingerprint})`,
+    );
+  } else {
+    log.warn("zoom webhook signature verification disabled (missing webhook secret token)");
   }
 
   const runtime: RuntimeEnv = opts.runtime ?? {
@@ -138,7 +150,11 @@ export async function monitorZoomProvider(
         });
 
         if (!valid) {
-          log.warn("invalid webhook signature");
+          const payloadFingerprint = createHash("sha256").update(rawBody).digest("hex").slice(0, 12);
+          const expectedSignature = `v0=${createHmac("sha256", creds.webhookSecretToken).update(`v0:${timestamp}:${rawBody}`).digest("hex")}`;
+          log.warn(
+            `invalid webhook signature (sigLen=${signature.length}, sigPrefix=${signature.slice(0, 12)}, expectedSigPrefix=${expectedSignature.slice(0, 12)}, exactMatch=${signature === expectedSignature}, payloadFp=${payloadFingerprint}, ts=${timestamp})`,
+          );
           res.status(401).json({ error: "invalid signature" });
           return;
         }

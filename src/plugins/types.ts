@@ -61,6 +61,11 @@ export type OpenClawPluginToolContext = {
   sessionKey?: string;
   messageChannel?: string;
   agentAccountId?: string;
+  senderId?: string;
+  senderName?: string;
+  senderUsername?: string;
+  senderEmail?: string;
+  senderE164?: string;
   sandboxed?: boolean;
 };
 

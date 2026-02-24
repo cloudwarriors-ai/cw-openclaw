@@ -182,13 +182,20 @@ export const handleWhoamiCommand: CommandHandler = async (params, allowTextComma
     return { shouldContinue: false };
   }
   const senderId = params.ctx.SenderId ?? "";
+  const senderEmail = params.ctx.SenderEmail ?? "";
   const senderUsername = params.ctx.SenderUsername ?? "";
   const lines = ["🧭 Identity", `Channel: ${params.command.channel}`];
   if (senderId) {
     lines.push(`User id: ${senderId}`);
   }
+  if (senderEmail) {
+    lines.push(`Email: ${senderEmail}`);
+  }
   if (senderUsername) {
-    const handle = senderUsername.startsWith("@") ? senderUsername : `@${senderUsername}`;
+    const handle =
+      senderUsername.startsWith("@") || senderUsername.includes("@")
+        ? senderUsername
+        : `@${senderUsername}`;
     lines.push(`Username: ${handle}`);
   }
   if (params.ctx.ChatType === "group" && params.ctx.From) {

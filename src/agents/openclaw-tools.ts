@@ -25,6 +25,11 @@ export function createOpenClawTools(options?: {
   agentSessionKey?: string;
   agentChannel?: GatewayMessageChannel;
   agentAccountId?: string;
+  senderId?: string | null;
+  senderName?: string | null;
+  senderUsername?: string | null;
+  senderEmail?: string | null;
+  senderE164?: string | null;
   /** Delivery target (e.g. telegram:group:123:topic:456) for topic/thread routing. */
   agentTo?: string;
   /** Thread/topic identifier for routing replies to the originating thread. */
@@ -160,6 +165,13 @@ export function createOpenClawTools(options?: {
       sessionKey: options?.agentSessionKey,
       messageChannel: options?.agentChannel,
       agentAccountId: options?.agentAccountId,
+      senderId: options?.senderId ?? undefined,
+      senderName: options?.senderName ?? undefined,
+      senderUsername: options?.senderUsername ?? undefined,
+      senderEmail:
+        options?.senderEmail ??
+        (options?.senderUsername?.includes("@") ? options.senderUsername : undefined),
+      senderE164: options?.senderE164 ?? undefined,
       sandboxed: options?.sandboxed,
     },
     existingToolNames: new Set(tools.map((tool) => tool.name)),

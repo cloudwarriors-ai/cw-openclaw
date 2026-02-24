@@ -125,6 +125,11 @@ export async function runMemoryFlushIfNeeded(params: {
           }),
           senderId: params.sessionCtx.SenderId?.trim() || undefined,
           senderName: params.sessionCtx.SenderName?.trim() || undefined,
+          senderEmail:
+            params.sessionCtx.SenderEmail?.trim() ||
+            (params.sessionCtx.SenderUsername?.includes("@")
+              ? params.sessionCtx.SenderUsername.trim()
+              : undefined),
           senderUsername: params.sessionCtx.SenderUsername?.trim() || undefined,
           senderE164: params.sessionCtx.SenderE164?.trim() || undefined,
           sessionFile: params.followupRun.run.sessionFile,

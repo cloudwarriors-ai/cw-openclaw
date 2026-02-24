@@ -1,0 +1,10 @@
+{
+  "id": "rapture-gateway",
+  "name": "Rapture Gateway",
+  "description": "Tesseract gateway session tools for entity lookup, workflow submission, and job status checks",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

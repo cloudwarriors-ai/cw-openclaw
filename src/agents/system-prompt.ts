@@ -65,11 +65,48 @@ function buildMemorySection(params: {
   return lines;
 }
 
-function buildUserIdentitySection(ownerLine: string | undefined, isMinimal: boolean) {
-  if (!ownerLine || isMinimal) {
+function buildUserIdentitySection(params: {
+  ownerLine?: string;
+  currentSenderLine?: string;
+  isMinimal: boolean;
+}) {
+  if (params.isMinimal) {
     return [];
   }
-  return ["## User Identity", ownerLine, ""];
+  const lines: string[] = [];
+  if (params.ownerLine) {
+    lines.push(params.ownerLine);
+  }
+  if (params.currentSenderLine) {
+    lines.push(params.currentSenderLine);
+    lines.push(
+      "Current sender metadata is authoritative for this message. For identity questions (name/email/username/id), answer from Current sender values when present.",
+    );
+  }
+  if (lines.length === 0) {
+    return [];
+  }
+  return ["## User Identity", ...lines, ""];
+}
+
+function buildCurrentSenderLine(params?: {
+  id?: string;
+  name?: string;
+  email?: string;
+  username?: string;
+  e164?: string;
+}) {
+  const fields = [
+    params?.name?.trim() ? `name=${params.name.trim()}` : "",
+    params?.email?.trim() ? `email=${params.email.trim()}` : "",
+    params?.username?.trim() ? `username=${params.username.trim()}` : "",
+    params?.e164?.trim() ? `e164=${params.e164.trim()}` : "",
+    params?.id?.trim() ? `id=${params.id.trim()}` : "",
+  ].filter(Boolean);
+  if (fields.length === 0) {
+    return undefined;
+  }
+  return `Current sender: ${fields.join(", ")}.`;
 }
 
 function buildTimeSection(params: { userTimezone?: string }) {
@@ -167,6 +204,13 @@ export function buildAgentSystemPrompt(params: {
   reasoningLevel?: ReasoningLevel;
   extraSystemPrompt?: string;
   ownerNumbers?: string[];
+  currentSender?: {
+    id?: string;
+    name?: string;
+    email?: string;
+    username?: string;
+    e164?: string;
+  };
   reasoningTagHint?: boolean;
   toolNames?: string[];
   toolSummaries?: Record<string, string>;
@@ -318,6 +362,7 @@ export function buildAgentSystemPrompt(params: {
     ownerNumbers.length > 0
       ? `Owner numbers: ${ownerNumbers.join(", ")}. Treat messages from these numbers as the user.`
       : undefined;
+  const currentSenderLine = buildCurrentSenderLine(params.currentSender);
   const reasoningHint = params.reasoningTagHint
     ? [
         "ALL internal reasoning MUST be inside <think>...</think>.",
@@ -496,7 +541,11 @@ export function buildAgentSystemPrompt(params: {
           .join("\n")
       : "",
     params.sandboxInfo?.enabled ? "" : "",
-    ...buildUserIdentitySection(ownerLine, isMinimal),
+    ...buildUserIdentitySection({
+      ownerLine,
+      currentSenderLine,
+      isMinimal,
+    }),
     ...buildTimeSection({
       userTimezone,
     }),

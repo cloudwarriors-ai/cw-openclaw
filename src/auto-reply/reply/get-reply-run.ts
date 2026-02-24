@@ -376,6 +376,7 @@ export async function runPreparedReply(
       groupSpace: sessionCtx.GroupSpace?.trim() ?? undefined,
       senderId: sessionCtx.SenderId?.trim() || undefined,
       senderName: sessionCtx.SenderName?.trim() || undefined,
+      senderEmail: sessionCtx.SenderEmail?.trim() || undefined,
       senderUsername: sessionCtx.SenderUsername?.trim() || undefined,
       senderE164: sessionCtx.SenderE164?.trim() || undefined,
       sessionFile,

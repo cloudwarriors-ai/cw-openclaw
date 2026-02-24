@@ -29,6 +29,7 @@ export type EmbeddedRunAttemptParams = {
   spawnedBy?: string | null;
   senderId?: string | null;
   senderName?: string | null;
+  senderEmail?: string | null;
   senderUsername?: string | null;
   senderE164?: string | null;
   currentChannelId?: string;

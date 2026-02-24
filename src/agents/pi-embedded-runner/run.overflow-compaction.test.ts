@@ -189,6 +189,29 @@ describe("overflow compaction in run loop", () => {
     vi.clearAllMocks();
   });
 
+  it("forwards sender metadata into embedded run attempts", async () => {
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(makeAttemptResult({ promptError: null }));
+
+    await runEmbeddedPiAgent({
+      ...baseParams,
+      senderId: "mczsbukyqle4uyqbhcew3q@xmpp.zoom.us",
+      senderName: "Trent Charlton",
+      senderEmail: "trent.charlton@cloudwarriors.ai",
+      senderUsername: "trent.charlton@cloudwarriors.ai",
+      senderE164: "+15551234567",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        senderId: "mczsbukyqle4uyqbhcew3q@xmpp.zoom.us",
+        senderName: "Trent Charlton",
+        senderEmail: "trent.charlton@cloudwarriors.ai",
+        senderUsername: "trent.charlton@cloudwarriors.ai",
+        senderE164: "+15551234567",
+      }),
+    );
+  });
+
   it("retries after successful compaction on context overflow promptError", async () => {
     const overflowError = new Error("request_too_large: Request size exceeds model context window");
 

@@ -93,6 +93,7 @@ export type MsgContext = {
   UntrustedContext?: string[];
   SenderName?: string;
   SenderId?: string;
+  SenderEmail?: string;
   SenderUsername?: string;
   SenderTag?: string;
   SenderE164?: string;

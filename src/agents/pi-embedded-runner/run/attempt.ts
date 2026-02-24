@@ -224,6 +224,7 @@ export async function runEmbeddedAttempt(
           spawnedBy: params.spawnedBy,
           senderId: params.senderId,
           senderName: params.senderName,
+          senderEmail: params.senderEmail,
           senderUsername: params.senderUsername,
           senderE164: params.senderE164,
           sessionKey: params.sessionKey ?? params.sessionId,
@@ -313,6 +314,9 @@ export async function runEmbeddedAttempt(
           accountId: params.agentAccountId,
         })
       : undefined;
+    log.debug(
+      `embedded sender context: channel=${runtimeChannel ?? "unknown"} senderId=${params.senderId ?? "-"} senderEmail=${params.senderEmail ?? "-"} senderUsername=${params.senderUsername ?? "-"}`,
+    );
 
     const defaultModelRef = resolveDefaultModelForAgent({
       cfg: params.config ?? {},
@@ -352,6 +356,13 @@ export async function runEmbeddedAttempt(
       reasoningLevel: params.reasoningLevel ?? "off",
       extraSystemPrompt: params.extraSystemPrompt,
       ownerNumbers: params.ownerNumbers,
+      currentSender: {
+        id: params.senderId ?? undefined,
+        name: params.senderName ?? undefined,
+        email: params.senderEmail ?? undefined,
+        username: params.senderUsername ?? undefined,
+        e164: params.senderE164 ?? undefined,
+      },
       reasoningTagHint,
       heartbeatPrompt: isDefaultAgent
         ? resolveHeartbeatPrompt(params.config?.agents?.defaults?.heartbeat?.prompt)
@@ -453,7 +464,7 @@ export async function runEmbeddedAttempt(
 
       // Wrap tools with before_tool_call hook invocation before splitting
       const toolHookCtx = {
-        agentId: params.sessionKey?.split(":")[0] ?? "main",
+        agentId: sessionAgentId,
         sessionKey: params.sessionKey,
       };
       const wrappedTools = wrapToolsWithHook(tools, toolHookCtx);
@@ -727,7 +738,7 @@ export async function runEmbeddedAttempt(
                 messages: activeSession.messages,
               },
               {
-                agentId: params.sessionKey?.split(":")[0] ?? "main",
+                agentId: sessionAgentId,
                 sessionKey: params.sessionKey,
                 workspaceDir: params.workspaceDir,
                 messageProvider: params.messageProvider ?? undefined,
@@ -857,7 +868,7 @@ export async function runEmbeddedAttempt(
                 durationMs: Date.now() - promptStartedAt,
               },
               {
-                agentId: params.sessionKey?.split(":")[0] ?? "main",
+                agentId: sessionAgentId,
                 sessionKey: params.sessionKey,
                 workspaceDir: params.workspaceDir,
                 messageProvider: params.messageProvider ?? undefined,

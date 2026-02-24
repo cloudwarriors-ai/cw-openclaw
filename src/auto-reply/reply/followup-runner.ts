@@ -149,6 +149,7 @@ export function createFollowupRunner(params: {
               groupSpace: queued.run.groupSpace,
               senderId: queued.run.senderId,
               senderName: queued.run.senderName,
+              senderEmail: queued.run.senderEmail,
               senderUsername: queued.run.senderUsername,
               senderE164: queued.run.senderE164,
               sessionFile: queued.run.sessionFile,

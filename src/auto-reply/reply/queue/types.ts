@@ -53,6 +53,7 @@ export type FollowupRun = {
     groupSpace?: string;
     senderId?: string;
     senderName?: string;
+    senderEmail?: string;
     senderUsername?: string;
     senderE164?: string;
     sessionFile: string;
