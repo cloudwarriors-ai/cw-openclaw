@@ -31,33 +31,19 @@ describe("catfish config", () => {
     });
   });
 
-  it("falls back to ZOOM_REPORT_* env vars when CATFISH_ZOOM_* are absent", () => {
+  it("does not use non-dedicated fallback env vars", () => {
     process.env.ZOOM_REPORT_CLIENT_ID = "report-client-id";
     process.env.ZOOM_REPORT_CLIENT_SECRET = "report-client-secret";
     process.env.ZOOM_REPORT_ACCOUNT_ID = "report-account-id";
-
-    const creds = resolveCatfishCredentials(parseCatfishConfig(undefined));
-    expect(creds).toEqual({
-      clientId: "report-client-id",
-      clientSecret: "report-client-secret",
-      accountId: "report-account-id",
-    });
-  });
-
-  it("falls back to ZOOM_* env vars when CATFISH_ZOOM_* and ZOOM_REPORT_* are absent", () => {
     process.env.ZOOM_CLIENT_ID = "zoom-client-id";
     process.env.ZOOM_CLIENT_SECRET = "zoom-client-secret";
     process.env.ZOOM_ACCOUNT_ID = "zoom-account-id";
 
     const creds = resolveCatfishCredentials(parseCatfishConfig(undefined));
-    expect(creds).toEqual({
-      clientId: "zoom-client-id",
-      clientSecret: "zoom-client-secret",
-      accountId: "zoom-account-id",
-    });
+    expect(creds).toBeUndefined();
   });
 
-  it("prefers dedicated CATFISH_ZOOM_* over fallback env vars", () => {
+  it("prefers dedicated CATFISH_ZOOM_* when non-dedicated env vars are also present", () => {
     process.env.CATFISH_ZOOM_CLIENT_ID = "catfish-client-id";
     process.env.CATFISH_ZOOM_CLIENT_SECRET = "catfish-client-secret";
     process.env.CATFISH_ZOOM_ACCOUNT_ID = "catfish-account-id";

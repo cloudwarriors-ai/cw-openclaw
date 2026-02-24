@@ -126,24 +126,9 @@ export function parseCatfishConfig(value: unknown): CatfishRuntimeConfig {
 export function resolveCatfishCredentials(
   config: CatfishRuntimeConfig,
 ): CatfishCredentials | undefined {
-  const clientId = firstDefined([
-    config.clientId,
-    process.env.CATFISH_ZOOM_CLIENT_ID,
-    process.env.ZOOM_REPORT_CLIENT_ID,
-    process.env.ZOOM_CLIENT_ID,
-  ]);
-  const clientSecret = firstDefined([
-    config.clientSecret,
-    process.env.CATFISH_ZOOM_CLIENT_SECRET,
-    process.env.ZOOM_REPORT_CLIENT_SECRET,
-    process.env.ZOOM_CLIENT_SECRET,
-  ]);
-  const accountId = firstDefined([
-    config.accountId,
-    process.env.CATFISH_ZOOM_ACCOUNT_ID,
-    process.env.ZOOM_REPORT_ACCOUNT_ID,
-    process.env.ZOOM_ACCOUNT_ID,
-  ]);
+  const clientId = firstDefined([config.clientId, process.env.CATFISH_ZOOM_CLIENT_ID]);
+  const clientSecret = firstDefined([config.clientSecret, process.env.CATFISH_ZOOM_CLIENT_SECRET]);
+  const accountId = firstDefined([config.accountId, process.env.CATFISH_ZOOM_ACCOUNT_ID]);
 
   if (!clientId || !clientSecret || !accountId) {
     return undefined;

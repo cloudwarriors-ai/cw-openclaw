@@ -150,7 +150,7 @@ export function createCatfishClient(params?: {
     const creds = resolveCatfishCredentials(config);
     if (!creds) {
       throw authFailedError(
-        "Catfish credentials not configured (clientId/clientSecret/accountId, CATFISH_ZOOM_*, ZOOM_REPORT_*, or ZOOM_* env vars)",
+        "Catfish credentials not configured (clientId/clientSecret/accountId or CATFISH_ZOOM_* env vars)",
       );
     }
     return creds;
