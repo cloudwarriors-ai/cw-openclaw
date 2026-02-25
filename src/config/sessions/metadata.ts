@@ -118,7 +118,16 @@ export function deriveGroupSessionPatch(params: {
     ((resolution.chatType === "channel" || isChannelProvider) && subject && subject.startsWith("#")
       ? subject
       : undefined);
-  const nextSubject = nextGroupChannel ? undefined : subject;
+  const shouldPreserveSubjectAlongsideGroupChannel =
+    Boolean(subject) &&
+    Boolean(nextGroupChannel) &&
+    // Some providers use opaque channel IDs as GroupChannel (for example Zoom JIDs).
+    // Preserve GroupSubject in that case so user-facing channel labels remain available.
+    !nextGroupChannel?.startsWith("#") &&
+    nextGroupChannel !== subject;
+  const nextSubject = !subject
+    ? undefined
+    : (!nextGroupChannel || shouldPreserveSubjectAlongsideGroupChannel ? subject : undefined);
 
   const patch: Partial<SessionEntry> = {
     chatType: resolution.chatType ?? "group",

@@ -1,7 +1,10 @@
 import { Type } from "@sinclair/typebox";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { MemoryCitationsMode } from "../../config/types.memory.js";
+import { resolveStorePath } from "../../config/sessions/paths.js";
+import { loadSessionStore } from "../../config/sessions/store.js";
 import type { MemorySearchResult, MemorySearchScope } from "../../memory/types.js";
+import { normalizeChannelSlug } from "../../channels/channel-config.js";
 import type { AnyAgentTool } from "./common.js";
 import { resolveMemoryBackendConfig } from "../../memory/backend-config.js";
 import { getMemorySearchManager } from "../../memory/index.js";
@@ -66,6 +69,59 @@ function resolveEffectiveScope(params: {
   return { effectiveScope: raw, scopeDenied: false };
 }
 
+function normalizeCandidateSlug(value: string | undefined): string | undefined {
+  const raw = value?.trim();
+  if (!raw) {
+    return undefined;
+  }
+  const normalized = normalizeChannelSlug(raw);
+  return normalized || undefined;
+}
+
+function resolveThreadParentKey(sessionKey: string): string | undefined {
+  const normalized = sessionKey.toLowerCase();
+  const threadIdx = normalized.lastIndexOf(":thread:");
+  const topicIdx = normalized.lastIndexOf(":topic:");
+  const idx = Math.max(threadIdx, topicIdx);
+  if (idx <= 0) {
+    return undefined;
+  }
+  const parent = sessionKey.slice(0, idx).trim();
+  return parent || undefined;
+}
+
+function resolveChannelSlugFromSessionMetadata(params: {
+  cfg?: OpenClawConfig;
+  agentId: string;
+  sessionKey?: string;
+}): string | undefined {
+  const sessionKey = params.sessionKey?.trim();
+  if (!params.cfg || !sessionKey) {
+    return undefined;
+  }
+  try {
+    const storePath = resolveStorePath(params.cfg.session?.store, { agentId: params.agentId });
+    const store = loadSessionStore(storePath);
+    const parentKey = resolveThreadParentKey(sessionKey);
+    const entry = store[sessionKey] ?? (parentKey ? store[parentKey] : undefined);
+    if (!entry) {
+      return undefined;
+    }
+    const fromSubject = normalizeCandidateSlug(entry.subject);
+    if (fromSubject) {
+      return fromSubject;
+    }
+    const groupChannel = entry.groupChannel?.trim();
+    if (!groupChannel) {
+      return undefined;
+    }
+    const channelLabel = groupChannel.includes("@") ? groupChannel.split("@")[0] : groupChannel;
+    return normalizeCandidateSlug(channelLabel);
+  } catch {
+    return undefined;
+  }
+}
+
 export function createMemorySearchTool(options: {
   config?: OpenClawConfig;
   agentSessionKey?: string;
@@ -83,18 +139,25 @@ export function createMemorySearchTool(options: {
     sessionKey: options.agentSessionKey,
     config: cfg,
   });
+  const resolvedChannelSlug =
+    normalizeCandidateSlug(options.channelSlug) ??
+    resolveChannelSlugFromSessionMetadata({
+      cfg,
+      agentId,
+      sessionKey: options.agentSessionKey,
+    });
   const searchConfig = resolveMemorySearchConfig(cfg, agentId);
   if (!searchConfig) {
     return null;
   }
   const configuredMinScore = searchConfig.query.minScore;
-  const relaxedChannelMinScore = Math.max(0, Math.min(configuredMinScore, 0.3));
+  const relaxedChannelMinScore = Math.max(0, Math.min(configuredMinScore, 0.2));
   return {
     label: "Memory Search",
     name: "memory_search",
     description:
       "Mandatory recall step: semantically search MEMORY.md + memory/*.md (and optional session transcripts) before answering questions about prior work, decisions, dates, people, preferences, or todos; returns top snippets with path + lines." +
-      (options.channelSlug ? " Supports scope parameter: 'channel' (current customer — USE THIS for trained Q&A recall), 'global'." : "") +
+      (resolvedChannelSlug ? " Supports scope parameter: 'channel' (current customer — USE THIS for trained Q&A recall), 'global'." : "") +
       (options.isSupport ? " Also supports 'all-customers' scope for cross-customer search." : ""),
     parameters: MemorySearchSchema,
     execute: async (_toolCallId, params) => {
@@ -107,7 +170,7 @@ export function createMemorySearchTool(options: {
         defaultScope: options.defaultScope,
         isSupport: options.isSupport,
         allowAllCustomers: options.allowAllCustomers,
-        channelSlug: options.channelSlug,
+        channelSlug: resolvedChannelSlug,
       });
 
       if (scopeDenied) {
@@ -137,7 +200,7 @@ export function createMemorySearchTool(options: {
           minScore,
           sessionKey: options.agentSessionKey,
           scope: effectiveScope,
-          channelSlug: options.channelSlug,
+          channelSlug: resolvedChannelSlug,
           excludeSlugs: effectiveScope === "all-customers" ? options.excludeSlugs : undefined,
         });
         let relaxedMinScore: number | undefined;
@@ -152,7 +215,7 @@ export function createMemorySearchTool(options: {
             minScore: relaxedChannelMinScore,
             sessionKey: options.agentSessionKey,
             scope: effectiveScope,
-            channelSlug: options.channelSlug,
+            channelSlug: resolvedChannelSlug,
             excludeSlugs: undefined,
           });
           if (rawResults.length > 0) {

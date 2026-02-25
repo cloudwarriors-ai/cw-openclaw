@@ -68,8 +68,8 @@ export function selectTrainedAnswerCandidate(params: {
   minScore?: number;
   minSimilarity?: number;
 }): TrainedAnswerCandidate | undefined {
-  const minScore = params.minScore ?? 0.55;
-  const minSimilarity = params.minSimilarity ?? 0.4;
+  const minScore = params.minScore ?? 0.2;
+  const minSimilarity = params.minSimilarity ?? 0.25;
   let best: TrainedAnswerCandidate | undefined;
   let bestCombined = -1;
 
@@ -117,4 +117,3 @@ export function isLikelyClarifyingQuestion(reply: string): boolean {
     "can you clarify",
   ].some((pattern) => text.includes(pattern));
 }
-

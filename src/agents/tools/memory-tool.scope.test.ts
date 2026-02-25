@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 let searchCalledWith: Record<string, unknown> | undefined;
 let searchCallHistory: Array<Record<string, unknown> | undefined> = [];
+const mockSessionStoreRef = vi.hoisted(() => ({
+  value: {} as Record<string, Record<string, unknown>>,
+}));
 
 const stubManager = {
   search: vi.fn(async (_query: string, opts?: Record<string, unknown>) => {
@@ -41,6 +44,26 @@ vi.mock("../../memory/index.js", () => ({
   getMemorySearchManager: async () => ({ manager: stubManager }),
 }));
 
+vi.mock("../../config/sessions/paths.js", async () => {
+  const actual = await vi.importActual<typeof import("../../config/sessions/paths.js")>(
+    "../../config/sessions/paths.js",
+  );
+  return {
+    ...actual,
+    resolveStorePath: vi.fn(() => "/tmp/sessions.json"),
+  };
+});
+
+vi.mock("../../config/sessions/store.js", async () => {
+  const actual = await vi.importActual<typeof import("../../config/sessions/store.js")>(
+    "../../config/sessions/store.js",
+  );
+  return {
+    ...actual,
+    loadSessionStore: vi.fn(() => mockSessionStoreRef.value),
+  };
+});
+
 import { createMemorySearchTool } from "./memory-tool.js";
 
 const baseCfg = { memory: { citations: "off" }, agents: { list: [{ id: "main", default: true }] } };
@@ -49,6 +72,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   searchCalledWith = undefined;
   searchCallHistory = [];
+  mockSessionStoreRef.value = {};
 });
 
 describe("memory_search scope policy", () => {
@@ -140,6 +164,27 @@ describe("memory_search scope policy", () => {
     expect(details.effectiveScope).toBe("global");
   });
 
+  it("derives channel slug from session metadata subject when not passed in options", async () => {
+    const sessionKey = "agent:main:zoom:channel:a04c5d88@conference.xmpp.zoom.us";
+    mockSessionStoreRef.value = {
+      [sessionKey]: {
+        sessionId: "session-1",
+        updatedAt: Date.now(),
+        subject: "Test Customer",
+      },
+    };
+    const tool = createMemorySearchTool({
+      config: baseCfg,
+      agentSessionKey: sessionKey,
+      isSupport: false,
+      defaultScope: "channel",
+    });
+    const result = await tool!.execute("call6c", { query: "test", scope: "channel" });
+    const details = result.details as Record<string, unknown>;
+    expect(details.effectiveScope).toBe("channel");
+    expect(searchCalledWith?.channelSlug).toBe("test-customer");
+  });
+
   it("forces global for non-support sessions requesting all-customers", async () => {
     const tool = createMemorySearchTool({
       config: baseCfg,
@@ -167,7 +212,7 @@ describe("memory_search scope policy", () => {
     stubManager.search.mockImplementation(async (_query: string, opts?: Record<string, unknown>) => {
       searchCalledWith = opts;
       searchCallHistory.push(opts);
-      if (opts?.minScore === 0.3) {
+      if (opts?.minScore === 0.2) {
         return [
           {
             path: "memory/customers/acme/notes.md",
@@ -193,8 +238,8 @@ describe("memory_search scope policy", () => {
 
     expect(searchCallHistory.length).toBe(2);
     expect(searchCallHistory[0]?.minScore).toBeUndefined();
-    expect(searchCallHistory[1]?.minScore).toBe(0.3);
+    expect(searchCallHistory[1]?.minScore).toBe(0.2);
     expect(results.length).toBe(1);
-    expect(details.relaxedMinScore).toBe(0.3);
+    expect(details.relaxedMinScore).toBe(0.2);
   });
 });
