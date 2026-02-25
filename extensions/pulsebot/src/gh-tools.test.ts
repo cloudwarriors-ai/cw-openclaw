@@ -42,6 +42,7 @@ describe("pulsebot gh tools", () => {
 
   beforeEach(() => {
     execSyncMock.mockReset();
+    vi.unstubAllGlobals();
   });
 
   it("returns issue data when gh is available", async () => {
@@ -97,5 +98,91 @@ describe("pulsebot gh tools", () => {
     expect(payload.ok).toBe(false);
     expect(String(payload.error)).toContain("not in allowed list");
     expect(execSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("persists stakeholder metadata on issue creation", async () => {
+    const { api, tools } = createMockApi();
+    registerGhTools(api as never, logger, { ppRepos: ["cloudwarriors-ai/project-pulse"] });
+
+    execSyncMock
+      .mockReturnValueOnce("https://github.com/cloudwarriors-ai/project-pulse/issues/77")
+      .mockReturnValueOnce("https://github.com/cloudwarriors-ai/project-pulse/issues/77#issuecomment-1");
+
+    const tool = tools.find((entry) => entry.name === "gh_create_issue");
+    expect(tool).toBeDefined();
+
+    const result = await tool!.execute("call4", {
+      title: "Webhook timeout",
+      body: "Customer reported a timeout while saving.",
+      reporter: "doug.ruby@cloudwarriors.ai",
+      stakeholders: ["@voipin", "trent.mitchell@cloudwarriors.ai"],
+    });
+    const payload = parseToolJson(result);
+
+    expect(payload.ok).toBe(true);
+    expect(payload.issueNumber).toBe(77);
+    expect(execSyncMock).toHaveBeenCalledTimes(2);
+    expect(String(execSyncMock.mock.calls[1]?.[0])).toContain("gh issue comment 77");
+    const commentInput = String(execSyncMock.mock.calls[1]?.[1]?.input ?? "");
+    expect(commentInput).toContain("Reporter: doug.ruby@cloudwarriors.ai");
+    expect(commentInput).toContain("Stakeholders:");
+  });
+
+  it("closes issues, comments with stakeholders, and reports dm notifications", async () => {
+    const { api, tools } = createMockApi();
+    registerGhTools(api as never, logger, { ppRepos: ["cloudwarriors-ai/project-pulse"] });
+
+    execSyncMock
+      .mockReturnValueOnce(
+        JSON.stringify({
+          number: 88,
+          title: "Fix DM delivery",
+          body: [
+            "<!-- pulsebot:stakeholders:start -->",
+            "Reporter: doug.ruby@cloudwarriors.ai",
+            "Stakeholders: @voipin, trent.mitchell@cloudwarriors.ai",
+            "<!-- pulsebot:stakeholders:end -->",
+          ].join("\n"),
+          comments: [],
+          assignees: [],
+        }),
+      )
+      .mockReturnValueOnce("commented")
+      .mockReturnValueOnce("closed");
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("/oauth/token")) {
+        return {
+          ok: true,
+          json: async () => ({ access_token: "token", expires_in: 3600 }),
+        } as Response;
+      }
+      return {
+        ok: true,
+        text: async () => "",
+      } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    process.env.ZOOM_REPORT_CLIENT_ID = "cid";
+    process.env.ZOOM_REPORT_CLIENT_SECRET = "secret";
+    process.env.ZOOM_REPORT_ACCOUNT_ID = "acct";
+    process.env.ZOOM_REPORT_USER = "doug.ruby@cloudwarriors.ai";
+    process.env.PULSEBOT_STAKEHOLDER_MAP = "voipin=doug.ruby@cloudwarriors.ai";
+
+    const tool = tools.find((entry) => entry.name === "gh_close_issue");
+    expect(tool).toBeDefined();
+
+    const result = await tool!.execute("call5", {
+      number: 88,
+      comment: "Fix deployed to production.",
+    });
+    const payload = parseToolJson(result);
+
+    expect(payload.ok).toBe(true);
+    expect(Array.isArray(payload.notified)).toBe(true);
+    expect((payload.notified as string[]).length).toBeGreaterThan(0);
+    expect(execSyncMock).toHaveBeenCalledTimes(3);
+    expect(String(execSyncMock.mock.calls[2]?.[0])).toContain("gh issue close 88");
   });
 });

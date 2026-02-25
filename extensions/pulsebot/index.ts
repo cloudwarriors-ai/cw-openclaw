@@ -42,7 +42,7 @@ const plugin = {
       }
     });
 
-    console.log("[pulsebot] Registered 17 tools (11 PP + 5 GH + 1 correlation)");
+    console.log("[pulsebot] Registered 18 tools (11 PP + 6 GH + 1 correlation)");
   },
 };
 
