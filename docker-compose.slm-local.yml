@@ -1,0 +1,26 @@
+services:
+  pgvector:
+    image: pgvector/pgvector:pg16
+    container_name: ${SLM_PG_CONTAINER_NAME:-moltbot-pgvector}
+    environment:
+      POSTGRES_DB: ${SLM_PG_DATABASE:-moltbot}
+      POSTGRES_USER: ${SLM_PG_USER:-moltbot}
+      POSTGRES_PASSWORD: ${SLM_PG_PASSWORD:-moltbot_dev_pw}
+    ports:
+      - "${SLM_PG_PORT:-55432}:5432"
+    volumes:
+      - slm_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${SLM_PG_USER:-moltbot} -d ${SLM_PG_DATABASE:-moltbot}",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  slm_pg_data:
