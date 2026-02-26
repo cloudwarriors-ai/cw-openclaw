@@ -1,0 +1,9 @@
+{
+  "id": "memory-pgvector",
+  "kind": "memory",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

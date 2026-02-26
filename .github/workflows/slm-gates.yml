@@ -1,0 +1,154 @@
+name: SLM Gates
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  slm-gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect SLM path changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            slm:
+              - "packages/memory-server/**"
+              - "extensions/memory-pgvector/**"
+              - "extensions/slm-pipeline/**"
+              - "extensions/slm-supervisor/**"
+              - "apps/slm-dashboard/**"
+              - "scripts/slm-local/**"
+              - "docker-compose.slm-local.yml"
+              - "test/slm/**"
+              - "vitest.slm.config.ts"
+              - "vitest.e2e.config.ts"
+              - "vitest.slm.e2e.config.ts"
+              - "vitest.slm.playwright.config.ts"
+              - "package.json"
+              - ".github/workflows/slm-gates.yml"
+            slm_pipeline:
+              - "extensions/slm-pipeline/**"
+              - "apps/slm-dashboard/**"
+              - "scripts/slm-local/seed-fixture-qa.ts"
+              - "scripts/slm-local/seed-forge-qa.ts"
+              - "scripts/slm-local/push-forge-qa-to-gateway.ts"
+              - "scripts/slm-local/smoke-issue-9.sh"
+              - "scripts/slm-local/run-issue-9-check.ts"
+              - "test/slm/slm-pipeline-dashboard.e2e.test.ts"
+            slm_supervisor:
+              - "extensions/slm-supervisor/**"
+              - "scripts/slm-local/smoke-issues-5-6-7.sh"
+              - "scripts/slm-local/run-issues-5-6-7-check.ts"
+              - "test/slm/slm-control-roundtrip.e2e.test.ts"
+            slm_playwright:
+              - "apps/slm-dashboard/**"
+              - "test/slm/**/*.playwright.e2e.test.ts"
+              - "vitest.slm.playwright.config.ts"
+
+      - name: Skip gates for non-SLM PRs
+        if: steps.changes.outputs.slm != 'true'
+        run: echo "No SLM paths changed; slm-gates passing as no-op."
+
+      - name: Setup Node.js
+        if: steps.changes.outputs.slm == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          check-latest: true
+
+      - name: Setup pnpm
+        if: steps.changes.outputs.slm == 'true'
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare pnpm@10.23.0 --activate
+          pnpm -v
+
+      - name: Setup Bun
+        if: steps.changes.outputs.slm == 'true'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        if: steps.changes.outputs.slm == 'true'
+        env:
+          CI: true
+        run: pnpm install --frozen-lockfile --ignore-scripts=false
+
+      - name: SLM DoD contract checks
+        if: steps.changes.outputs.slm == 'true'
+        run: pnpm slm:dod:check
+
+      - name: SLM PR scope hygiene checks
+        if: steps.changes.outputs.slm == 'true' && github.event_name == 'pull_request'
+        env:
+          SLM_SCOPE_BASE_REF: origin/${{ github.base_ref }}
+        run: pnpm slm:scope:check
+
+      - name: Resolve SLM stage
+        if: steps.changes.outputs.slm == 'true'
+        id: stage
+        run: |
+          set -euo pipefail
+          stage="memory"
+          if [ "${{ steps.changes.outputs.slm_supervisor }}" = "true" ]; then
+            stage="full"
+          elif [ "${{ steps.changes.outputs.slm_pipeline }}" = "true" ]; then
+            stage="pipeline"
+          fi
+          echo "slm_stage=${stage}" >> "${GITHUB_OUTPUT}"
+          echo "SLM stage: ${stage}"
+
+      - name: SLM integration
+        if: steps.changes.outputs.slm == 'true'
+        run: pnpm slm:test:integration
+
+      - name: SLM e2e
+        if: steps.changes.outputs.slm == 'true'
+        run: pnpm slm:test:e2e
+
+      - name: Install Playwright Chromium
+        if: steps.changes.outputs.slm == 'true' && steps.stage.outputs.slm_stage != 'memory'
+        run: node node_modules/playwright-core/cli.js install chromium
+
+      - name: SLM Playwright e2e
+        if: steps.changes.outputs.slm == 'true' && steps.stage.outputs.slm_stage != 'memory'
+        run: pnpm slm:test:playwright
+
+      - name: SLM smoke
+        if: steps.changes.outputs.slm == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          case "${{ steps.stage.outputs.slm_stage }}" in
+            memory)
+              SLM_SMOKE_SUMMARY_PATH=artifacts/slm-smoke-summary.json bash scripts/slm-local/smoke.sh
+              ;;
+            pipeline)
+              SLM_SMOKE_SUMMARY_PATH=artifacts/slm-smoke-summary.json bash scripts/slm-local/smoke-issue-9.sh
+              ;;
+            full)
+              SLM_SMOKE_SUMMARY_PATH=artifacts/slm-smoke-summary.json bash scripts/slm-local/smoke-issues-5-6-7.sh
+              ;;
+            *)
+              echo "Unknown slm stage: ${{ steps.stage.outputs.slm_stage }}" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Upload SLM smoke artifact
+        if: always() && steps.changes.outputs.slm == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: slm-smoke-summary
+          path: artifacts/slm-smoke-summary.json
+          if-no-files-found: error
