@@ -71,6 +71,8 @@
     "protocol:gen:swift": "node --import tsx scripts/protocol-gen-swift.ts",
     "release:check": "node --import tsx scripts/release-check.ts",
     "slm:dod:check": "bash scripts/slm-local/dod-check.sh",
+    "slm:docker:gates": "bash scripts/slm-local/slm-gates-docker.sh",
+    "slm:docker:shell": "bash scripts/slm-local/debian-troubleshoot.sh",
     "slm:gates": "pnpm slm:scope:check && pnpm slm:dod:check && pnpm slm:test:integration && pnpm slm:test:e2e && pnpm slm:test:playwright && pnpm slm:test:smoke",
     "slm:scope:check": "bash scripts/slm-local/pr-scope-check.sh",
     "slm:test:e2e": "vitest run --config vitest.slm.e2e.config.ts",

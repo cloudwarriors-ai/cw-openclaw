@@ -28,7 +28,7 @@ export class DatasetBuilderService {
         JSON.stringify({
           tenant_id: params.tenantId,
           split_seed: params.splitSeed,
-          example_ids: examples.map((example) => example.example_id).toSorted(),
+          example_ids: examples.map((example) => example.example_id).slice().sort(),
         }),
       )
       .digest("hex");
@@ -50,6 +50,12 @@ export class DatasetBuilderService {
       tenant_id: record.tenant_id,
       input: record.question,
       target: record.answer,
+      provider_key: record.provider_key,
+      channel_key: record.channel_key,
+      category_id: record.category_id,
+      category_key: record.category_key,
+      status: record.status,
+      origin: record.origin,
       citations: record.citations,
       source_ids: record.source_message_ids,
     };

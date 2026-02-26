@@ -15,6 +15,7 @@ import type {
 import { PipelineAppService, type PipelineReviewEventSink } from "../../extensions/slm-pipeline/src/app-service.js";
 import { registerSlmPipelineGatewayMethods } from "../../extensions/slm-pipeline/src/gateway-methods.js";
 import { InMemoryQaSource } from "../../extensions/slm-pipeline/src/qa-ingest.js";
+import { QaCategoryService } from "../../extensions/slm-pipeline/src/qa-categories.js";
 import { QaProjectionService } from "../../extensions/slm-pipeline/src/qa-projection.js";
 import { emitPipelineReviewEvent } from "../../extensions/slm-pipeline/src/review-events.js";
 import { createSlmPipelineRouter } from "../../extensions/slm-pipeline/src/routes.js";
@@ -48,18 +49,41 @@ describe("slm pipeline + dashboard e2e", () => {
     const harness = await createHarness();
     cleanup.push(harness.close);
 
-    const updated = await harness.invokeGatewayMethod<{ record?: { projection_id?: string } }>(
-      "slm.control.qa.update",
+    const categoryCreate = await harness.invokeGatewayMethod<{ record?: { category_id?: string } }>(
+      "slm.control.category.create",
+      {
+        tenant_id: "tenant-a",
+        provider_key: "zoom",
+        channel_key: "support",
+        category_key: "qa-pipeline-e2e",
+        display_name: "Pipeline E2E",
+      },
+    );
+    const categoryId = categoryCreate.record?.category_id;
+    expect(categoryId).toBeTruthy();
+
+    const created = await harness.invokeGatewayMethod<{ record?: { projection_id?: string } }>(
+      "slm.control.qa.create",
       {
         tenant_id: "tenant-a",
         question: "How do we validate pipeline changes?",
         answer: "Use deterministic fixtures and verify smoke summaries.",
-        source_channel: "zoom",
+        provider_key: "zoom",
+        channel_key: "support",
+        category_id: categoryId,
+        status: "validated",
+        source_channel: "zoom:support",
         source_ref: "zoom-msg-pipeline-e2e",
       },
     );
-    const projectionId = updated.record?.projection_id;
+    const projectionId = created.record?.projection_id;
     expect(projectionId).toBeTruthy();
+
+    const preLogin = await requestJson(harness.dashboardUrl, {
+      method: "GET",
+      path: "/api/slm/qa?limit=10",
+    });
+    expect(preLogin.status).toBe(401);
 
     const login = await requestJson(harness.dashboardUrl, {
       method: "POST",
@@ -174,6 +198,7 @@ async function createHarness(): Promise<Harness> {
 
   const router = createSlmPipelineRouter({ qaSource });
   const memoryClient = resolveMemoryServerClientFromEnv(env);
+  const categoryService = new QaCategoryService(memoryClient);
   const qaProjectionService = new QaProjectionService(memoryClient);
   const reviewEventSink: PipelineReviewEventSink = {
     emitApprovedEvent: async (input) => {
@@ -196,7 +221,12 @@ async function createHarness(): Promise<Harness> {
       };
     },
   };
-  const appService = new PipelineAppService(router, qaProjectionService, reviewEventSink);
+  const appService = new PipelineAppService(
+    router,
+    categoryService,
+    qaProjectionService,
+    reviewEventSink,
+  );
 
   const gatewayHandlers = new Map<string, GatewayHandler>();
   const api = {
@@ -214,7 +244,7 @@ async function createHarness(): Promise<Harness> {
     if (!handler) {
       throw new Error(`gateway method not registered: ${method}`);
     }
-    let result: { ok: boolean; payload: unknown } | null = null;
+    const responses: Array<{ ok: boolean; payload: unknown }> = [];
     await handler({
       params,
       client: {
@@ -225,22 +255,27 @@ async function createHarness(): Promise<Harness> {
         },
       },
       respond: (ok, payload) => {
-        result = { ok, payload };
+        responses.push({ ok, payload });
       },
     });
-    if (!result) {
+    const finalResult = responses[0];
+    if (!finalResult) {
       throw new Error(`gateway method returned no result: ${method}`);
     }
-    if (!result.ok) {
-      throw new Error(`gateway method failed (${method}): ${JSON.stringify(result.payload)}`);
+    if (!finalResult.ok) {
+      throw new Error(`gateway method failed (${method}): ${JSON.stringify(finalResult.payload)}`);
     }
-    return result.payload as T;
+    return finalResult.payload as T;
   };
 
+  const request: GatewayMethodClient["request"] = async <T>(
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<T> => {
+    return await invokeGatewayMethod<T>(method, params);
+  };
   const gatewayClient: GatewayMethodClient = {
-    request: async (method, params) => {
-      return await invokeGatewayMethod(method, params);
-    },
+    request,
   };
   const dashboardConfig: DashboardConfig = {
     port: 0,
@@ -257,6 +292,7 @@ async function createHarness(): Promise<Harness> {
         passwordHash: createPasswordHash("pass123"),
         tenantId: memoryTenant,
         displayName: "Operator",
+        role: "trainer",
       },
     ],
   };

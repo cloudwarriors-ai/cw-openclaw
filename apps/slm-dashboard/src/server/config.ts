@@ -1,12 +1,21 @@
 import * as z from "zod";
-import type { DashboardConfig, DashboardUser } from "./types.js";
+import type { DashboardConfig, DashboardRole, DashboardUser } from "./types.js";
 
 const userSchema = z.object({
   username: z.string().trim().min(1).max(64),
   password_hash: z.string().trim().min(1).max(1024),
   tenant_id: z.string().trim().min(1).max(256),
   display_name: z.string().trim().min(1).max(128).optional(),
+  role: z.enum(["operator", "trainer", "admin"]).optional(),
 });
+
+function parseRole(value: string | undefined): DashboardRole {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "trainer" || normalized === "admin") {
+    return normalized;
+  }
+  return "operator";
+}
 
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {
   if (!value) {
@@ -32,6 +41,7 @@ function parseUsers(env: NodeJS.ProcessEnv): DashboardUser[] {
       passwordHash: entry.password_hash,
       tenantId: entry.tenant_id,
       displayName: entry.display_name,
+      role: entry.role ?? "operator",
     }));
   }
 
@@ -39,6 +49,7 @@ function parseUsers(env: NodeJS.ProcessEnv): DashboardUser[] {
   const passwordHash = env.SLM_DASHBOARD_PASSWORD_HASH?.trim();
   const tenantId = env.SLM_DASHBOARD_TENANT_ID?.trim();
   const displayName = env.SLM_DASHBOARD_DISPLAY_NAME?.trim();
+  const role = parseRole(env.SLM_DASHBOARD_ROLE);
   if (username && passwordHash && tenantId) {
     return [
       {
@@ -46,6 +57,7 @@ function parseUsers(env: NodeJS.ProcessEnv): DashboardUser[] {
         passwordHash,
         tenantId,
         displayName: displayName || undefined,
+        role,
       },
     ];
   }

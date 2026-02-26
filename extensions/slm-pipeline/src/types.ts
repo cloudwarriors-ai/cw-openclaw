@@ -9,11 +9,19 @@ import type {
 
 export type TrainingRunStatus = "queued" | "running" | "succeeded" | "failed" | "canceled";
 export type EvalReviewState = "pending" | "in_review" | "completed" | "discarded";
+export type QaRecordStatus = "draft" | "validated" | "archived";
+export type QaRecordOrigin = "manual" | "studio" | "import";
 
 export type ApprovedQaRecord = {
   example_id: string;
   tenant_id: string;
   source_channel: string;
+  provider_key?: string;
+  channel_key?: string;
+  category_id?: string;
+  category_key?: string;
+  status?: QaRecordStatus;
+  origin?: QaRecordOrigin;
   source_message_ids: string[];
   question: string;
   answer: string;
@@ -27,6 +35,12 @@ export type DatasetExample = {
   tenant_id: string;
   input: string;
   target: string;
+  provider_key?: string;
+  channel_key?: string;
+  category_id?: string;
+  category_key?: string;
+  status?: QaRecordStatus;
+  origin?: QaRecordOrigin;
   citations: string[];
   source_ids: string[];
 };
@@ -91,12 +105,31 @@ export type QaProjectionRecord = {
   tenant_id: string;
   question: string;
   answer: string;
+  provider_key?: string;
+  channel_key?: string;
+  category_id?: string;
+  category_key?: string;
+  status: QaRecordStatus;
+  origin: QaRecordOrigin;
   source_channel?: string;
   source_ref?: string;
   trace_id?: string;
   ref_id?: string;
   actor?: ReviewActionActor;
   approved_at: string;
+  updated_at: string;
+};
+
+export type QaCategoryRecord = {
+  category_id: string;
+  tenant_id: string;
+  provider_key: string;
+  channel_key: string;
+  category_key: string;
+  display_name: string;
+  is_active: boolean;
+  sort_order: number;
+  created_at: string;
   updated_at: string;
 };
 

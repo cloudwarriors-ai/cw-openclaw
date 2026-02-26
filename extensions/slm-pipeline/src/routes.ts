@@ -11,7 +11,14 @@ import { InMemoryQaSource, QaIngestService, type QaSource } from "./qa-ingest.js
 import {
   applyFeedbackSchema,
   buildDatasetSchema,
+  categoryCreateSchema,
+  categoryListSchema,
+  categoryUpdateSchema,
   importQaSchema,
+  qaCreateSchema,
+  qaGetSchema,
+  qaListSchema,
+  qaUpdateByIdSchema,
   startTrainingRunSchema,
   submitReviewSchema,
 } from "./schemas.js";
@@ -25,7 +32,7 @@ import {
   TrainingOrchestratorService,
   type TrainingExecutor,
 } from "./training-orchestrator.js";
-import type { SlmPipelineState } from "./types.js";
+import type { QaCategoryRecord, QaProjectionRecord, SlmPipelineState } from "./types.js";
 
 export type SlmPipelineRequest = {
   method: string;
@@ -45,11 +52,80 @@ export type SlmPipelineRouter = {
   handle: (request: SlmPipelineRequest) => Promise<SlmPipelineResponse>;
 };
 
+export type SlmPipelineLibraryApi = {
+  listCategories: (params: {
+    tenantId: string;
+    providerKey?: string;
+    channelKey?: string;
+    includeInactive?: boolean;
+    cursor?: string;
+    limit?: number;
+  }) => Promise<{ records: QaCategoryRecord[]; next_cursor: string | null }>;
+  createCategory: (params: {
+    tenantId: string;
+    providerKey: string;
+    channelKey: string;
+    categoryKey: string;
+    displayName: string;
+    sortOrder?: number;
+  }) => Promise<QaCategoryRecord>;
+  updateCategory: (params: {
+    tenantId: string;
+    categoryId: string;
+    displayName?: string;
+    isActive?: boolean;
+    sortOrder?: number;
+  }) => Promise<QaCategoryRecord | null>;
+  listQa: (params: {
+    tenantId: string;
+    providerKey?: string;
+    channelKey?: string;
+    categoryId?: string;
+    status?: "draft" | "validated" | "archived";
+    cursor?: string;
+    limit?: number;
+    query?: string;
+  }) => Promise<{ records: QaProjectionRecord[]; next_cursor: string | null }>;
+  createQa: (params: {
+    tenantId: string;
+    question: string;
+    answer: string;
+    providerKey: string;
+    channelKey: string;
+    categoryId: string;
+    categoryKey?: string;
+    status?: "draft" | "validated" | "archived";
+    origin?: "manual" | "studio" | "import";
+    sourceChannel?: string;
+    sourceRef?: string;
+    traceId?: string;
+    refId?: string;
+  }) => Promise<QaProjectionRecord>;
+  updateQaById: (params: {
+    tenantId: string;
+    projectionId: string;
+    question?: string;
+    answer?: string;
+    providerKey?: string;
+    channelKey?: string;
+    categoryId?: string;
+    categoryKey?: string;
+    status?: "draft" | "validated" | "archived";
+    origin?: "manual" | "studio" | "import";
+    sourceChannel?: string;
+    sourceRef?: string;
+    traceId?: string;
+    refId?: string;
+  }) => Promise<QaProjectionRecord | null>;
+  getQa: (params: { tenantId: string; projectionId: string }) => Promise<QaProjectionRecord | null>;
+};
+
 export function createSlmPipelineRouter(params?: {
   qaSource?: QaSource;
   stateStore?: SlmPipelineStateStore;
   trainingExecutor?: TrainingExecutor;
   eventSink?: SlmPipelineEventSink;
+  libraryApi?: SlmPipelineLibraryApi;
 }): SlmPipelineRouter {
   const qaSource = params?.qaSource ?? new InMemoryQaSource();
   const stateStore = params?.stateStore ?? new InMemorySlmPipelineStateStore();
@@ -59,6 +135,7 @@ export function createSlmPipelineRouter(params?: {
   const humanEval = new HumanEvalService();
   const feedbackMerge = new FeedbackMergeService();
   const eventSink = params?.eventSink ?? new NoopSlmPipelineEventSink();
+  const libraryApi = params?.libraryApi;
   const state = createInitialSlmPipelineState();
   const inFlightIdempotency = new Set<string>();
 
@@ -72,6 +149,160 @@ export function createSlmPipelineRouter(params?: {
         const query = request.query ?? new URL(request.path, "http://localhost").searchParams;
         const path = normalizePath(request.path);
         const tenantId = requireTenantId(request.headers?.authorization);
+
+        if (libraryApi) {
+          if (method === "GET" && path === "/v1/slm/categories") {
+            const payload = categoryListSchema.parse({
+              tenant_id: query.get("tenant_id") ?? "",
+              provider_key: emptyToUndefined(query.get("provider_key")),
+              channel_key: emptyToUndefined(query.get("channel_key")),
+              include_inactive: readBooleanQuery(query.get("include_inactive"), false),
+              cursor: emptyToUndefined(query.get("cursor")),
+              limit: readPositiveInt(query.get("limit"), 50),
+            });
+            assertTenant(payload.tenant_id, tenantId);
+            const listed = await libraryApi.listCategories({
+              tenantId,
+              providerKey: payload.provider_key,
+              channelKey: payload.channel_key,
+              includeInactive: payload.include_inactive,
+              cursor: payload.cursor,
+              limit: payload.limit,
+            });
+            return ok(traceId, listed);
+          }
+
+          if (method === "POST" && path === "/v1/slm/categories") {
+            const payload = categoryCreateSchema.parse(request.body ?? {});
+            assertTenant(payload.tenant_id, tenantId);
+            const record = await libraryApi.createCategory({
+              tenantId,
+              providerKey: payload.provider_key,
+              channelKey: payload.channel_key,
+              categoryKey: payload.category_key,
+              displayName: payload.display_name,
+              sortOrder: payload.sort_order,
+            });
+            return ok(traceId, { record });
+          }
+
+          const categoryId = parsePathParam(path, "/v1/slm/categories/");
+          if (method === "PATCH" && categoryId) {
+            const payload = categoryUpdateSchema.parse({
+              ...(request.body && typeof request.body === "object" && !Array.isArray(request.body)
+                ? request.body
+                : {}),
+              tenant_id: (request.body as { tenant_id?: string } | undefined)?.tenant_id ?? "",
+              category_id: categoryId,
+            });
+            assertTenant(payload.tenant_id, tenantId);
+            const record = await libraryApi.updateCategory({
+              tenantId,
+              categoryId,
+              displayName: payload.display_name,
+              isActive: payload.is_active,
+              sortOrder: payload.sort_order,
+            });
+            if (!record) {
+              throw new SlmPipelineError(404, "category_not_found", "category not found");
+            }
+            return ok(traceId, { record });
+          }
+
+          if (method === "GET" && path === "/v1/slm/qa") {
+            const payload = qaListSchema.parse({
+              tenant_id: query.get("tenant_id") ?? "",
+              provider_key: emptyToUndefined(query.get("provider_key")),
+              channel_key: emptyToUndefined(query.get("channel_key")),
+              category_id: emptyToUndefined(query.get("category_id")),
+              status: emptyToUndefined(query.get("status")),
+              cursor: emptyToUndefined(query.get("cursor")),
+              limit: readPositiveInt(query.get("limit"), 50),
+              query: emptyToUndefined(query.get("query")),
+            });
+            assertTenant(payload.tenant_id, tenantId);
+            const listed = await libraryApi.listQa({
+              tenantId,
+              providerKey: payload.provider_key,
+              channelKey: payload.channel_key,
+              categoryId: payload.category_id,
+              status: payload.status,
+              cursor: payload.cursor,
+              limit: payload.limit,
+              query: payload.query,
+            });
+            return ok(traceId, listed);
+          }
+
+          if (method === "POST" && path === "/v1/slm/qa") {
+            const payload = qaCreateSchema.parse(request.body ?? {});
+            assertTenant(payload.tenant_id, tenantId);
+            const record = await libraryApi.createQa({
+              tenantId,
+              question: payload.question,
+              answer: payload.answer,
+              providerKey: payload.provider_key,
+              channelKey: payload.channel_key,
+              categoryId: payload.category_id,
+              categoryKey: payload.category_key,
+              status: payload.status,
+              origin: payload.origin,
+              sourceChannel: payload.source_channel,
+              sourceRef: payload.source_ref,
+              traceId: payload.trace_id,
+              refId: payload.ref_id,
+            });
+            return ok(traceId, { record });
+          }
+
+          const projectionId = parsePathParam(path, "/v1/slm/qa/");
+          if (projectionId && method === "GET") {
+            const payload = qaGetSchema.parse({
+              tenant_id: query.get("tenant_id") ?? "",
+              projection_id: projectionId,
+            });
+            assertTenant(payload.tenant_id, tenantId);
+            const record = await libraryApi.getQa({
+              tenantId,
+              projectionId: payload.projection_id,
+            });
+            if (!record) {
+              throw new SlmPipelineError(404, "qa_not_found", "qa record not found");
+            }
+            return ok(traceId, { record });
+          }
+
+          if (projectionId && method === "PUT") {
+            const payload = qaUpdateByIdSchema.parse({
+              ...(request.body && typeof request.body === "object" && !Array.isArray(request.body)
+                ? request.body
+                : {}),
+              tenant_id: (request.body as { tenant_id?: string } | undefined)?.tenant_id ?? "",
+              projection_id: projectionId,
+            });
+            assertTenant(payload.tenant_id, tenantId);
+            const record = await libraryApi.updateQaById({
+              tenantId,
+              projectionId: payload.projection_id,
+              question: payload.question,
+              answer: payload.answer,
+              providerKey: payload.provider_key,
+              channelKey: payload.channel_key,
+              categoryId: payload.category_id,
+              categoryKey: payload.category_key,
+              status: payload.status,
+              origin: payload.origin,
+              sourceChannel: payload.source_channel,
+              sourceRef: payload.source_ref,
+              traceId: payload.trace_id,
+              refId: payload.ref_id,
+            });
+            if (!record) {
+              throw new SlmPipelineError(404, "qa_not_found", "qa record not found");
+            }
+            return ok(traceId, { record });
+          }
+        }
 
         if (method === "POST" && path === "/v1/slm/qa-events/import") {
           const payload = importQaSchema.parse(request.body ?? {});
@@ -345,6 +576,39 @@ function normalizePath(pathname: string): string {
   const parsed = new URL(pathname, "http://localhost");
   const normalized = parsed.pathname.replace(/\/+$/, "");
   return normalized || "/";
+}
+
+function emptyToUndefined(raw: string | null): string | undefined {
+  if (!raw) {
+    return undefined;
+  }
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function readBooleanQuery(raw: string | null, fallback: boolean): boolean {
+  if (!raw) {
+    return fallback;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "1" || normalized === "true" || normalized === "yes") {
+    return true;
+  }
+  if (normalized === "0" || normalized === "false" || normalized === "no") {
+    return false;
+  }
+  return fallback;
+}
+
+function readPositiveInt(raw: string | null, fallback: number): number {
+  if (!raw) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
 }
 
 function parsePathParam(pathname: string, prefix: string): string | null {

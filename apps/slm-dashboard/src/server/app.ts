@@ -5,7 +5,13 @@ import * as z from "zod";
 import { clearSessionCookie, parseCookieHeader, setSessionCookie } from "./cookies.js";
 import { verifyPasswordHash } from "./password.js";
 import { InMemorySessionStore } from "./session-store.js";
-import type { Clock, DashboardConfig, GatewayMethodClient, SessionRecord } from "./types.js";
+import type {
+  Clock,
+  DashboardConfig,
+  DashboardRole,
+  GatewayMethodClient,
+  SessionRecord,
+} from "./types.js";
 
 type RequestWithSession = Request & { session: SessionRecord };
 
@@ -25,13 +31,122 @@ const loginBodySchema = z.object({
   password: z.string().min(1).max(512),
 });
 
+const keyFieldSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z0-9][a-z0-9_.-]*$/i, "must use a slug-like key");
+
+const qaStatusSchema = z.enum(["draft", "validated", "archived"]);
+const qaOriginSchema = z.enum(["manual", "studio", "import"]);
+
 const qaListQuerySchema = z.object({
+  provider_key: keyFieldSchema.optional(),
+  channel_key: keyFieldSchema.optional(),
+  category_id: z.string().uuid().optional(),
+  status: qaStatusSchema.optional(),
   cursor: z.string().trim().min(1).optional(),
   limit: z.coerce.number().int().min(1).max(200).optional(),
   query: z.string().trim().min(1).max(4_000).optional(),
 });
 
+const categoryListQuerySchema = z.object({
+  provider_key: keyFieldSchema.optional(),
+  channel_key: keyFieldSchema.optional(),
+  include_inactive: z.preprocess((value) => {
+    if (value === undefined || typeof value === "boolean") {
+      return value;
+    }
+    if (typeof value !== "string") {
+      return value;
+    }
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+    if (["0", "false", "no", "off"].includes(normalized)) {
+      return false;
+    }
+    return value;
+  }, z.boolean().optional()),
+  cursor: z.string().trim().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+});
+
 const projectionIdSchema = z.string().uuid();
+
+const categoryCreateBodySchema = z.object({
+  provider_key: keyFieldSchema,
+  channel_key: keyFieldSchema,
+  category_key: keyFieldSchema,
+  display_name: z.string().trim().min(1).max(128),
+  sort_order: z.number().int().min(0).max(100_000).optional(),
+});
+
+const categoryUpdateFieldsSchema = z
+  .object({
+    display_name: z.string().trim().min(1).max(128).optional(),
+    is_active: z.boolean().optional(),
+    sort_order: z.number().int().min(0).max(100_000).optional(),
+  })
+  .refine(
+    (body) =>
+      body.display_name !== undefined || body.is_active !== undefined || body.sort_order !== undefined,
+    "at least one category field must be provided",
+  );
+
+const categoryUpdateBodySchema = categoryUpdateFieldsSchema.extend({
+  category_id: z.string().uuid(),
+});
+
+const qaCreateBodySchema = z.object({
+  question: z.string().trim().min(1).max(4_000),
+  answer: z.string().trim().min(1).max(12_000),
+  provider_key: keyFieldSchema,
+  channel_key: keyFieldSchema,
+  category_id: z.string().uuid(),
+  category_key: keyFieldSchema.optional(),
+  status: qaStatusSchema.optional(),
+  origin: qaOriginSchema.optional(),
+  source_channel: z.string().trim().min(1).max(200).optional(),
+  source_ref: z.string().trim().min(1).max(512).optional(),
+  trace_id: z.string().uuid().optional(),
+  ref_id: z.string().trim().min(1).max(200).optional(),
+});
+
+const qaUpdateByIdBodySchema = z
+  .object({
+    projection_id: z.string().uuid(),
+    question: z.string().trim().min(1).max(4_000).optional(),
+    answer: z.string().trim().min(1).max(12_000).optional(),
+    provider_key: keyFieldSchema.optional(),
+    channel_key: keyFieldSchema.optional(),
+    category_id: z.string().uuid().optional(),
+    category_key: keyFieldSchema.optional(),
+    status: qaStatusSchema.optional(),
+    origin: qaOriginSchema.optional(),
+    source_channel: z.string().trim().min(1).max(200).optional(),
+    source_ref: z.string().trim().min(1).max(512).optional(),
+    trace_id: z.string().uuid().optional(),
+    ref_id: z.string().trim().min(1).max(200).optional(),
+  })
+  .refine(
+    (body) =>
+      body.question !== undefined ||
+      body.answer !== undefined ||
+      body.provider_key !== undefined ||
+      body.channel_key !== undefined ||
+      body.category_id !== undefined ||
+      body.category_key !== undefined ||
+      body.status !== undefined ||
+      body.origin !== undefined ||
+      body.source_channel !== undefined ||
+      body.source_ref !== undefined ||
+      body.trace_id !== undefined ||
+      body.ref_id !== undefined,
+    "at least one QA field must be provided",
+  );
 
 const qaUpdateBodySchema = z.object({
   question: z.string().trim().min(1).max(4_000).optional(),
@@ -59,6 +174,11 @@ const finishSessionSchema = z.object({
 
 const trainingSchema = z.object({
   base_model: z.string().trim().min(1).max(256),
+  source: z.enum(["zoom", "library"]).optional(),
+  provider_key: keyFieldSchema.optional(),
+  channel_key: keyFieldSchema.optional(),
+  category_id: z.string().uuid().optional(),
+  status: qaStatusSchema.optional(),
   split_seed: z.number().int().min(1).optional(),
   idempotency_key: z.string().trim().min(8).max(128).optional(),
 });
@@ -96,6 +216,13 @@ function parseProjectionId(id: string): string {
     throw new ApiError(400, "invalid_request", "projection id must be a UUID");
   }
   return parsed.data;
+}
+
+function firstParam(value: string | string[] | undefined): string {
+  if (Array.isArray(value)) {
+    return value[0] ?? "";
+  }
+  return value ?? "";
 }
 
 function findUser(config: DashboardConfig, username: string) {
@@ -146,6 +273,21 @@ function getRequiredSession(req: Request): SessionRecord {
   return session;
 }
 
+function getSessionRole(session: SessionRecord): DashboardRole {
+  return session.role ?? "operator";
+}
+
+function requireTrainerOrAdmin(req: Request, res: Response, next: NextFunction): void {
+  const requestId = withRequestId(req);
+  const session = getRequiredSession(req);
+  const role = getSessionRole(session);
+  if (role === "trainer" || role === "admin") {
+    next();
+    return;
+  }
+  jsonError(res, requestId, 403, "forbidden", "trainer or admin role required");
+}
+
 function requireSession(
   req: Request,
   res: Response,
@@ -161,6 +303,25 @@ function requireSession(
   }
   (req as RequestWithSession).session = session;
   next();
+}
+
+async function updateCategoryThroughGateway(params: {
+  gatewayClient: GatewayMethodClient;
+  session: SessionRecord;
+  categoryId: string;
+  body: { display_name?: string; is_active?: boolean; sort_order?: number };
+}): Promise<{ record: unknown }> {
+  return await invokeGateway<{ record: unknown }>(
+    params.gatewayClient,
+    "slm.control.category.update",
+    {
+      tenant_id: params.session.tenantId,
+      category_id: params.categoryId,
+      display_name: params.body.display_name,
+      is_active: params.body.is_active,
+      sort_order: params.body.sort_order,
+    },
+  );
 }
 
 export function createSlmDashboardApp(params: {
@@ -192,6 +353,7 @@ export function createSlmDashboardApp(params: {
         tenantId: user.tenantId,
         displayName: user.displayName,
       });
+      session.role = user.role;
       setSessionCookie({
         res,
         cookieName: params.config.cookieName,
@@ -206,6 +368,7 @@ export function createSlmDashboardApp(params: {
           username: session.username,
           tenant_id: session.tenantId,
           display_name: session.displayName,
+          role: getSessionRole(session),
         },
       });
     } catch (error) {
@@ -241,6 +404,7 @@ export function createSlmDashboardApp(params: {
         username: session.username,
         tenant_id: session.tenantId,
         display_name: session.displayName,
+        role: getSessionRole(session),
       },
     });
   });
@@ -248,6 +412,110 @@ export function createSlmDashboardApp(params: {
   app.use("/api/slm", (req, res, next) =>
     requireSession(req, res, next, sessionStore, params.config),
   );
+
+  app.get("/api/slm/categories", async (req, res) => {
+    const requestId = withRequestId(req);
+    try {
+      const query = categoryListQuerySchema.parse(req.query);
+      const session = getRequiredSession(req);
+      const payload = await invokeGateway<{ records: unknown[]; next_cursor: string | null }>(
+        params.gatewayClient,
+        "slm.control.category.list",
+        {
+          tenant_id: session.tenantId,
+          provider_key: query.provider_key,
+          channel_key: query.channel_key,
+          include_inactive: query.include_inactive,
+          cursor: query.cursor,
+          limit: query.limit,
+        },
+      );
+      res.status(200).json({
+        ok: true,
+        request_id: requestId,
+        data: payload,
+        trace: { gateway_method: "slm.control.category.list" },
+      });
+    } catch (error) {
+      handleApiError(error, res, requestId);
+    }
+  });
+
+  app.post("/api/slm/categories", requireTrainerOrAdmin, async (req, res) => {
+    const requestId = withRequestId(req);
+    try {
+      const session = getRequiredSession(req);
+      const body = parseRequestBody(categoryCreateBodySchema, req.body);
+      const payload = await invokeGateway<{ record: unknown }>(
+        params.gatewayClient,
+        "slm.control.category.create",
+        {
+          tenant_id: session.tenantId,
+          provider_key: body.provider_key,
+          channel_key: body.channel_key,
+          category_key: body.category_key,
+          display_name: body.display_name,
+          sort_order: body.sort_order,
+        },
+      );
+      res.status(200).json({
+        ok: true,
+        request_id: requestId,
+        data: payload,
+        trace: { gateway_method: "slm.control.category.create" },
+      });
+    } catch (error) {
+      handleApiError(error, res, requestId);
+    }
+  });
+
+  app.patch("/api/slm/categories", requireTrainerOrAdmin, async (req, res) => {
+    const requestId = withRequestId(req);
+    try {
+      const session = getRequiredSession(req);
+      const body = parseRequestBody(categoryUpdateBodySchema, req.body);
+      const payload = await updateCategoryThroughGateway({
+        gatewayClient: params.gatewayClient,
+        session,
+        categoryId: body.category_id,
+        body,
+      });
+      res.status(200).json({
+        ok: true,
+        request_id: requestId,
+        data: payload,
+        trace: { gateway_method: "slm.control.category.update" },
+      });
+    } catch (error) {
+      handleApiError(error, res, requestId);
+    }
+  });
+
+  app.patch("/api/slm/categories/:categoryId", requireTrainerOrAdmin, async (req, res) => {
+    const requestId = withRequestId(req);
+    try {
+      const session = getRequiredSession(req);
+      const categoryId = parseRequestBody(
+        z.object({ category_id: z.string().uuid() }),
+        { category_id: firstParam(req.params.categoryId) },
+      ).category_id;
+      const body = parseRequestBody(categoryUpdateFieldsSchema, req.body);
+      const payload = await updateCategoryThroughGateway({
+        gatewayClient: params.gatewayClient,
+        session,
+        categoryId,
+        body,
+      });
+      res.status(200).json({
+        ok: true,
+        request_id: requestId,
+        data: payload,
+        trace: { gateway_method: "slm.control.category.update" },
+      });
+    } catch (error) {
+      handleApiError(error, res, requestId);
+    }
+  });
 
   app.get("/api/slm/qa", async (req, res) => {
     const requestId = withRequestId(req);
@@ -259,6 +527,10 @@ export function createSlmDashboardApp(params: {
         "slm.control.qa.list",
         {
           tenant_id: session.tenantId,
+          provider_key: query.provider_key,
+          channel_key: query.channel_key,
+          category_id: query.category_id,
+          status: query.status,
           cursor: query.cursor,
           limit: query.limit,
           query: query.query,
@@ -275,11 +547,82 @@ export function createSlmDashboardApp(params: {
     }
   });
 
+  app.post("/api/slm/qa", requireTrainerOrAdmin, async (req, res) => {
+    const requestId = withRequestId(req);
+    try {
+      const session = getRequiredSession(req);
+      const body = parseRequestBody(qaCreateBodySchema, req.body);
+      const payload = await invokeGateway<{ record: unknown }>(
+        params.gatewayClient,
+        "slm.control.qa.create",
+        {
+          tenant_id: session.tenantId,
+          question: body.question,
+          answer: body.answer,
+          provider_key: body.provider_key,
+          channel_key: body.channel_key,
+          category_id: body.category_id,
+          category_key: body.category_key,
+          status: body.status,
+          origin: body.origin,
+          source_channel: body.source_channel,
+          source_ref: body.source_ref,
+          trace_id: body.trace_id,
+          ref_id: body.ref_id,
+        },
+      );
+      res.status(200).json({
+        ok: true,
+        request_id: requestId,
+        data: payload,
+        trace: { gateway_method: "slm.control.qa.create" },
+      });
+    } catch (error) {
+      handleApiError(error, res, requestId);
+    }
+  });
+
+  app.put("/api/slm/qa", requireTrainerOrAdmin, async (req, res) => {
+    const requestId = withRequestId(req);
+    try {
+      const session = getRequiredSession(req);
+      const body = parseRequestBody(qaUpdateByIdBodySchema, req.body);
+      const payload = await invokeGateway<{ record: unknown }>(
+        params.gatewayClient,
+        "slm.control.qa.updateById",
+        {
+          tenant_id: session.tenantId,
+          projection_id: body.projection_id,
+          question: body.question,
+          answer: body.answer,
+          provider_key: body.provider_key,
+          channel_key: body.channel_key,
+          category_id: body.category_id,
+          category_key: body.category_key,
+          status: body.status,
+          origin: body.origin,
+          source_channel: body.source_channel,
+          source_ref: body.source_ref,
+          trace_id: body.trace_id,
+          ref_id: body.ref_id,
+        },
+      );
+      res.status(200).json({
+        ok: true,
+        request_id: requestId,
+        data: payload,
+        trace: { gateway_method: "slm.control.qa.updateById" },
+      });
+    } catch (error) {
+      handleApiError(error, res, requestId);
+    }
+  });
+
   app.get("/api/slm/qa/:projectionId", async (req, res) => {
     const requestId = withRequestId(req);
     try {
       const session = getRequiredSession(req);
-      const projectionId = parseProjectionId(req.params.projectionId ?? "");
+      const projectionId = parseProjectionId(firstParam(req.params.projectionId));
       const payload = await invokeGateway<{ record?: unknown }>(
         params.gatewayClient,
         "slm.control.qa.get",
@@ -302,11 +645,11 @@ export function createSlmDashboardApp(params: {
     }
   });
 
-  app.put("/api/slm/qa/:projectionId", async (req, res) => {
+  app.put("/api/slm/qa/:projectionId", requireTrainerOrAdmin, async (req, res) => {
     const requestId = withRequestId(req);
     try {
       const session = getRequiredSession(req);
-      const projectionId = parseProjectionId(req.params.projectionId ?? "");
+      const projectionId = parseProjectionId(firstParam(req.params.projectionId));
       const body = parseRequestBody(qaUpdateBodySchema, req.body);
       const methods = ["slm.control.qa.update"];
       let question = body.question;
@@ -427,7 +770,7 @@ export function createSlmDashboardApp(params: {
     }
   });
 
-  app.post("/api/slm/training/enqueue", async (req, res) => {
+  app.post("/api/slm/training/enqueue", requireTrainerOrAdmin, async (req, res) => {
     const requestId = withRequestId(req);
     try {
       const session = getRequiredSession(req);
@@ -440,6 +783,11 @@ export function createSlmDashboardApp(params: {
       }>(params.gatewayClient, "slm.control.training.enqueue", {
         tenant_id: session.tenantId,
         base_model: body.base_model,
+        source: body.source,
+        provider_key: body.provider_key,
+        channel_key: body.channel_key,
+        category_id: body.category_id,
+        status: body.status,
         split_seed: body.split_seed,
         idempotency_key: body.idempotency_key,
       });

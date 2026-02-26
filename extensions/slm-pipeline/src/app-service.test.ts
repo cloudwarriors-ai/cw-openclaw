@@ -13,6 +13,8 @@ function makeProjection(params: {
     tenant_id: params.tenantId,
     question: params.question,
     answer: params.answer,
+    status: "validated",
+    origin: "manual",
     approved_at: "2026-02-24T00:00:00.000Z",
     updated_at: "2026-02-24T00:00:00.000Z",
   };
@@ -56,6 +58,12 @@ describe("PipelineAppService", () => {
         handle: vi.fn(),
       },
       {
+        list: vi.fn(),
+        create: vi.fn(),
+        update: vi.fn(),
+        getById: vi.fn(),
+      } as never,
+      {
         list,
         getById: vi.fn(),
         upsertCurrentAnswer: vi.fn(),
@@ -81,6 +89,12 @@ describe("PipelineAppService", () => {
         state: {} as never,
         handle: vi.fn(),
       },
+      {
+        list: vi.fn(),
+        create: vi.fn(),
+        update: vi.fn(),
+        getById: vi.fn(),
+      } as never,
       {
         list: vi.fn(),
         getById: vi.fn(),
@@ -134,6 +148,12 @@ describe("PipelineAppService", () => {
       },
       {
         list: vi.fn(),
+        create: vi.fn(),
+        update: vi.fn(),
+        getById: vi.fn(),
+      } as never,
+      {
+        list: vi.fn(),
         getById: vi.fn(),
         upsertCurrentAnswer: vi.fn(),
       } as never,
@@ -170,5 +190,74 @@ describe("PipelineAppService", () => {
         path: "/v1/slm/training/runs",
       }),
     );
+  });
+
+  it("rejects createQa when category does not exist for tenant", async () => {
+    const app = new PipelineAppService(
+      {
+        state: {} as never,
+        handle: vi.fn(),
+      },
+      {
+        list: vi.fn(),
+        create: vi.fn(),
+        update: vi.fn(),
+        getById: vi.fn(async () => null),
+      } as never,
+      {
+        create: vi.fn(),
+      } as never,
+      {
+        emitApprovedEvent: vi.fn(),
+      },
+    );
+
+    await expect(
+      app.createQa({
+        tenantId: "tenant-a",
+        question: "Q",
+        answer: "A",
+        providerKey: "zoom",
+        channelKey: "support",
+        categoryId: "bf3534bc-f6de-4a38-b506-2edcbf827666",
+      }),
+    ).rejects.toThrow("category not found");
+  });
+
+  it("rejects updateQaById when target category does not exist", async () => {
+    const app = new PipelineAppService(
+      {
+        state: {} as never,
+        handle: vi.fn(),
+      },
+      {
+        list: vi.fn(),
+        create: vi.fn(),
+        update: vi.fn(),
+        getById: vi.fn(async () => null),
+      } as never,
+      {
+        getById: vi.fn(async () =>
+          makeProjection({
+            projectionId: "9c42f9a2-8eda-4cb4-947a-62eb69f7b742",
+            tenantId: "tenant-a",
+            question: "Q",
+            answer: "A",
+          }),
+        ),
+      } as never,
+      {
+        emitApprovedEvent: vi.fn(),
+      },
+    );
+
+    await expect(
+      app.updateQaById({
+        tenantId: "tenant-a",
+        projectionId: "9c42f9a2-8eda-4cb4-947a-62eb69f7b742",
+        categoryId: "8ff5af4d-031e-4134-ae86-1525dcbcc0f7",
+        answer: "Updated",
+      }),
+    ).rejects.toThrow("category not found");
   });
 });

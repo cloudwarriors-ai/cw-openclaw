@@ -38,4 +38,11 @@ rg -q "\"slm:test:playwright\"" package.json
 rg -q "\"slm:test:smoke\"" package.json
 rg -q "\"slm:scope:check\"" package.json
 
+echo "[slm-dod] validating api-first category and qa contracts..."
+rg -F -q "/v1/slm/categories" docs/experiments/contracts/slm-control-plane.openapi.yaml
+rg -F -q "/v1/slm/qa/{projection_id}" docs/experiments/contracts/slm-control-plane.openapi.yaml
+rg -q "slm.control.category.create" extensions/slm-pipeline/src/gateway-methods.ts
+rg -q "slm.control.qa.create" extensions/slm-pipeline/src/gateway-methods.ts
+rg -q "slm.control.qa.updateById" extensions/slm-pipeline/src/gateway-methods.ts
+
 echo "[slm-dod] PASS"

@@ -6,6 +6,7 @@ import { resolvePostgresMemoryStoreFromEnv } from "../../packages/memory-server/
 import { InMemoryMemoryStore } from "../../packages/memory-server/src/store.js";
 
 const port = parsePort(process.env.OPENCLAW_MEMORY_SERVER_PORT, 19090);
+const host = normalizeHost(process.env.OPENCLAW_MEMORY_SERVER_HOST, "127.0.0.1");
 const tenantId = (process.env.OPENCLAW_MEMORY_SERVER_TENANT || "tenant-local").trim();
 const serviceToken = (process.env.OPENCLAW_MEMORY_SERVER_TOKEN || "moltbot-local-token").trim();
 const adminToken = process.env.OPENCLAW_MEMORY_SERVER_ADMIN_TOKEN?.trim();
@@ -51,8 +52,8 @@ const server = createServer(async (req, res) => {
   res.end(JSON.stringify(response.body));
 });
 
-server.listen(port, "127.0.0.1", () => {
-  process.stdout.write(`[memory-server] listening on http://127.0.0.1:${port}\n`);
+server.listen(port, host, () => {
+  process.stdout.write(`[memory-server] listening on http://${host}:${port}\n`);
   process.stdout.write(`[memory-server] tenant=${tenantId}\n`);
   if (process.env.OPENCLAW_MEMORY_SERVER_DB_URL || process.env.SLM_PG_URL) {
     process.stdout.write("[memory-server] mode=postgres\n");
@@ -90,4 +91,9 @@ function parsePort(value: string | undefined, fallback: number): number {
     return fallback;
   }
   return parsed;
+}
+
+function normalizeHost(value: string | undefined, fallback: string): string {
+  const trimmed = (value || "").trim();
+  return trimmed.length > 0 ? trimmed : fallback;
 }

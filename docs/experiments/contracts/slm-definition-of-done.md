@@ -32,8 +32,14 @@ This contract is mandatory for SLM rollout workstreams and follow-up changes tou
    3. Soft delete semantics (`deleted_at`) with explicit include switch.
    4. Auth compatibility for both `Authorization: Bearer ...` and `X-Memory-API-Key`.
 4. Dashboard gateway access must use least privilege scopes for required SLM control methods only.
-5. Smoke bootstrap must fail fast with explicit timeout behavior.
-6. PR scope hygiene is mandatory for rollout branches:
+5. API-first library contracts must stay in sync between tests and OpenAPI:
+   1. `/v1/slm/categories` (`GET`/`POST`) and `/v1/slm/categories/{category_id}` (`PATCH`).
+   2. `/v1/slm/qa` (`GET`/`POST`) and `/v1/slm/qa/{projection_id}` (`GET`/`PUT`).
+   3. `qa-events/import` must support `source=library` with provider/channel/category/status filters.
+   4. Gateway methods must include `slm.control.category.*`, `slm.control.qa.create`, and `slm.control.qa.updateById`.
+6. Smoke bootstrap must fail fast with explicit timeout behavior.
+7. Smoke checks must seed API-first category+QA records when supported, with legacy review-events fallback compatibility.
+8. PR scope hygiene is mandatory for rollout branches:
    1. Only approved SLM paths may change unless explicit override is documented.
    2. Core `src/**` changes are blocked by default for this rollout phase.
 

@@ -22,7 +22,10 @@ async function buildDataset() {
     approved_by: "reviewer",
     approved_at: "2026-02-23T00:00:00.000Z",
   });
-  const approvedQa = await source.listApprovedQa("tenant-a", "zoom");
+  const approvedQa = await source.listApprovedQa({
+    tenantId: "tenant-a",
+    source: "zoom",
+  });
   return new DatasetBuilderService().build({
     tenantId: "tenant-a",
     splitSeed: 7,

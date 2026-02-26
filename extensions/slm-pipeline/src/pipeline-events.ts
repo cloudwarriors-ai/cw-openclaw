@@ -99,7 +99,7 @@ function normalizeMetadata(
   if (!scrubbed || typeof scrubbed !== "object" || Array.isArray(scrubbed)) {
     return undefined;
   }
-  return scrubbed;
+  return scrubbed as Record<string, unknown>;
 }
 
 function scrubSensitive(value: unknown): unknown {

@@ -1,7 +1,15 @@
 import { randomUUID } from "node:crypto";
+import { SlmPipelineError } from "./errors.js";
+import type { QaCategoryService } from "./qa-categories.js";
 import type { QaProjectionService } from "./qa-projection.js";
 import type { SlmPipelineRouter } from "./routes.js";
-import type { QaProjectionRecord, ReviewActionActor } from "./types.js";
+import type {
+  QaCategoryRecord,
+  QaProjectionRecord,
+  QaRecordOrigin,
+  QaRecordStatus,
+  ReviewActionActor,
+} from "./types.js";
 
 const DEFAULT_LIST_LIMIT = 50;
 const MAX_LIST_LIMIT = 200;
@@ -28,12 +36,80 @@ export type PipelineReviewEventSink = {
 export class PipelineAppService {
   constructor(
     private readonly router: SlmPipelineRouter,
+    private readonly categoryService: QaCategoryService,
     private readonly qaProjectionService: QaProjectionService,
     private readonly reviewEventSink: PipelineReviewEventSink,
   ) {}
 
+  async listCategories(params: {
+    tenantId: string;
+    providerKey?: string;
+    channelKey?: string;
+    includeInactive?: boolean;
+    cursor?: string;
+    limit?: number;
+  }): Promise<{ records: QaCategoryRecord[]; next_cursor: string | null }> {
+    return await this.categoryService.list({
+      tenantId: params.tenantId,
+      providerKey: params.providerKey,
+      channelKey: params.channelKey,
+      includeInactive: params.includeInactive,
+      cursor: params.cursor,
+      limit: params.limit,
+    });
+  }
+
+  async createCategory(params: {
+    tenantId: string;
+    providerKey: string;
+    channelKey: string;
+    categoryKey: string;
+    displayName: string;
+    sortOrder?: number;
+  }): Promise<QaCategoryRecord> {
+    const record = await this.categoryService.create({
+      tenantId: params.tenantId,
+      providerKey: params.providerKey,
+      channelKey: params.channelKey,
+      categoryKey: params.categoryKey,
+      displayName: params.displayName,
+      sortOrder: params.sortOrder,
+    });
+    if (record.tenant_id !== params.tenantId) {
+      throw new Error("qa category tenant mismatch");
+    }
+    return record;
+  }
+
+  async updateCategory(params: {
+    tenantId: string;
+    categoryId: string;
+    displayName?: string;
+    isActive?: boolean;
+    sortOrder?: number;
+  }): Promise<QaCategoryRecord | null> {
+    const record = await this.categoryService.update({
+      tenantId: params.tenantId,
+      categoryId: params.categoryId,
+      displayName: params.displayName,
+      isActive: params.isActive,
+      sortOrder: params.sortOrder,
+    });
+    if (!record) {
+      return null;
+    }
+    if (record.tenant_id !== params.tenantId) {
+      throw new Error("qa category tenant mismatch");
+    }
+    return record;
+  }
+
   async listQa(params: {
     tenantId: string;
+    providerKey?: string;
+    channelKey?: string;
+    categoryId?: string;
+    status?: QaRecordStatus;
     cursor?: string;
     limit?: number;
     query?: string;
@@ -46,6 +122,10 @@ export class PipelineAppService {
     // Continue scanning pages until we fill the requested tenant-scoped result set.
     for (let page = 0; page < MAX_LIST_PAGES && records.length < targetLimit; page += 1) {
       const listed = await this.qaProjectionService.list({
+        providerKey: params.providerKey,
+        channelKey: params.channelKey,
+        categoryId: params.categoryId,
+        status: params.status,
         cursor,
         limit: targetLimit,
         query: params.query,
@@ -124,11 +204,180 @@ export class PipelineAppService {
     return record;
   }
 
+  async createQa(params: {
+    tenantId: string;
+    question: string;
+    answer: string;
+    providerKey: string;
+    channelKey: string;
+    categoryId: string;
+    categoryKey?: string;
+    status?: QaRecordStatus;
+    origin?: QaRecordOrigin;
+    actor?: ReviewActionActor;
+    sourceChannel?: string;
+    sourceRef?: string;
+    traceId?: string;
+    refId?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<QaProjectionRecord> {
+    await this.requireCategory({
+      tenantId: params.tenantId,
+      categoryId: params.categoryId,
+    });
+    const status = params.status ?? "draft";
+    const normalizedSourceChannel =
+      params.sourceChannel ?? `${params.providerKey.trim().toLowerCase()}:${params.channelKey.trim().toLowerCase()}`;
+    const traceId = params.traceId?.trim() || randomUUID();
+    const refId = params.refId?.trim() || randomUUID();
+    let finalTraceId = traceId;
+    let finalRefId = refId;
+
+    if (status === "validated") {
+      const reviewEvent = await this.reviewEventSink.emitApprovedEvent({
+        tenantId: params.tenantId,
+        question: params.question,
+        answer: params.answer,
+        actor: params.actor,
+        traceId,
+        refId,
+        sourceChannelJid: normalizedSourceChannel,
+        metadata: params.metadata,
+      });
+      finalTraceId = reviewEvent.traceId;
+      finalRefId = reviewEvent.refId ?? refId;
+    }
+
+    const record = await this.qaProjectionService.create({
+      tenantId: params.tenantId,
+      question: params.question,
+      answer: params.answer,
+      providerKey: params.providerKey,
+      channelKey: params.channelKey,
+      categoryId: params.categoryId,
+      categoryKey: params.categoryKey,
+      status,
+      origin: params.origin ?? "manual",
+      sourceChannel: normalizedSourceChannel,
+      sourceRef: params.sourceRef ?? finalRefId,
+      traceId: finalTraceId,
+      refId: finalRefId,
+      actor: params.actor,
+    });
+    if (record.tenant_id !== params.tenantId) {
+      throw new Error("qa projection tenant mismatch");
+    }
+    return record;
+  }
+
+  async updateQaById(params: {
+    tenantId: string;
+    projectionId: string;
+    question?: string;
+    answer?: string;
+    providerKey?: string;
+    channelKey?: string;
+    categoryId?: string;
+    categoryKey?: string;
+    status?: QaRecordStatus;
+    origin?: QaRecordOrigin;
+    actor?: ReviewActionActor;
+    sourceChannel?: string;
+    sourceRef?: string;
+    traceId?: string;
+    refId?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<QaProjectionRecord | null> {
+    const existing = await this.getQa({
+      tenantId: params.tenantId,
+      projectionId: params.projectionId,
+    });
+    if (!existing) {
+      return null;
+    }
+    const question = params.question ?? existing.question;
+    const answer = params.answer ?? existing.answer;
+    const providerKey = params.providerKey ?? existing.provider_key ?? "zoom";
+    const channelKey = params.channelKey ?? existing.channel_key ?? providerKey;
+    const categoryId = params.categoryId ?? existing.category_id;
+    if (!categoryId) {
+      throw new SlmPipelineError(400, "invalid_category", "category_id is required");
+    }
+    await this.requireCategory({
+      tenantId: params.tenantId,
+      categoryId,
+    });
+    const status = params.status ?? existing.status;
+    const sourceChannel = params.sourceChannel ?? existing.source_channel ?? `${providerKey}:${channelKey}`;
+    const traceId = params.traceId?.trim() || randomUUID();
+    const refId = params.refId?.trim() || randomUUID();
+    let finalTraceId = traceId;
+    let finalRefId = refId;
+
+    if (status === "validated") {
+      const reviewEvent = await this.reviewEventSink.emitApprovedEvent({
+        tenantId: params.tenantId,
+        question,
+        answer,
+        actor: params.actor,
+        traceId,
+        refId,
+        sourceChannelJid: sourceChannel,
+        metadata: params.metadata,
+      });
+      finalTraceId = reviewEvent.traceId;
+      finalRefId = reviewEvent.refId ?? refId;
+    }
+
+    const record = await this.qaProjectionService.updateById({
+      projectionId: params.projectionId,
+      tenantId: params.tenantId,
+      question,
+      answer,
+      providerKey,
+      channelKey,
+      categoryId,
+      categoryKey: params.categoryKey,
+      status,
+      origin: params.origin ?? existing.origin,
+      sourceChannel,
+      sourceRef: params.sourceRef ?? existing.source_ref ?? finalRefId,
+      traceId: finalTraceId,
+      refId: finalRefId,
+      actor: params.actor,
+    });
+    if (!record) {
+      return null;
+    }
+    if (record.tenant_id !== params.tenantId) {
+      throw new Error("qa projection tenant mismatch");
+    }
+    return record;
+  }
+
+  private async requireCategory(params: {
+    tenantId: string;
+    categoryId: string;
+  }): Promise<void> {
+    const category = await this.categoryService.getById({
+      tenantId: params.tenantId,
+      categoryId: params.categoryId,
+    });
+    if (!category) {
+      throw new SlmPipelineError(404, "category_not_found", "category not found");
+    }
+  }
+
   async enqueueTraining(params: {
     tenantId: string;
     baseModel: string;
     splitSeed?: number;
     idempotencyKey?: string;
+    source?: "zoom" | "library";
+    providerKey?: string;
+    channelKey?: string;
+    categoryId?: string;
+    status?: QaRecordStatus;
   }): Promise<{
     dataset_id: string;
     run_id: string;
@@ -146,7 +395,11 @@ export class PipelineAppService {
       headers: authHeader(params.tenantId),
       body: {
         tenant_id: params.tenantId,
-        source: "zoom",
+        source: params.source ?? "library",
+        provider_key: params.providerKey,
+        channel_key: params.channelKey,
+        category_id: params.categoryId,
+        status: params.status ?? "validated",
         idempotency_key: `${keyBase}:import`,
       },
     });

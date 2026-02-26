@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: SLM Control Plane API
-  version: 0.2.0
+  version: 0.3.0
   description: |
     Canonical API contract for SLM training pipeline (#5) and SLM-first supervisor runtime (#6).
     SLM operator UI is a standalone application (`apps/slm-dashboard`) and not embedded in the built-in
@@ -11,6 +11,266 @@ servers:
 security:
   - bearerAuth: []
 paths:
+  /v1/slm/categories:
+    get:
+      summary: List QA categories for a tenant/provider/channel scope
+      operationId: listQaCategories
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: provider_key
+          required: false
+          schema:
+            $ref: '#/components/schemas/KeyField'
+        - in: query
+          name: channel_key
+          required: false
+          schema:
+            $ref: '#/components/schemas/KeyField'
+        - in: query
+          name: include_inactive
+          required: false
+          schema:
+            type: boolean
+            default: false
+        - in: query
+          name: cursor
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 2048
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkResponse'
+                  - type: object
+                    required: [records, next_cursor]
+                    properties:
+                      records:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/QaCategoryRecord'
+                      next_cursor:
+                        type: string
+                        nullable: true
+    post:
+      summary: Create a QA category for API-first library workflows
+      operationId: createQaCategory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CategoryCreateRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkResponse'
+                  - type: object
+                    required: [record]
+                    properties:
+                      record:
+                        $ref: '#/components/schemas/QaCategoryRecord'
+  /v1/slm/categories/{category_id}:
+    patch:
+      summary: Update category display/active/sort metadata
+      operationId: updateQaCategory
+      parameters:
+        - in: path
+          name: category_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CategoryUpdateRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkResponse'
+                  - type: object
+                    required: [record]
+                    properties:
+                      record:
+                        $ref: '#/components/schemas/QaCategoryRecord'
+  /v1/slm/qa:
+    get:
+      summary: List QA records with tenant/category/status/query filters
+      operationId: listQaRecords
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: provider_key
+          required: false
+          schema:
+            $ref: '#/components/schemas/KeyField'
+        - in: query
+          name: channel_key
+          required: false
+          schema:
+            $ref: '#/components/schemas/KeyField'
+        - in: query
+          name: category_id
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: status
+          required: false
+          schema:
+            $ref: '#/components/schemas/QaRecordStatus'
+        - in: query
+          name: cursor
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 2048
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+        - in: query
+          name: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 4000
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkResponse'
+                  - type: object
+                    required: [records, next_cursor]
+                    properties:
+                      records:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/QaProjectionRecord'
+                      next_cursor:
+                        type: string
+                        nullable: true
+    post:
+      summary: Create a QA record in the library namespace
+      operationId: createQaRecord
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QaCreateRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkResponse'
+                  - type: object
+                    required: [record]
+                    properties:
+                      record:
+                        $ref: '#/components/schemas/QaProjectionRecord'
+  /v1/slm/qa/{projection_id}:
+    get:
+      summary: Fetch a QA record by projection ID
+      operationId: getQaRecord
+      parameters:
+        - in: path
+          name: projection_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: tenant_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkResponse'
+                  - type: object
+                    required: [record]
+                    properties:
+                      record:
+                        $ref: '#/components/schemas/QaProjectionRecord'
+    put:
+      summary: Update a QA record by projection ID
+      operationId: updateQaRecordById
+      parameters:
+        - in: path
+          name: projection_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QaUpdateByIdRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkResponse'
+                  - type: object
+                    required: [record]
+                    properties:
+                      record:
+                        $ref: '#/components/schemas/QaProjectionRecord'
   /v1/slm/qa-events/import:
     post:
       summary: Import approved Q&A events into canonical training records
@@ -270,6 +530,17 @@ components:
       type: http
       scheme: bearer
   schemas:
+    KeyField:
+      type: string
+      minLength: 1
+      maxLength: 64
+      pattern: '^[a-zA-Z0-9][a-zA-Z0-9_.-]*$'
+    QaRecordStatus:
+      type: string
+      enum: [draft, validated, archived]
+    QaRecordOrigin:
+      type: string
+      enum: [manual, studio, import]
     AcceptedResponse:
       type: object
       required: [ok, trace_id]
@@ -287,6 +558,227 @@ components:
         ok:
           type: boolean
           const: true
+    QaCategoryRecord:
+      type: object
+      additionalProperties: false
+      required:
+        - category_id
+        - tenant_id
+        - provider_key
+        - channel_key
+        - category_key
+        - display_name
+        - is_active
+        - sort_order
+        - created_at
+        - updated_at
+      properties:
+        category_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+        provider_key:
+          $ref: '#/components/schemas/KeyField'
+        channel_key:
+          $ref: '#/components/schemas/KeyField'
+        category_key:
+          $ref: '#/components/schemas/KeyField'
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        is_active:
+          type: boolean
+        sort_order:
+          type: integer
+          minimum: 0
+          maximum: 100000
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    QaProjectionRecord:
+      type: object
+      additionalProperties: false
+      required:
+        - projection_id
+        - tenant_id
+        - question
+        - answer
+        - status
+        - origin
+        - approved_at
+        - updated_at
+      properties:
+        projection_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+        question:
+          type: string
+          minLength: 1
+          maxLength: 4000
+        answer:
+          type: string
+          minLength: 1
+          maxLength: 12000
+        provider_key:
+          $ref: '#/components/schemas/KeyField'
+        channel_key:
+          $ref: '#/components/schemas/KeyField'
+        category_id:
+          type: string
+          format: uuid
+        category_key:
+          $ref: '#/components/schemas/KeyField'
+        status:
+          $ref: '#/components/schemas/QaRecordStatus'
+        origin:
+          $ref: '#/components/schemas/QaRecordOrigin'
+        source_channel:
+          type: string
+        source_ref:
+          type: string
+        trace_id:
+          type: string
+          format: uuid
+        ref_id:
+          type: string
+        approved_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    CategoryCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, provider_key, channel_key, category_key, display_name]
+      properties:
+        tenant_id:
+          type: string
+        provider_key:
+          $ref: '#/components/schemas/KeyField'
+        channel_key:
+          $ref: '#/components/schemas/KeyField'
+        category_key:
+          $ref: '#/components/schemas/KeyField'
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        sort_order:
+          type: integer
+          minimum: 0
+          maximum: 100000
+          default: 1000
+    CategoryUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id]
+      properties:
+        tenant_id:
+          type: string
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        is_active:
+          type: boolean
+        sort_order:
+          type: integer
+          minimum: 0
+          maximum: 100000
+    QaCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, question, answer, provider_key, channel_key, category_id]
+      properties:
+        tenant_id:
+          type: string
+        question:
+          type: string
+          minLength: 1
+          maxLength: 4000
+        answer:
+          type: string
+          minLength: 1
+          maxLength: 12000
+        provider_key:
+          $ref: '#/components/schemas/KeyField'
+        channel_key:
+          $ref: '#/components/schemas/KeyField'
+        category_id:
+          type: string
+          format: uuid
+        category_key:
+          $ref: '#/components/schemas/KeyField'
+        status:
+          $ref: '#/components/schemas/QaRecordStatus'
+        origin:
+          $ref: '#/components/schemas/QaRecordOrigin'
+        source_channel:
+          type: string
+          minLength: 1
+          maxLength: 200
+        source_ref:
+          type: string
+          minLength: 1
+          maxLength: 512
+        trace_id:
+          type: string
+          format: uuid
+        ref_id:
+          type: string
+          minLength: 1
+          maxLength: 200
+    QaUpdateByIdRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id]
+      properties:
+        tenant_id:
+          type: string
+        question:
+          type: string
+          minLength: 1
+          maxLength: 4000
+        answer:
+          type: string
+          minLength: 1
+          maxLength: 12000
+        provider_key:
+          $ref: '#/components/schemas/KeyField'
+        channel_key:
+          $ref: '#/components/schemas/KeyField'
+        category_id:
+          type: string
+          format: uuid
+        category_key:
+          $ref: '#/components/schemas/KeyField'
+        status:
+          $ref: '#/components/schemas/QaRecordStatus'
+        origin:
+          $ref: '#/components/schemas/QaRecordOrigin'
+        source_channel:
+          type: string
+          minLength: 1
+          maxLength: 200
+        source_ref:
+          type: string
+          minLength: 1
+          maxLength: 512
+        trace_id:
+          type: string
+          format: uuid
+        ref_id:
+          type: string
+          minLength: 1
+          maxLength: 200
     ImportQaRequest:
       type: object
       additionalProperties: false
@@ -296,7 +788,16 @@ components:
           type: string
         source:
           type: string
-          enum: [zoom]
+          enum: [zoom, library]
+        provider_key:
+          $ref: '#/components/schemas/KeyField'
+        channel_key:
+          $ref: '#/components/schemas/KeyField'
+        category_id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/QaRecordStatus'
         idempotency_key:
           type: string
           minLength: 8

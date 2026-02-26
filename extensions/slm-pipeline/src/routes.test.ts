@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -17,6 +17,357 @@ function authHeader(tenantId: string): Record<string, string> {
 }
 
 describe("slm pipeline routes", () => {
+  test("handles category and qa library CRUD routes via library API", async () => {
+    const categoryId = "a3628d54-5d8e-4957-96d2-0ca65ce42928";
+    const projectionId = "7ca0f296-d95d-4124-9d87-4fd3cc7261d5";
+    const categoryRecord = {
+      category_id: categoryId,
+      tenant_id: "tenant-a",
+      provider_key: "zoom",
+      channel_key: "support",
+      category_key: "sso",
+      display_name: "SSO",
+      is_active: true,
+      sort_order: 1000,
+      created_at: "2026-02-24T00:00:00.000Z",
+      updated_at: "2026-02-24T00:00:00.000Z",
+    } as const;
+    const qaRecord = {
+      projection_id: projectionId,
+      tenant_id: "tenant-a",
+      question: "How do we enable SSO?",
+      answer: "Configure SAML in settings.",
+      provider_key: "zoom",
+      channel_key: "support",
+      category_id: categoryId,
+      category_key: "sso",
+      status: "validated",
+      origin: "manual",
+      source_channel: "zoom:support",
+      source_ref: "ref-1",
+      trace_id: "5234c003-d41c-4ac6-be13-5b63758077eb",
+      ref_id: "review-1",
+      approved_at: "2026-02-24T00:00:00.000Z",
+      updated_at: "2026-02-24T00:00:00.000Z",
+    } as const;
+    const libraryApi = {
+      listCategories: vi.fn(async () => ({
+        records: [categoryRecord],
+        next_cursor: null,
+      })),
+      createCategory: vi.fn(async () => categoryRecord),
+      updateCategory: vi.fn(async () => categoryRecord),
+      listQa: vi.fn(async () => ({
+        records: [qaRecord],
+        next_cursor: null,
+      })),
+      createQa: vi.fn(async () => qaRecord),
+      updateQaById: vi.fn(async () => qaRecord),
+      getQa: vi.fn(async () => qaRecord),
+    };
+    const router = createSlmPipelineRouter({ libraryApi });
+
+    const categoryList = await router.handle({
+      method: "GET",
+      path: "/v1/slm/categories?tenant_id=tenant-a&provider_key=zoom&channel_key=support&include_inactive=true&limit=25",
+      headers: authHeader("tenant-a"),
+      query: new URL(
+        "http://localhost/v1/slm/categories?tenant_id=tenant-a&provider_key=zoom&channel_key=support&include_inactive=true&limit=25",
+      ).searchParams,
+    });
+    expect(categoryList.status).toBe(200);
+    expect(libraryApi.listCategories).toHaveBeenCalledWith({
+      tenantId: "tenant-a",
+      providerKey: "zoom",
+      channelKey: "support",
+      includeInactive: true,
+      cursor: undefined,
+      limit: 25,
+    });
+
+    const categoryCreate = await router.handle({
+      method: "POST",
+      path: "/v1/slm/categories",
+      headers: authHeader("tenant-a"),
+      body: {
+        tenant_id: "tenant-a",
+        provider_key: "zoom",
+        channel_key: "support",
+        category_key: "sso",
+        display_name: "SSO",
+      },
+    });
+    expect(categoryCreate.status).toBe(200);
+
+    const categoryPatch = await router.handle({
+      method: "PATCH",
+      path: `/v1/slm/categories/${categoryId}`,
+      headers: authHeader("tenant-a"),
+      body: {
+        tenant_id: "tenant-a",
+        display_name: "Security",
+        is_active: false,
+      },
+    });
+    expect(categoryPatch.status).toBe(200);
+    expect(libraryApi.updateCategory).toHaveBeenCalledWith({
+      tenantId: "tenant-a",
+      categoryId,
+      displayName: "Security",
+      isActive: false,
+      sortOrder: undefined,
+    });
+
+    const qaCreate = await router.handle({
+      method: "POST",
+      path: "/v1/slm/qa",
+      headers: authHeader("tenant-a"),
+      body: {
+        tenant_id: "tenant-a",
+        question: "How do we enable SSO?",
+        answer: "Configure SAML in settings.",
+        provider_key: "zoom",
+        channel_key: "support",
+        category_id: categoryId,
+        status: "validated",
+      },
+    });
+    expect(qaCreate.status).toBe(200);
+
+    const qaList = await router.handle({
+      method: "GET",
+      path: `/v1/slm/qa?tenant_id=tenant-a&provider_key=zoom&channel_key=support&category_id=${categoryId}&status=validated&limit=10&query=sso`,
+      headers: authHeader("tenant-a"),
+      query: new URL(
+        `http://localhost/v1/slm/qa?tenant_id=tenant-a&provider_key=zoom&channel_key=support&category_id=${categoryId}&status=validated&limit=10&query=sso`,
+      ).searchParams,
+    });
+    expect(qaList.status).toBe(200);
+    expect(libraryApi.listQa).toHaveBeenCalledWith({
+      tenantId: "tenant-a",
+      providerKey: "zoom",
+      channelKey: "support",
+      categoryId,
+      status: "validated",
+      cursor: undefined,
+      limit: 10,
+      query: "sso",
+    });
+
+    const qaGet = await router.handle({
+      method: "GET",
+      path: `/v1/slm/qa/${projectionId}?tenant_id=tenant-a`,
+      headers: authHeader("tenant-a"),
+      query: new URL(`http://localhost/v1/slm/qa/${projectionId}?tenant_id=tenant-a`).searchParams,
+    });
+    expect(qaGet.status).toBe(200);
+
+    const qaUpdateById = await router.handle({
+      method: "PUT",
+      path: `/v1/slm/qa/${projectionId}`,
+      headers: authHeader("tenant-a"),
+      body: {
+        tenant_id: "tenant-a",
+        answer: "Configure SAML and test IdP metadata.",
+        status: "archived",
+      },
+    });
+    expect(qaUpdateById.status).toBe(200);
+    expect(libraryApi.updateQaById).toHaveBeenCalledWith({
+      tenantId: "tenant-a",
+      projectionId,
+      question: undefined,
+      answer: "Configure SAML and test IdP metadata.",
+      providerKey: undefined,
+      channelKey: undefined,
+      categoryId: undefined,
+      categoryKey: undefined,
+      status: "archived",
+      origin: undefined,
+      sourceChannel: undefined,
+      sourceRef: undefined,
+      traceId: undefined,
+      refId: undefined,
+    });
+  });
+
+  test("returns 404 when library qa update-by-id target is missing", async () => {
+    const router = createSlmPipelineRouter({
+      libraryApi: {
+        listCategories: async () => ({ records: [], next_cursor: null }),
+        createCategory: async () => ({
+          category_id: "88420d9d-c7d5-4241-99a0-5a192849de16",
+          tenant_id: "tenant-a",
+          provider_key: "zoom",
+          channel_key: "support",
+          category_key: "sso",
+          display_name: "SSO",
+          is_active: true,
+          sort_order: 1000,
+          created_at: "2026-02-24T00:00:00.000Z",
+          updated_at: "2026-02-24T00:00:00.000Z",
+        }),
+        updateCategory: async () => null,
+        listQa: async () => ({ records: [], next_cursor: null }),
+        createQa: async () => ({
+          projection_id: "f782e351-f54e-4f48-b478-c947c0203808",
+          tenant_id: "tenant-a",
+          question: "Q",
+          answer: "A",
+          status: "draft",
+          origin: "manual",
+          approved_at: "2026-02-24T00:00:00.000Z",
+          updated_at: "2026-02-24T00:00:00.000Z",
+        }),
+        updateQaById: async () => null,
+        getQa: async () => null,
+      },
+    });
+
+    const response = await router.handle({
+      method: "PUT",
+      path: "/v1/slm/qa/1d511bd1-2d55-4f45-835c-b57f24f680cc",
+      headers: authHeader("tenant-a"),
+      body: {
+        tenant_id: "tenant-a",
+        answer: "Updated",
+      },
+    });
+    expect(response.status).toBe(404);
+    expect(response.body).toMatchObject({
+      error: {
+        code: "qa_not_found",
+      },
+    });
+  });
+
+  test("rejects library qa update-by-id requests without mutable fields", async () => {
+    const router = createSlmPipelineRouter({
+      libraryApi: {
+        listCategories: async () => ({ records: [], next_cursor: null }),
+        createCategory: async () => {
+          throw new Error("unexpected");
+        },
+        updateCategory: async () => null,
+        listQa: async () => ({ records: [], next_cursor: null }),
+        createQa: async () => {
+          throw new Error("unexpected");
+        },
+        updateQaById: async () => null,
+        getQa: async () => null,
+      },
+    });
+
+    const response = await router.handle({
+      method: "PUT",
+      path: "/v1/slm/qa/1d511bd1-2d55-4f45-835c-b57f24f680cc",
+      headers: authHeader("tenant-a"),
+      body: {
+        tenant_id: "tenant-a",
+      },
+    });
+    expect(response.status).toBe(400);
+    expect(response.body).toMatchObject({
+      error: {
+        code: "validation_error",
+      },
+    });
+  });
+
+  test("rejects tenant mismatch on library API endpoints", async () => {
+    const router = createSlmPipelineRouter({
+      libraryApi: {
+        listCategories: async () => ({ records: [], next_cursor: null }),
+        createCategory: async () => {
+          throw new Error("unexpected");
+        },
+        updateCategory: async () => null,
+        listQa: async () => ({ records: [], next_cursor: null }),
+        createQa: async () => {
+          throw new Error("unexpected");
+        },
+        updateQaById: async () => null,
+        getQa: async () => null,
+      },
+    });
+
+    const response = await router.handle({
+      method: "GET",
+      path: "/v1/slm/categories?tenant_id=tenant-b",
+      headers: authHeader("tenant-a"),
+      query: new URL("http://localhost/v1/slm/categories?tenant_id=tenant-b").searchParams,
+    });
+    expect(response.status).toBe(403);
+  });
+
+  test("imports library source with validated default and explicit status filters", async () => {
+    const qaSource = new InMemoryQaSource();
+    qaSource.add({
+      tenant_id: "tenant-a",
+      source_channel: "library",
+      source_message_ids: ["m1"],
+      question: "Q validated",
+      answer: "A validated",
+      citations: [],
+      approved_by: "reviewer",
+      approved_at: "2026-02-24T00:00:00.000Z",
+      provider_key: "zoom",
+      channel_key: "support",
+      category_id: "42000195-cf28-40b1-af71-c42984ec70f0",
+      status: "validated",
+      origin: "manual",
+    });
+    qaSource.add({
+      tenant_id: "tenant-a",
+      source_channel: "library",
+      source_message_ids: ["m2"],
+      question: "Q draft",
+      answer: "A draft",
+      citations: [],
+      approved_by: "reviewer",
+      approved_at: "2026-02-24T00:01:00.000Z",
+      provider_key: "zoom",
+      channel_key: "support",
+      category_id: "42000195-cf28-40b1-af71-c42984ec70f0",
+      status: "draft",
+      origin: "manual",
+    });
+    const router = createSlmPipelineRouter({ qaSource });
+
+    const defaultImport = await router.handle({
+      method: "POST",
+      path: "/v1/slm/qa-events/import",
+      headers: authHeader("tenant-a"),
+      body: {
+        tenant_id: "tenant-a",
+        source: "library",
+        provider_key: "zoom",
+        channel_key: "support",
+        category_id: "42000195-cf28-40b1-af71-c42984ec70f0",
+        idempotency_key: "library-default-001",
+      },
+    });
+    expect(defaultImport.status).toBe(202);
+    expect((defaultImport.body as { imported_count: number }).imported_count).toBe(1);
+
+    const draftImport = await router.handle({
+      method: "POST",
+      path: "/v1/slm/qa-events/import",
+      headers: authHeader("tenant-a"),
+      body: {
+        tenant_id: "tenant-a",
+        source: "library",
+        provider_key: "zoom",
+        channel_key: "support",
+        category_id: "42000195-cf28-40b1-af71-c42984ec70f0",
+        status: "draft",
+        idempotency_key: "library-draft-001",
+      },
+    });
+    expect(draftImport.status).toBe(202);
+    expect((draftImport.body as { imported_count: number }).imported_count).toBe(1);
+  });
+
   test("runs import -> dataset -> training -> review -> feedback flow", async () => {
     const qaSource = new InMemoryQaSource();
     qaSource.add({

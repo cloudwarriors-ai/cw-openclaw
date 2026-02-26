@@ -1,6 +1,11 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { MemoryServerClient } from "./memory-client.js";
-import type { QaProjectionRecord, ReviewActionActor } from "./types.js";
+import type {
+  QaProjectionRecord,
+  QaRecordOrigin,
+  QaRecordStatus,
+  ReviewActionActor,
+} from "./types.js";
 
 const QA_NAMESPACE = "slm.qa.current";
 const QA_KIND = "qa_projection";
@@ -9,6 +14,12 @@ export type QaProjectionWriteInput = {
   tenantId: string;
   question: string;
   answer: string;
+  providerKey?: string;
+  channelKey?: string;
+  categoryId?: string;
+  categoryKey?: string;
+  status?: QaRecordStatus;
+  origin?: QaRecordOrigin;
   sourceChannel?: string;
   sourceRef?: string;
   traceId?: string;
@@ -18,11 +29,70 @@ export type QaProjectionWriteInput = {
   updatedAt?: string;
 };
 
+export type QaProjectionCreateInput = QaProjectionWriteInput & {
+  providerKey: string;
+  channelKey: string;
+  categoryId: string;
+};
+
+export type QaProjectionUpdateInput = {
+  projectionId: string;
+  tenantId: string;
+  question?: string;
+  answer?: string;
+  providerKey?: string;
+  channelKey?: string;
+  categoryId?: string;
+  categoryKey?: string;
+  status?: QaRecordStatus;
+  origin?: QaRecordOrigin;
+  sourceChannel?: string;
+  sourceRef?: string;
+  traceId?: string;
+  refId?: string;
+  actor?: ReviewActionActor;
+  approvedAt?: string;
+  updatedAt?: string;
+};
+
+export type QaProjectionListParams = {
+  providerKey?: string;
+  channelKey?: string;
+  categoryId?: string;
+  status?: QaRecordStatus;
+  cursor?: string;
+  limit?: number;
+  query?: string;
+};
+
 export class QaProjectionService {
   constructor(
     private readonly memoryClient: MemoryServerClient,
     private readonly now: () => Date = () => new Date(),
   ) {}
+
+  async create(input: QaProjectionCreateInput): Promise<QaProjectionRecord> {
+    const record = await this.write({
+      id: randomUUID(),
+      tenantId: input.tenantId,
+      question: input.question,
+      answer: input.answer,
+      providerKey: input.providerKey,
+      channelKey: input.channelKey,
+      categoryId: input.categoryId,
+      categoryKey: input.categoryKey,
+      status: input.status ?? "draft",
+      origin: input.origin ?? "manual",
+      sourceChannel: input.sourceChannel,
+      sourceRef: input.sourceRef,
+      traceId: input.traceId,
+      refId: input.refId,
+      actor: input.actor,
+      approvedAt: input.approvedAt,
+      updatedAt: input.updatedAt,
+    });
+    return record;
+  }
 
   async upsertCurrentAnswer(input: QaProjectionWriteInput): Promise<QaProjectionRecord> {
     const question = input.question.trim();
@@ -30,32 +100,59 @@ export class QaProjectionService {
     if (!question || !answer) {
       throw new Error("question and answer are required");
     }
-
     const projectionId = buildProjectionId(input.tenantId, question);
-    const approvedAt = input.approvedAt ?? this.now().toISOString();
-    const updatedAt = input.updatedAt ?? approvedAt;
-    const actor = normalizeActor(input.actor);
-    const record = await this.memoryClient.upsert({
+    return await this.write({
       id: projectionId,
-      namespace: QA_NAMESPACE,
-      kind: QA_KIND,
-      content: `${question}\n\n${answer}`,
-      metadata: {
-        question,
-        answer,
-        source_channel: input.sourceChannel ?? "zoom",
-        source_ref: input.sourceRef ?? null,
-        trace_id: input.traceId ?? null,
-        ref_id: input.refId ?? null,
-        approved_at: approvedAt,
-        updated_at: updatedAt,
-        actor_id: actor?.actor_id ?? null,
-        actor_name: actor?.actor_name ?? null,
-        actor_role: actor?.actor_role ?? null,
-      },
-      source_ref: input.sourceRef,
+      tenantId: input.tenantId,
+      question,
+      answer,
+      providerKey: input.providerKey ?? deriveProviderFromSource(input.sourceChannel),
+      channelKey: input.channelKey ?? deriveChannelFromSource(input.sourceChannel),
+      categoryId: input.categoryId,
+      categoryKey: input.categoryKey,
+      status: input.status ?? "validated",
+      origin: input.origin ?? "import",
+      sourceChannel: input.sourceChannel,
+      sourceRef: input.sourceRef,
+      traceId: input.traceId,
+      refId: input.refId,
+      actor: input.actor,
+      approvedAt: input.approvedAt,
+      updatedAt: input.updatedAt,
     });
-    return toQaProjectionRecord(record);
+  }
+
+  async updateById(input: QaProjectionUpdateInput): Promise<QaProjectionRecord | null> {
+    const existing = await this.getById(input.projectionId);
+    if (!existing || existing.tenant_id !== input.tenantId) {
+      return null;
+    }
+    const question = input.question?.trim() || existing.question;
+    const answer = input.answer?.trim() || existing.answer;
+    if (!question || !answer) {
+      throw new Error("question and answer are required");
+    }
+
+    const updated = await this.write({
+      id: input.projectionId,
+      tenantId: input.tenantId,
+      question,
+      answer,
+      providerKey: input.providerKey ?? existing.provider_key ?? "zoom",
+      channelKey: input.channelKey ?? existing.channel_key ?? existing.provider_key ?? "zoom",
+      categoryId: input.categoryId ?? existing.category_id,
+      categoryKey: input.categoryKey ?? existing.category_key,
+      status: input.status ?? existing.status,
+      origin: input.origin ?? existing.origin,
+      sourceChannel: input.sourceChannel ?? existing.source_channel,
+      sourceRef: input.sourceRef ?? existing.source_ref,
+      traceId: input.traceId ?? existing.trace_id,
+      refId: input.refId ?? existing.ref_id,
+      actor: input.actor ?? existing.actor,
+      approvedAt: input.approvedAt ?? existing.approved_at,
+      updatedAt: input.updatedAt,
+    });
+    return updated;
   }
 
   async getById(projectionId: string): Promise<QaProjectionRecord | null> {
@@ -66,14 +163,25 @@ export class QaProjectionService {
     return toQaProjectionRecord(record);
   }
 
-  async list(params: {
-    cursor?: string;
-    limit?: number;
-    query?: string;
-  }): Promise<{ records: QaProjectionRecord[]; next_cursor: string | null }> {
+  async list(params: QaProjectionListParams): Promise<{ records: QaProjectionRecord[]; next_cursor: string | null }> {
+    const metadataFilters: Record<string, string> = {};
+    if (params.providerKey) {
+      metadataFilters.provider_key = params.providerKey;
+    }
+    if (params.channelKey) {
+      metadataFilters.channel_key = params.channelKey;
+    }
+    if (params.categoryId) {
+      metadataFilters.category_id = params.categoryId;
+    }
+    if (params.status) {
+      metadataFilters.status = params.status;
+    }
+
     const listed = await this.memoryClient.list({
       namespace: QA_NAMESPACE,
       kind: QA_KIND,
+      metadata_filters: Object.keys(metadataFilters).length > 0 ? metadataFilters : undefined,
       cursor: params.cursor,
       limit: params.limit,
       sort_by: "updated_at",
@@ -92,6 +200,67 @@ export class QaProjectionService {
       records,
       next_cursor: listed.next_cursor,
     };
+  }
+
+  private async write(input: {
+    id: string;
+    tenantId: string;
+    question: string;
+    answer: string;
+    providerKey?: string;
+    channelKey?: string;
+    categoryId?: string;
+    categoryKey?: string;
+    status?: QaRecordStatus;
+    origin?: QaRecordOrigin;
+    sourceChannel?: string;
+    sourceRef?: string;
+    traceId?: string;
+    refId?: string;
+    actor?: ReviewActionActor;
+    approvedAt?: string;
+    updatedAt?: string;
+  }): Promise<QaProjectionRecord> {
+    const question = input.question.trim();
+    const answer = input.answer.trim();
+    if (!question || !answer) {
+      throw new Error("question and answer are required");
+    }
+    const nowIso = this.now().toISOString();
+    const approvedAt = input.approvedAt ?? nowIso;
+    const updatedAt = input.updatedAt ?? nowIso;
+    const actor = normalizeActor(input.actor);
+    const providerKey = sanitizeKey(input.providerKey) ?? deriveProviderFromSource(input.sourceChannel);
+    const channelKey = sanitizeKey(input.channelKey) ?? deriveChannelFromSource(input.sourceChannel) ?? providerKey;
+    const status = input.status ?? "draft";
+    const origin = input.origin ?? "manual";
+    const record = await this.memoryClient.upsert({
+      id: input.id,
+      namespace: QA_NAMESPACE,
+      kind: QA_KIND,
+      content: `${question}\n\n${answer}`,
+      metadata: {
+        question,
+        answer,
+        provider_key: providerKey ?? null,
+        channel_key: channelKey ?? null,
+        category_id: input.categoryId ?? null,
+        category_key: input.categoryKey ?? null,
+        status,
+        origin,
+        source_channel: input.sourceChannel ?? providerKey ?? channelKey ?? "zoom",
+        source_ref: input.sourceRef ?? null,
+        trace_id: input.traceId ?? null,
+        ref_id: input.refId ?? null,
+        approved_at: approvedAt,
+        updated_at: updatedAt,
+        actor_id: actor?.actor_id ?? null,
+        actor_name: actor?.actor_name ?? null,
+        actor_role: actor?.actor_role ?? null,
+      },
+      source_ref: input.sourceRef,
+    });
+    return toQaProjectionRecord(record);
   }
 }
 
@@ -116,6 +285,16 @@ function toQaProjectionRecord(record: {
     tenant_id: record.tenant_id,
     question: asString(metadata.question) ?? "",
     answer: asString(metadata.answer) ?? "",
+    provider_key: asString(metadata.provider_key) ?? deriveProviderFromSource(asString(metadata.source_channel)),
+    channel_key:
+      asString(metadata.channel_key) ??
+      deriveChannelFromSource(asString(metadata.source_channel)) ??
+      asString(metadata.provider_key) ??
+      "zoom",
+    category_id: asString(metadata.category_id),
+    category_key: asString(metadata.category_key),
+    status: asQaStatus(metadata.status),
+    origin: asQaOrigin(metadata.origin),
     source_channel: asString(metadata.source_channel),
     source_ref: asString(metadata.source_ref),
     trace_id: asString(metadata.trace_id),
@@ -155,6 +334,61 @@ function normalizeActor(actor: ReviewActionActor | undefined): ReviewActionActor
     actor_name: actor.actor_name?.trim() || undefined,
     actor_role: actor.actor_role,
   };
+}
+
+function asQaStatus(value: string | number | boolean | null | undefined): QaRecordStatus {
+  if (value === "validated") {
+    return "validated";
+  }
+  if (value === "archived") {
+    return "archived";
+  }
+  return "draft";
+}
+
+function asQaOrigin(value: string | number | boolean | null | undefined): QaRecordOrigin {
+  if (value === "studio") {
+    return "studio";
+  }
+  if (value === "import") {
+    return "import";
+  }
+  return "manual";
+}
+
+function sanitizeKey(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function deriveProviderFromSource(sourceChannel: string | undefined): string {
+  const source = sourceChannel?.trim().toLowerCase() || "zoom";
+  if (source.includes(":")) {
+    return source.split(":")[0] || "zoom";
+  }
+  if (source.includes("/")) {
+    return source.split("/")[0] || "zoom";
+  }
+  return source;
+}
+
+function deriveChannelFromSource(sourceChannel: string | undefined): string {
+  const source = sourceChannel?.trim().toLowerCase();
+  if (!source) {
+    return "zoom";
+  }
+  if (source.includes(":")) {
+    const part = source.split(":")[1];
+    return part?.trim() || source;
+  }
+  if (source.includes("/")) {
+    const part = source.split("/")[1];
+    return part?.trim() || source;
+  }
+  return source;
 }
 
 function toUuidFromHex(hex32: string): string {

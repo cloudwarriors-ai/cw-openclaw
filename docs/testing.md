@@ -319,6 +319,23 @@ These run `pnpm test:live` inside the repo Docker image, mounting your local con
 - Gateway networking (two containers, WS auth + health): `pnpm test:docker:gateway-network` (script: `scripts/e2e/gateway-network-docker.sh`)
 - Plugins (custom extension load + registry smoke): `pnpm test:docker:plugins` (script: `scripts/e2e/plugins-docker.sh`)
 
+### Debian troubleshoot container for SLM gates
+
+Use this when local host tooling is flaky and you need a reproducible Debian wrapper with troubleshooting utilities, Docker CLI/Compose, Bun, pnpm, and Playwright libs.
+
+- Interactive shell: `pnpm slm:docker:shell`
+- Full SLM gate run in container: `pnpm slm:docker:gates`
+- Scripts:
+  - `scripts/slm-local/debian-troubleshoot.sh`
+  - `scripts/slm-local/slm-gates-docker.sh`
+
+Notes:
+
+- The runner mounts `/var/run/docker.sock` so smoke scripts can launch `docker-compose.slm-local.yml`.
+- By default it uses `host.docker.internal` for `SLM_PG_URL`/`OPENCLAW_MEMORY_SERVER_DB_URL`.
+- Host `~/.openclaw` and `~/.profile` are not mounted unless `OPENCLAW_SLM_MOUNT_CONFIG=1` and/or `OPENCLAW_SLM_MOUNT_PROFILE=1`.
+- `pnpm slm:docker:gates` defaults to `pnpm install --no-frozen-lockfile` for local troubleshooting. Set `OPENCLAW_SLM_DOCKER_FROZEN_LOCKFILE=1` for CI-strict behavior.
+
 Useful env vars:
 
 - `OPENCLAW_CONFIG_DIR=...` (default: `~/.openclaw`) mounted to `/home/node/.openclaw`

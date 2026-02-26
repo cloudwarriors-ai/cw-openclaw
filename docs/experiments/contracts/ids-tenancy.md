@@ -19,6 +19,10 @@ This document defines canonical ID formats and tenancy boundaries for issues #5,
 6. `feedback_id`: UUID string.
 7. `memory_id`: UUID string.
 8. `event_id`: UUID string.
+9. `category_id`: UUID string.
+10. `projection_id`: UUID string.
+11. `session_id`: UUID string.
+12. `turn_id`: UUID string.
 
 ## Required Correlation Fields
 
@@ -49,6 +53,10 @@ Every write event must include:
 14. `supervisor.path_slm_plus_supervisor`
 15. `supervisor.path_frontier_fallback`
 16. `feedback.applied`
+17. `qa.library_created`
+18. `qa.library_updated`
+19. `qa.category_created`
+20. `qa.category_updated`
 
 ## Run State Machines
 

@@ -11,25 +11,97 @@ const slmHttpToken = (process.env.SLM_HTTP_AUTH_TOKEN || "slm-local-http-token")
 const memoryUrl = (process.env.OPENCLAW_MEMORY_SERVER_URL || "http://127.0.0.1:19090").trim();
 const memoryToken = (process.env.OPENCLAW_MEMORY_SERVER_TOKEN || "moltbot-local-token").trim();
 const reviewEventsPath = (process.env.SLM_QA_EVENTS_PATH || "").trim();
-
-if (!reviewEventsPath) {
-  throw new Error("SLM_QA_EVENTS_PATH is required");
-}
+const providerKey = "zoom";
+const channelKey = "zoom";
 
 await waitForGatewayReady();
 
-const seededQa = await readFirstSeededQa(reviewEventsPath);
-const qaUpdateQuestion = truncateForGatewayField(seededQa.question, 4_000);
-const qaUpdateAnswer = truncateForGatewayField(seededQa.answer, 12_000);
+const seededQa = await resolveSeedQa(reviewEventsPath);
 const idSuffix = `${Date.now()}-${Math.floor(Math.random() * 10_000)}`;
+const categoryKey = buildCategoryKey(idSuffix);
 
-const importResponse = await requestSlm("POST", "/v1/slm/qa-events/import", {
-  tenant_id: tenantId,
-  source: "zoom",
-  idempotency_key: `smoke-import-${idSuffix}`,
+let seedMode: "library_api" | "legacy_gateway_update" = "legacy_gateway_update";
+let categoryId: string | undefined;
+let projectionId: string | undefined;
+
+const librarySeed = await trySeedViaLibraryApi({
+  tenantId,
+  providerKey,
+  channelKey,
+  categoryKey,
+  question: seededQa.question,
+  answer: seededQa.answer,
+  refId: seededQa.ref_id,
 });
-const importedCount = asNumber(importResponse.imported_count) ?? 0;
-if (importedCount < 1) {
+if (librarySeed) {
+  seedMode = "library_api";
+  categoryId = librarySeed.categoryId;
+  projectionId = librarySeed.projectionId;
+} else {
+  const qaUpdate = await callGatewayMethod<{ record?: { projection_id?: string } }>(
+    "slm.control.qa.update",
+    {
+      tenant_id: tenantId,
+      question: truncateForGatewayField(seededQa.question, 4_000),
+      answer: truncateForGatewayField(seededQa.answer, 12_000),
+      ref_id: seededQa.ref_id ?? randomUUID(),
+      source_channel: "zoom",
+      source_ref: seededQa.ref_id ?? randomUUID(),
+    },
+  );
+  projectionId = qaUpdate.record?.projection_id;
+  if (!projectionId) {
+    throw new Error("slm.control.qa.update did not return projection_id");
+  }
+}
+
+let importMode: "library" | "zoom" = "library";
+let importResponse: Record<string, unknown> | undefined;
+if (categoryId) {
+  try {
+    importResponse = await requestSlm("POST", "/v1/slm/qa-events/import", {
+      tenant_id: tenantId,
+      source: "library",
+      provider_key: providerKey,
+      channel_key: channelKey,
+      category_id: categoryId,
+      status: "validated",
+      idempotency_key: `smoke-import-library-${idSuffix}`,
+    });
+  } catch (error) {
+    if (!reviewEventsPath) {
+      throw error;
+    }
+  }
+}
+if (!importResponse) {
+  if (!reviewEventsPath) {
+    throw new Error(
+      "library seed/import failed and SLM_QA_EVENTS_PATH is not set for legacy fallback",
+    );
+  }
+  importMode = "zoom";
+  importResponse = await requestSlm("POST", "/v1/slm/qa-events/import", {
+    tenant_id: tenantId,
+    source: "zoom",
+    idempotency_key: `smoke-import-zoom-${idSuffix}`,
+  });
+}
+let importedCount = asNumber(importResponse.imported_count) ?? 0;
+if (importedCount < 1 && importMode === "library" && reviewEventsPath) {
+  importMode = "zoom";
+  const legacyImport = await requestSlm("POST", "/v1/slm/qa-events/import", {
+    tenant_id: tenantId,
+    source: "zoom",
+    idempotency_key: `smoke-import-zoom-fallback-${idSuffix}`,
+  });
+  importedCount = asNumber(legacyImport.imported_count) ?? 0;
+  if (importedCount < 1) {
+    throw new Error(
+      `qa import returned imported_count=${importedCount}`,
+    );
+  }
+} else if (importedCount < 1) {
   throw new Error(`qa import returned imported_count=${importedCount}`);
 }
 
@@ -80,20 +152,17 @@ if (!supervisorTraceId) {
   throw new Error("supervisor respond did not return trace_id");
 }
 
-const qaUpdate = await callGatewayMethod<{ record?: { projection_id?: string } }>(
-  "slm.control.qa.update",
-  {
-    tenant_id: tenantId,
-    question: qaUpdateQuestion,
-    answer: qaUpdateAnswer,
-    ref_id: seededQa.ref_id ?? randomUUID(),
-    source_channel: "zoom",
-    source_ref: seededQa.ref_id ?? randomUUID(),
-  },
-);
-const projectionId = qaUpdate.record?.projection_id;
 if (!projectionId) {
-  throw new Error("slm.control.qa.update did not return projection_id");
+  throw new Error("qa seed did not produce projection_id");
+}
+
+if (seedMode === "library_api") {
+  await tryCallGatewayMethod("slm.control.qa.updateById", {
+    tenant_id: tenantId,
+    projection_id: projectionId,
+    answer: `${truncateForGatewayField(seededQa.answer, 11_900)} [updatedById]`,
+    status: "validated",
+  });
 }
 
 const qaList = await callGatewayMethod<{ records?: Array<{ projection_id: string }> }>(
@@ -123,12 +192,26 @@ const enqueueResult = await callGatewayMethod<{
   dataset_id?: string;
   run_id?: string;
   status?: string;
-}>("slm.control.training.enqueue", {
-  tenant_id: tenantId,
-  base_model: "forge-slm-base",
-  split_seed: 7,
-  idempotency_key: `gateway-enqueue-${idSuffix}`,
-});
+}>(
+  "slm.control.training.enqueue",
+  {
+    tenant_id: tenantId,
+    base_model: "forge-slm-base",
+    split_seed: 7,
+    idempotency_key: `gateway-enqueue-${idSuffix}`,
+    ...(categoryId
+      ? {
+          source: "library",
+          provider_key: providerKey,
+          channel_key: channelKey,
+          category_id: categoryId,
+          status: "validated",
+        }
+      : {
+          source: "zoom",
+        }),
+  },
+);
 if (!enqueueResult.dataset_id || !enqueueResult.run_id) {
   throw new Error("slm.control.training.enqueue missing dataset_id/run_id");
 }
@@ -211,6 +294,9 @@ process.stdout.write(
     {
       ok: true,
       tenant_id: tenantId,
+      seed_mode: seedMode,
+      import_mode: importMode,
+      category_id: categoryId,
       dataset_id: datasetId,
       run_id: runId,
       run_status: runStatus,
@@ -257,6 +343,20 @@ async function callGatewayMethod<T = Record<string, unknown>>(
     password: gatewayPassword,
     timeoutMs: 25_000,
   });
+}
+
+async function tryCallGatewayMethod<T = Record<string, unknown>>(
+  method: string,
+  params: Record<string, unknown>,
+): Promise<T | null> {
+  try {
+    return await callGatewayMethod<T>(method, params);
+  } catch (error) {
+    if (isMethodMissingError(error)) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 async function requestSlm(
@@ -309,11 +409,19 @@ async function listMemories(request: {
   }));
 }
 
-async function readFirstSeededQa(filePath: string): Promise<{
+async function resolveSeedQa(filePath: string): Promise<{
   question: string;
   answer: string;
   ref_id?: string;
 }> {
+  if (!filePath) {
+    return {
+      question: "How do we validate API-first SLM smoke gates?",
+      answer: "Seed via category + QA create, then run integration and e2e checks.",
+      ref_id: randomUUID(),
+    };
+  }
+
   const raw = await fs.readFile(filePath, "utf8");
   const line = raw
     .split("\n")
@@ -333,6 +441,64 @@ async function readFirstSeededQa(filePath: string): Promise<{
     answer,
     ref_id: asString(parsed.ref_id),
   };
+}
+
+async function trySeedViaLibraryApi(params: {
+  tenantId: string;
+  providerKey: string;
+  channelKey: string;
+  categoryKey: string;
+  question: string;
+  answer: string;
+  refId?: string;
+}): Promise<{ categoryId: string; projectionId: string } | null> {
+  try {
+    const categoryCreate = await callGatewayMethod<{ record?: { category_id?: string } }>(
+      "slm.control.category.create",
+      {
+        tenant_id: params.tenantId,
+        provider_key: params.providerKey,
+        channel_key: params.channelKey,
+        category_key: params.categoryKey,
+        display_name: "Smoke Validation",
+      },
+    );
+    const categoryId = asString(categoryCreate.record?.category_id);
+    if (!categoryId) {
+      throw new Error("slm.control.category.create did not return category_id");
+    }
+
+    const qaCreate = await callGatewayMethod<{ record?: { projection_id?: string } }>(
+      "slm.control.qa.create",
+      {
+        tenant_id: params.tenantId,
+        question: truncateForGatewayField(params.question, 4_000),
+        answer: truncateForGatewayField(params.answer, 12_000),
+        provider_key: params.providerKey,
+        channel_key: params.channelKey,
+        category_id: categoryId,
+        status: "validated",
+        source_channel: `${params.providerKey}:${params.channelKey}`,
+        source_ref: params.refId ?? randomUUID(),
+      },
+    );
+    const projectionId = asString(qaCreate.record?.projection_id);
+    if (!projectionId) {
+      throw new Error("slm.control.qa.create did not return projection_id");
+    }
+    return { categoryId, projectionId };
+  } catch (error) {
+    if (isMethodMissingError(error)) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function buildCategoryKey(idSuffix: string): string {
+  const normalized = idSuffix.toLowerCase().replace(/[^a-z0-9_.-]/g, "-");
+  const key = `smoke-${normalized}`;
+  return key.slice(0, 64);
 }
 
 function resolveEndpoint(baseUrl: string, endpoint: string): string {
@@ -371,6 +537,15 @@ function isMemoryRecord(value: unknown): value is { id: string; tenant_id: strin
   }
   const row = value as Record<string, unknown>;
   return typeof row.id === "string" && typeof row.tenant_id === "string";
+}
+
+function isMethodMissingError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return (
+    message.includes("unknown method") ||
+    message.includes("not registered") ||
+    message.includes("gateway method not found")
+  );
 }
 
 function delay(ms: number): Promise<void> {

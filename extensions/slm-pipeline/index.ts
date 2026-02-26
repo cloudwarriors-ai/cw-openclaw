@@ -9,7 +9,13 @@ import {
   JsonlSlmPipelineEventSink,
   resolveDefaultSlmPipelineEventsPath,
 } from "./src/pipeline-events.js";
-import { JsonlReviewEventQaSource, resolveDefaultZoomReviewEventsPath } from "./src/qa-ingest.js";
+import {
+  CompositeQaSource,
+  JsonlReviewEventQaSource,
+  MemoryProjectionQaSource,
+  resolveDefaultZoomReviewEventsPath,
+} from "./src/qa-ingest.js";
+import { QaCategoryService } from "./src/qa-categories.js";
 import { QaProjectionService } from "./src/qa-projection.js";
 import { emitPipelineReviewEvent } from "./src/review-events.js";
 import { createSlmPipelineRouter } from "./src/routes.js";
@@ -26,19 +32,33 @@ const plugin = {
   configSchema: emptyPluginConfigSchema(),
   register(api: OpenClawPluginApi) {
     const stateDir = api.runtime.state.resolveStateDir(process.env);
-    const qaSource = new JsonlReviewEventQaSource(resolveDefaultZoomReviewEventsPath(stateDir));
+    const memoryClient = resolveMemoryServerClientFromEnv(process.env);
+    const qaProjectionService = new QaProjectionService(memoryClient);
+    const categoryService = new QaCategoryService(memoryClient);
+    const qaSource = new CompositeQaSource([
+      new JsonlReviewEventQaSource(resolveDefaultZoomReviewEventsPath(stateDir)),
+      new MemoryProjectionQaSource(memoryClient),
+    ]);
     const stateStore = new JsonFileSlmPipelineStateStore(
       resolveDefaultSlmPipelineStatePath(stateDir),
     );
     const eventSink = new JsonlSlmPipelineEventSink(resolveDefaultSlmPipelineEventsPath(stateDir));
+    let appService: PipelineAppService;
     const router = createSlmPipelineRouter({
       qaSource,
       stateStore,
       eventSink,
       trainingExecutor: resolveTrainingExecutorFromEnv(process.env),
+      libraryApi: {
+        listCategories: async (params) => await appService.listCategories(params),
+        createCategory: async (params) => await appService.createCategory(params),
+        updateCategory: async (params) => await appService.updateCategory(params),
+        listQa: async (params) => await appService.listQa(params),
+        createQa: async (params) => await appService.createQa(params),
+        updateQaById: async (params) => await appService.updateQaById(params),
+        getQa: async (params) => await appService.getQa(params),
+      },
     });
-    const memoryClient = resolveMemoryServerClientFromEnv(process.env);
-    const qaProjectionService = new QaProjectionService(memoryClient);
     const reviewEventSink: PipelineReviewEventSink = {
       emitApprovedEvent: async (input) => {
         const event = await emitPipelineReviewEvent({
@@ -60,7 +80,12 @@ const plugin = {
         };
       },
     };
-    const appService = new PipelineAppService(router, qaProjectionService, reviewEventSink);
+    appService = new PipelineAppService(
+      router,
+      categoryService,
+      qaProjectionService,
+      reviewEventSink,
+    );
     const slmHttpAuthConfig = resolveSlmHttpAuthConfig(process.env);
 
     registerSlmPipelineGatewayMethods(api, appService);

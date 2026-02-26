@@ -1,8 +1,11 @@
+export type DashboardRole = "operator" | "trainer" | "admin";
+
 export type DashboardUser = {
   username: string;
   passwordHash: string;
   tenantId: string;
   displayName?: string;
+  role: DashboardRole;
 };
 
 export type SessionRecord = {
@@ -10,6 +13,7 @@ export type SessionRecord = {
   username: string;
   tenantId: string;
   displayName?: string;
+  role?: DashboardRole;
   createdAtMs: number;
   expiresAtMs: number;
 };

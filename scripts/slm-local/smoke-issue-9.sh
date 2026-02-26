@@ -32,6 +32,7 @@ Options:
 Environment:
   SLM_SEED_SOURCE=fixture|forge    QA seed source (default: fixture).
   SLM_QA_FIXTURE_PATH=<path>       Fixture JSONL path when source=fixture.
+  SLM_QA_EVENTS_PATH=<path>        Optional legacy fallback JSONL path (auto-set by this script).
   FORGE_DIR=<path>                 Forge workspace root when source=forge.
   SLM_START_ACCEPTANCE_TIMEOUT_SECONDS=<n>
                                    Timeout for pgvector bootstrap (default: 300s).
@@ -158,7 +159,10 @@ cat >"${GATEWAY_CONFIG_PATH}" <<EOF
   "gateway": {
     "mode": "local",
     "bind": "loopback",
-    "port": ${GATEWAY_PORT}
+    "port": ${GATEWAY_PORT},
+    "auth": {
+      "token": "${GATEWAY_AUTH_TOKEN}"
+    }
   },
   "plugins": {
     "allow": ["slm-pipeline"],
@@ -220,6 +224,7 @@ if ! kill -0 "$(cat "${GATEWAY_PID_FILE}")" >/dev/null 2>&1; then
   exit 1
 fi
 
+# run-issue-9-check prefers API-first category+qa seeding and uses this only for legacy fallback.
 smoke_output="$(
   SLM_GATEWAY_HTTP_URL="${GATEWAY_HTTP_URL}" \
   SLM_GATEWAY_WS_URL="${GATEWAY_WS_URL}" \
