@@ -48,6 +48,8 @@ is_allowed_path() {
     vitest.slm.e2e.config.ts) return 0 ;;
     vitest.slm.playwright.config.ts) return 0 ;;
     package.json) return 0 ;;
+    pnpm-lock.yaml) return 0 ;;
+    CHANGELOG.md) return 0 ;;
     .github/workflows/slm-gates.yml) return 0 ;;
     *) return 1 ;;
   esac

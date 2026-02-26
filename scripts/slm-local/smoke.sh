@@ -42,6 +42,8 @@ DATA_DIR="${ROOT_DIR}/.data/slm-local"
 MEMORY_PID_FILE="${DATA_DIR}/memory-server.pid"
 MEMORY_LOG_FILE="${DATA_DIR}/memory-server.log"
 
+mkdir -p "${DATA_DIR}"
+
 if [[ -f "${MEMORY_PID_FILE}" ]]; then
   existing_pid="$(cat "${MEMORY_PID_FILE}" 2>/dev/null || true)"
   if [[ -n "${existing_pid}" ]] && kill -0 "${existing_pid}" >/dev/null 2>&1; then
