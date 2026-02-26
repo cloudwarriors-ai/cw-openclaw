@@ -2389,9 +2389,10 @@ export async function routeMessageToAgent(params: {
     });
 
     // For channels, read fresh config from disk to resolve speaker name.
-    // The closure-captured `cfg` may be stale (e.g., after ETL mode activation).
+    // The closure-captured `cfg` may be stale (e.g., after ETL mode activation/deactivation).
     // We read fresh bindings to determine the correct speaker name ("ETL Bot says:"
-    // vs "cwbot says:"). The session stays on the main agent — no routing change.
+    // vs "cwbot says:"). When no binding exists, resolve the default agent's name from
+    // fresh config so deactivation properly reverts the speaker name.
     let speakerName: string | undefined;
     if (!isDirect) {
       try {
@@ -2405,12 +2406,19 @@ export async function routeMessageToAgent(params: {
           const p = m?.peer as Record<string, unknown> | undefined;
           return m?.channel === "zoom" && p?.kind === "channel" && p?.id === conversationId;
         });
+        const agents = Array.isArray(freshCfg.agents?.list) ? freshCfg.agents.list : [];
         if (binding && typeof binding.agentId === "string") {
-          const agents = Array.isArray(freshCfg.agents?.list) ? freshCfg.agents.list : [];
           const agent = agents.find((a: Record<string, unknown>) =>
             typeof a?.id === "string" && a.id.trim() === (binding.agentId as string).trim()
           );
           speakerName = typeof agent?.name === "string" ? agent.name.trim() : undefined;
+        } else {
+          // No binding for this channel — resolve default agent name from fresh config
+          // so that deactivation properly reverts from "ETL Bot" to "cwbot"
+          const defaultAgent = agents.find((a: Record<string, unknown>) => a.default === true);
+          if (defaultAgent && typeof defaultAgent.name === "string") {
+            speakerName = defaultAgent.name.trim();
+          }
         }
       } catch {
         // Fall back to stale closure config on any error
