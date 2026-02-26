@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SLM Control Dashboard</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <div class="bg-layer"></div>
+    <main class="shell">
+      <header class="hero">
+        <p class="eyebrow">OpenClaw SLM Control Plane</p>
+        <h1>SLM Dashboard</h1>
+        <p class="subtitle">Question registry, answer training, and studio sessions in one secured app.</p>
+      </header>
+
+      <section id="login-panel" class="card">
+        <h2>Login</h2>
+        <form id="login-form" class="form-grid">
+          <label>
+            Username
+            <input id="login-username" name="username" type="text" required autocomplete="username" />
+          </label>
+          <label>
+            Password
+            <input id="login-password" name="password" type="password" required autocomplete="current-password" />
+          </label>
+          <button type="submit">Sign In</button>
+        </form>
+        <p id="login-error" class="error"></p>
+      </section>
+
+      <section id="dashboard-panel" class="stack hidden">
+        <div class="card status">
+          <div>
+            <h2>Operator Session</h2>
+            <p id="me-line" class="muted"></p>
+          </div>
+          <button id="logout-button" class="button-secondary">Log Out</button>
+        </div>
+
+        <section class="card">
+          <div class="section-head">
+            <h2>Q&amp;A Registry</h2>
+            <div class="inline-controls">
+              <input id="qa-query" type="text" placeholder="Search question or answer..." />
+              <button id="qa-refresh">Refresh</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Updated</th>
+                  <th>Question</th>
+                  <th>Answer</th>
+                </tr>
+              </thead>
+              <tbody id="qa-table-body"></tbody>
+            </table>
+          </div>
+          <p id="qa-empty" class="muted hidden">No records found for this tenant.</p>
+        </section>
+
+        <section class="card">
+          <h2>Answer Update / Training</h2>
+          <form id="qa-update-form" class="form-grid">
+            <label>
+              Projection ID
+              <input id="qa-projection-id" type="text" readonly />
+            </label>
+            <label>
+              Question
+              <textarea id="qa-question" required></textarea>
+            </label>
+            <label>
+              Answer
+              <textarea id="qa-answer" required></textarea>
+            </label>
+            <label>
+              Source Channel
+              <input id="qa-source-channel" type="text" placeholder="zoom" />
+            </label>
+            <label>
+              Source Reference
+              <input id="qa-source-ref" type="text" placeholder="message-id or ref" />
+            </label>
+            <button type="submit">Save Answer</button>
+          </form>
+          <p id="qa-update-status" class="muted"></p>
+        </section>
+
+        <section class="card">
+          <h2>Training Studio</h2>
+          <form id="session-start-form" class="form-grid">
+            <label>
+              Session Question
+              <textarea id="session-question" required></textarea>
+            </label>
+            <button type="submit">Start Session</button>
+          </form>
+          <form id="session-turn-form" class="form-grid">
+            <label>
+              User Prompt
+              <textarea id="session-prompt" required></textarea>
+            </label>
+            <label>
+              Edited Answer (optional)
+              <textarea id="session-edited-answer"></textarea>
+            </label>
+            <button type="submit">Run Turn</button>
+          </form>
+          <div class="inline-controls">
+            <button id="session-finish" type="button" class="button-secondary">Finish Session</button>
+            <span id="session-id" class="muted">No active session</span>
+          </div>
+          <pre id="session-output" class="json-box"></pre>
+        </section>
+
+        <section class="card">
+          <h2>Training Queue</h2>
+          <form id="training-form" class="form-grid">
+            <label>
+              Base Model
+              <input id="training-base-model" type="text" value="forge/slm-base" required />
+            </label>
+            <label>
+              Split Seed
+              <input id="training-split-seed" type="number" min="1" value="7" />
+            </label>
+            <button type="submit">Enqueue Training</button>
+          </form>
+          <pre id="training-output" class="json-box"></pre>
+        </section>
+
+        <section class="card">
+          <h2>Data In / Data Out</h2>
+          <p class="muted">Every API call from this dashboard is captured here for traceability.</p>
+          <div id="trace-list" class="trace-list"></div>
+        </section>
+      </section>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

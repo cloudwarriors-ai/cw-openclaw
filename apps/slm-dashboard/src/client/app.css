@@ -1,0 +1,246 @@
+:root {
+  --bg: #0f1b1f;
+  --bg-soft: #15262d;
+  --card: rgba(18, 39, 46, 0.86);
+  --text: #eef7f8;
+  --muted: #abd0d8;
+  --accent: #4dd2bd;
+  --accent-strong: #35b9a4;
+  --danger: #ff6b6b;
+  --line: rgba(255, 255, 255, 0.15);
+  --font-body: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+  --font-head: "Space Grotesk", "Avenir Next", "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--text);
+  font-family: var(--font-body);
+  background: radial-gradient(circle at 0% 0%, #1f5158 0%, transparent 45%),
+    radial-gradient(circle at 100% 0%, #27404f 0%, transparent 48%),
+    linear-gradient(150deg, #0b1418 0%, var(--bg) 48%, #0a1317 100%);
+}
+
+.bg-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(100deg, rgba(77, 210, 189, 0.08), transparent 30%, rgba(255, 255, 255, 0.04));
+  animation: glow 7s ease-in-out infinite alternate;
+}
+
+@keyframes glow {
+  from {
+    opacity: 0.4;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(-6px);
+  }
+}
+
+.shell {
+  width: min(1100px, 92vw);
+  margin: 3rem auto 4rem;
+  position: relative;
+  z-index: 1;
+}
+
+.hero {
+  margin-bottom: 1.25rem;
+}
+
+.hero h1 {
+  margin: 0;
+  font-family: var(--font-head);
+  letter-spacing: 0.02em;
+}
+
+.eyebrow {
+  margin: 0 0 0.2rem;
+  color: var(--accent);
+  text-transform: uppercase;
+  font-size: 0.78rem;
+  letter-spacing: 0.14em;
+}
+
+.subtitle {
+  margin: 0.4rem 0 0;
+  color: var(--muted);
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  backdrop-filter: blur(6px);
+  padding: 1rem 1.1rem;
+  box-shadow: 0 18px 40px rgba(1, 8, 10, 0.2);
+}
+
+.stack {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.status {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.inline-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.form-grid {
+  display: grid;
+  gap: 0.75rem;
+}
+
+label {
+  display: grid;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+input,
+textarea,
+button {
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+}
+
+input,
+textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-soft);
+  color: var(--text);
+  padding: 0.55rem 0.65rem;
+}
+
+textarea {
+  min-height: 84px;
+  resize: vertical;
+}
+
+button {
+  border: 0;
+  border-radius: 10px;
+  padding: 0.62rem 0.82rem;
+  background: var(--accent);
+  color: #0a1b1f;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+button:hover {
+  background: var(--accent-strong);
+}
+
+.button-secondary {
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--text);
+}
+
+.button-secondary:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.table-wrap {
+  overflow: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 0.55rem 0.5rem;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+tr:hover {
+  background: rgba(77, 210, 189, 0.09);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.error {
+  color: var(--danger);
+}
+
+.json-box {
+  white-space: pre-wrap;
+  background: rgba(10, 20, 24, 0.9);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.7rem;
+  min-height: 60px;
+  overflow: auto;
+}
+
+.trace-list {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.trace-item {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.55rem;
+  background: rgba(10, 22, 26, 0.8);
+}
+
+.trace-meta {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.hidden {
+  display: none;
+}
+
+@media (max-width: 880px) {
+  .shell {
+    width: min(94vw, 1100px);
+    margin-top: 1.2rem;
+  }
+
+  .section-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .status {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.6rem;
+  }
+}

@@ -1,0 +1,526 @@
+openapi: 3.1.0
+info:
+  title: SLM Control Plane API
+  version: 0.2.0
+  description: |
+    Canonical API contract for SLM training pipeline (#5) and SLM-first supervisor runtime (#6).
+    SLM operator UI is a standalone application (`apps/slm-dashboard`) and not embedded in the built-in
+    moltbot Control UI. Gateway operator method namespace for that app is `slm.control.*`.
+servers:
+  - url: https://gateway.local
+security:
+  - bearerAuth: []
+paths:
+  /v1/slm/qa-events/import:
+    post:
+      summary: Import approved Q&A events into canonical training records
+      operationId: importApprovedQa
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportQaRequest'
+      responses:
+        '202':
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcceptedResponse'
+  /v1/slm/datasets/build:
+    post:
+      summary: Build train/eval dataset artifacts
+      operationId: buildDataset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BuildDatasetRequest'
+      responses:
+        '202':
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcceptedResponse'
+  /v1/slm/training/runs:
+    post:
+      summary: Start a new training run
+      operationId: startTrainingRun
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartTrainingRunRequest'
+      responses:
+        '202':
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/AcceptedResponse'
+                  - type: object
+                    required: [run_id, status, attempts]
+                    properties:
+                      run_id:
+                        type: string
+                        format: uuid
+                      status:
+                        type: string
+                        enum: [queued, running, succeeded, failed, canceled]
+                      attempts:
+                        type: integer
+                        minimum: 1
+  /v1/slm/training/runs/{run_id}:
+    get:
+      summary: Fetch training run status
+      operationId: getTrainingRun
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkResponse'
+                  - $ref: '#/components/schemas/TrainingRun'
+  /v1/slm/eval/review-queue:
+    get:
+      summary: Fetch evaluator review items
+      operationId: getReviewQueue
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkResponse'
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/EvalItem'
+  /v1/slm/eval/review/{item_id}:
+    post:
+      summary: Submit reviewer rubric and correction
+      operationId: submitReview
+      parameters:
+        - in: path
+          name: item_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitReviewRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkResponse'
+                  - type: object
+                    required: [item]
+                    properties:
+                      item:
+                        $ref: '#/components/schemas/EvalItem'
+  /v1/slm/feedback/apply:
+    post:
+      summary: Apply approved feedback into repair dataset inputs
+      operationId: applyFeedback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyFeedbackRequest'
+      responses:
+        '202':
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/AcceptedResponse'
+                  - type: object
+                    required: [applied_count, feedback_ids]
+                    properties:
+                      applied_count:
+                        type: integer
+                        minimum: 0
+                      feedback_ids:
+                        type: array
+                        items:
+                          type: string
+                          format: uuid
+  /v1/slm/supervisor/respond:
+    post:
+      summary: Execute SLM-first answer with optional supervisor escalation
+      operationId: supervisorRespond
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SupervisorRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkResponse'
+                  - $ref: '#/components/schemas/SupervisorResponse'
+  /v1/slm/supervisor/traces:
+    get:
+      summary: List tenant traces for SLM supervisor decisions
+      operationId: supervisorTraces
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkResponse'
+                  - type: object
+                    required: [traces]
+                    properties:
+                      traces:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/DecisionTrace'
+  /v1/slm/supervisor/feedback:
+    post:
+      summary: Persist reviewer or user feedback for a supervisor trace
+      operationId: supervisorFeedback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SupervisorFeedbackRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkResponse'
+                  - type: object
+                    required: [feedback_id, trace_id]
+                    properties:
+                      feedback_id:
+                        type: string
+                        format: uuid
+                      trace_id:
+                        type: string
+                        format: uuid
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    AcceptedResponse:
+      type: object
+      required: [ok, trace_id]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        trace_id:
+          type: string
+          format: uuid
+    OkResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+          const: true
+    ImportQaRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, source, idempotency_key]
+      properties:
+        tenant_id:
+          type: string
+        source:
+          type: string
+          enum: [zoom]
+        idempotency_key:
+          type: string
+          minLength: 8
+    BuildDatasetRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, split_seed, idempotency_key]
+      properties:
+        tenant_id:
+          type: string
+        split_seed:
+          type: integer
+          minimum: 1
+        idempotency_key:
+          type: string
+          minLength: 8
+    StartTrainingRunRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, dataset_id, base_model, idempotency_key]
+      properties:
+        tenant_id:
+          type: string
+        dataset_id:
+          type: string
+          format: uuid
+        base_model:
+          type: string
+        idempotency_key:
+          type: string
+          minLength: 8
+    TrainingRun:
+      type: object
+      required: [run_id, tenant_id, dataset_id, status, started_at]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+        dataset_id:
+          type: string
+          format: uuid
+        adapter_path:
+          type: string
+        status:
+          type: string
+          enum: [queued, running, succeeded, failed, canceled]
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+        error_message:
+          type: string
+    EvalItem:
+      type: object
+      additionalProperties: false
+      required: [item_id, run_id, tenant_id, prompt, model_answer, gold_answer, review_state]
+      properties:
+        item_id:
+          type: string
+          format: uuid
+        run_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+        prompt:
+          type: string
+        model_answer:
+          type: string
+        gold_answer:
+          type: string
+        citations:
+          type: array
+          items:
+            type: string
+        review_state:
+          type: string
+          enum: [pending, in_review, completed, discarded]
+    SubmitReviewRequest:
+      type: object
+      additionalProperties: false
+      required: [score_accuracy, score_grounding, score_actionability, corrected_answer]
+      properties:
+        score_accuracy:
+          type: number
+          minimum: 0
+          maximum: 1
+        score_grounding:
+          type: number
+          minimum: 0
+          maximum: 1
+        score_actionability:
+          type: number
+          minimum: 0
+          maximum: 1
+        corrected_answer:
+          type: string
+          minLength: 1
+        notes:
+          type: string
+          maxLength: 4000
+    ApplyFeedbackRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, run_id, item_ids, idempotency_key]
+      properties:
+        tenant_id:
+          type: string
+        run_id:
+          type: string
+          format: uuid
+        item_ids:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            format: uuid
+        max_ratio:
+          type: number
+          minimum: 0.05
+          maximum: 1
+          default: 0.3
+        idempotency_key:
+          type: string
+          minLength: 8
+    SupervisorRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, channel_id, user_message]
+      properties:
+        tenant_id:
+          type: string
+        channel_id:
+          type: string
+        user_message:
+          type: string
+        context_refs:
+          type: array
+          items:
+            type: string
+    SupervisorResponse:
+      type: object
+      required: [final_answer, source_path, trace_id, reason_codes, policy_flags]
+      properties:
+        final_answer:
+          type: string
+        source_path:
+          type: string
+          enum: [slm_only, slm_plus_supervisor, frontier_direct_fallback]
+        trace_id:
+          type: string
+          format: uuid
+        reason_codes:
+          type: array
+          items:
+            type: string
+        policy_flags:
+          type: array
+          items:
+            type: string
+    DecisionTrace:
+      type: object
+      additionalProperties: false
+      required:
+        - trace_id
+        - tenant_id
+        - channel_id
+        - user_message
+        - source_path
+        - reason_codes
+        - policy_flags
+        - slm_confidence
+        - grounding_score
+        - created_at
+      properties:
+        trace_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+        channel_id:
+          type: string
+        user_message:
+          type: string
+        source_path:
+          type: string
+          enum: [slm_only, slm_plus_supervisor, frontier_direct_fallback]
+        reason_codes:
+          type: array
+          items:
+            type: string
+        policy_flags:
+          type: array
+          items:
+            type: string
+        slm_confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        grounding_score:
+          type: number
+          minimum: 0
+          maximum: 1
+        created_at:
+          type: string
+          format: date-time
+    SupervisorFeedbackRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, trace_id, feedback_type]
+      properties:
+        tenant_id:
+          type: string
+        trace_id:
+          type: string
+          format: uuid
+        feedback_type:
+          type: string
+          enum: [thumbs_up, thumbs_down]
+        comment:
+          type: string
+          minLength: 1
+          maxLength: 2000

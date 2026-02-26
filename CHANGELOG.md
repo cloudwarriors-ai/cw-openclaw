@@ -7,6 +7,7 @@ Docs: https://docs.openclaw.ai
 ### Changes
 
 - SLM: add issue #13 memory server foundation with SQL/vector storage, compatibility aliases, and rollout DoD/CI gates. (#13)
+- SLM: add issue #9 pipeline + dashboard rollout flow with fixture-first seed, pipeline smoke, and dashboard e2e coverage. (#9)
 - Onboarding: add Cloudflare AI Gateway provider setup and docs. (#7914) Thanks @roerohan.
 - Onboarding: add Moonshot (.cn) auth choice and keep the China base URL when preserving defaults. (#7180) Thanks @waynelwz.
 - Docs: clarify tmux send-keys for TUI by splitting text and Enter. (#7737) Thanks @Wangnov.

@@ -1,0 +1,20 @@
+{
+  "name": "@openclaw/slm-pipeline",
+  "version": "2026.2.23",
+  "description": "SLM training pipeline extension",
+  "type": "module",
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.1.26"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
