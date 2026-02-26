@@ -209,7 +209,7 @@ OPENCLAW_SLM_HTTP_REQUIRE_AUTH=1 \
 OPENCLAW_SLM_HTTP_AUTH_TOKEN="${SLM_HTTP_AUTH_TOKEN}" \
 OPENCLAW_SLM_FORGE_BIN="" \
 OPENCLAW_SLM_FORGE_DOMAIN="" \
-bun openclaw.mjs gateway run --dev --allow-unconfigured --bind loopback --port "${GATEWAY_PORT}" \
+pnpm openclaw gateway run --dev --allow-unconfigured --bind loopback --port "${GATEWAY_PORT}" \
   >"${GATEWAY_LOG}" 2>&1 &
 echo $! >"${GATEWAY_PID_FILE}"
 

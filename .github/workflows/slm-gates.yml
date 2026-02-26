@@ -129,6 +129,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p artifacts
+          printf '{"ok":false,"stage":"%s","error":"smoke did not complete"}\n' "${{ steps.stage.outputs.slm_stage }}" > artifacts/slm-smoke-summary.json
           case "${{ steps.stage.outputs.slm_stage }}" in
             memory)
               SLM_SMOKE_SUMMARY_PATH=artifacts/slm-smoke-summary.json bash scripts/slm-local/smoke.sh
