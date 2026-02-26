@@ -4,6 +4,12 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT_DIR}"
 
+if ! command -v rg >/dev/null 2>&1; then
+  rg() {
+    grep -R --line-number --binary-files=without-match "$@"
+  }
+fi
+
 echo "[slm-dod] validating extension boundaries..."
 if rg -n "\.\./zoom/src" extensions/slm-pipeline extensions/slm-supervisor >/dev/null 2>&1; then
   echo "[slm-dod] FAIL: slm extensions import zoom source files" >&2
