@@ -588,6 +588,14 @@ export function attachGatewayWsMessageHandler(params: {
             return true;
           }
 
+          // Webchat clients with valid shared-secret auth (token/password) get write+admin scopes.
+          // They already possess the gateway token, so this grants no additional privilege.
+          const isWebchat = isWebchatConnect(connectParams);
+          if (isWebchat && sharedAuthOk) {
+            scopes = ["operator.write", "operator.admin"];
+            connectParams.scopes = scopes;
+          }
+
           if (decision.kind === "reject-control-ui-insecure-auth") {
             const errorMessage =
               "control ui requires device identity (use HTTPS or localhost secure context)";

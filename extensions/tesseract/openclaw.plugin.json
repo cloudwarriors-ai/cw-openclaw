@@ -1,0 +1,10 @@
+{
+  "id": "tesseract",
+  "name": "Tesseract ETL Platform",
+  "description": "AI-powered ETL platform for migrating phone system configurations between cloud platforms (Teams, RingCentral, Zoom, GoTo, Dialpad)",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

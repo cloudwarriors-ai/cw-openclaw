@@ -8,6 +8,10 @@ services:
       CLAUDE_AI_SESSION_KEY: ${CLAUDE_AI_SESSION_KEY}
       CLAUDE_WEB_SESSION_KEY: ${CLAUDE_WEB_SESSION_KEY}
       CLAUDE_WEB_COOKIE: ${CLAUDE_WEB_COOKIE}
+      TESSERACT_URL: ${TESSERACT_URL}
+      TESSERACT_EXTERNAL_URL: ${TESSERACT_EXTERNAL_URL}
+      TESSERACT_USERNAME: ${TESSERACT_USERNAME}
+      TESSERACT_PASSWORD: ${TESSERACT_PASSWORD}
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
@@ -16,6 +20,9 @@ services:
       - "${OPENCLAW_BRIDGE_PORT:-18790}:18790"
     init: true
     restart: unless-stopped
+    networks:
+      - default
+      - tesseract-network
     command:
       [
         "node",
@@ -44,3 +51,7 @@ services:
     tty: true
     init: true
     entrypoint: ["node", "dist/index.js"]
+
+networks:
+  tesseract-network:
+    external: true

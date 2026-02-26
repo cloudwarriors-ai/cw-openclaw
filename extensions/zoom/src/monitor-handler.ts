@@ -32,6 +32,33 @@ import { getRecentlySentZoomMessageText, isRecentlySentZoomMessageId } from "./s
 /** In-memory roleplay personas for observe mode testing. Key: `${channelJid}::${userJid}` */
 const roleplayPersonas = new Map<string, string>();
 
+/** Channels the bot has been explicitly added to (via app_invited/conversation_opened events).
+ *  Persisted to disk so state survives container restarts. */
+const KNOWN_CHANNELS_FILE = (() => {
+  const dir = process.env.OPENCLAW_STATE_DIR
+    || (process.env.HOME ? `${process.env.HOME}/.openclaw` : "/home/node/.openclaw");
+  return `${dir}/known-bot-channels.json`;
+})();
+
+const knownBotChannels: Set<string> = (() => {
+  try {
+    const fs = require("node:fs") as typeof import("node:fs");
+    const data = JSON.parse(fs.readFileSync(KNOWN_CHANNELS_FILE, "utf-8"));
+    return new Set<string>(Array.isArray(data) ? data : []);
+  } catch {
+    return new Set<string>();
+  }
+})();
+
+function persistKnownBotChannels(): void {
+  try {
+    const fs = require("node:fs") as typeof import("node:fs");
+    fs.writeFileSync(KNOWN_CHANNELS_FILE, JSON.stringify([...knownBotChannels]), "utf-8");
+  } catch {
+    // Best-effort persistence
+  }
+}
+
 /** In-memory store for prefilter-blocked messages awaiting reviewer "Allow". */
 type PendingPrefilter = {
   conversationId: string;
@@ -282,7 +309,7 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
     }
 
     // Handle bot added to a channel — auto-enable observe mode
-    if (eventType === "team_chat.app_conversation_opened" || eventType === "team_chat.app_invited") {
+    if (eventType === "team_chat.app_conversation_opened" || eventType === "team_chat.app_invited" || eventType === "team_chat.channel_app_added") {
       await handleAppConversationOpened(event);
       return;
     }
@@ -1307,6 +1334,38 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
       return;
     }
 
+    // Only process messages from channels the bot was added to or that have
+    // explicit bindings. This prevents account-level team_chat events from
+    // triggering responses in unrelated channels.
+    // Read fresh config from disk (not stale closure) so runtime binding
+    // changes (ETL activation/deactivation) are reflected immediately.
+    let hasBinding = false;
+    try {
+      const fs = await import("node:fs");
+      const configDir = process.env.OPENCLAW_STATE_DIR
+        || (process.env.HOME ? `${process.env.HOME}/.openclaw` : "/home/node/.openclaw");
+      const freshCfg = JSON.parse(fs.readFileSync(`${configDir}/openclaw.json`, "utf-8"));
+      const freshBindings = Array.isArray(freshCfg.bindings) ? freshCfg.bindings : [];
+      hasBinding = freshBindings.some((b: Record<string, unknown>) => {
+        const match = b?.match as Record<string, unknown> | undefined;
+        const peer = match?.peer as Record<string, unknown> | undefined;
+        return match?.channel === "zoom" && peer?.kind === "channel" && peer?.id === channelJid;
+      });
+    } catch {
+      // Fall back to stale closure config
+      const cfgBindings = (cfg as Record<string, unknown>).bindings;
+      const bindings = Array.isArray(cfgBindings) ? cfgBindings : [];
+      hasBinding = bindings.some((b: Record<string, unknown>) => {
+        const match = b?.match as Record<string, unknown> | undefined;
+        const peer = match?.peer as Record<string, unknown> | undefined;
+        return match?.channel === "zoom" && peer?.kind === "channel" && peer?.id === channelJid;
+      });
+    }
+    if (!knownBotChannels.has(channelJid) && !hasBinding) {
+      log.debug("channel not known and no binding, skipping", { channelJid });
+      return;
+    }
+
     log.debug("processing channel message", {
       channelJid,
       channelName,
@@ -1508,6 +1567,10 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
       log.debug(`app_conversation_opened: skipping DM JID ${channelJid} (not a channel)`);
       return;
     }
+
+    // Track that the bot has been added to this channel (persisted to disk)
+    knownBotChannels.add(channelJid);
+    persistKnownBotChannels();
 
     // Auto-enable observe mode for this channel
     await enableObserveChannel(channelJid, channelName);
@@ -2324,7 +2387,41 @@ export async function routeMessageToAgent(params: {
       threadContext,
       log,
     });
+
+    // For channels, read fresh config from disk to resolve speaker name.
+    // The closure-captured `cfg` may be stale (e.g., after ETL mode activation).
+    // We read fresh bindings to determine the correct speaker name ("ETL Bot says:"
+    // vs "cwbot says:"). The session stays on the main agent — no routing change.
+    let speakerName: string | undefined;
+    if (!isDirect) {
+      try {
+        const fs = await import("node:fs");
+        const configDir = process.env.OPENCLAW_STATE_DIR
+          || (process.env.HOME ? `${process.env.HOME}/.openclaw` : "/home/node/.openclaw");
+        const freshCfg = JSON.parse(fs.readFileSync(`${configDir}/openclaw.json`, "utf-8"));
+        const freshBindings = Array.isArray(freshCfg.bindings) ? freshCfg.bindings : [];
+        const binding = freshBindings.find((b: Record<string, unknown>) => {
+          const m = b?.match as Record<string, unknown> | undefined;
+          const p = m?.peer as Record<string, unknown> | undefined;
+          return m?.channel === "zoom" && p?.kind === "channel" && p?.id === conversationId;
+        });
+        if (binding && typeof binding.agentId === "string") {
+          const agents = Array.isArray(freshCfg.agents?.list) ? freshCfg.agents.list : [];
+          const agent = agents.find((a: Record<string, unknown>) =>
+            typeof a?.id === "string" && a.id.trim() === (binding.agentId as string).trim()
+          );
+          speakerName = typeof agent?.name === "string" ? agent.name.trim() : undefined;
+        }
+      } catch {
+        // Fall back to stale closure config on any error
+      }
+    }
+
     const resolvedAgentId = agentIdOverride?.trim() || route.agentId;
+    if (isDirect || !speakerName) {
+      speakerName = resolveAgentSpeakerName(cfg, resolvedAgentId);
+    }
+
     const resolvedAccountId = accountIdOverride?.trim() || route.accountId;
     const resolvedSessionKey = sessionKeyOverride?.trim() || route.sessionKey;
     const parentSessionKey = resolveParentSessionKeyForThread({
@@ -2349,7 +2446,6 @@ export async function routeMessageToAgent(params: {
       threadContext,
       explicitReplyMainMessageId: resolvedReplyToMessageId,
     });
-    const speakerName = resolveAgentSpeakerName(cfg, resolvedAgentId);
 
     const ctxPayload = core.channel.reply.finalizeInboundContext({
       Body: text,

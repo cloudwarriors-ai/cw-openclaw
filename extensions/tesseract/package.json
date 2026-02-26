@@ -1,0 +1,12 @@
+{
+  "name": "@openclaw/tesseract",
+  "version": "2026.2.20",
+  "description": "Tesseract ETL Platform integration — migration tools, platform operations, and knowledge base",
+  "type": "module",
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": ["./index.ts"]
+  }
+}
