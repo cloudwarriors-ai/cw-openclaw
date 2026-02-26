@@ -1,0 +1,20 @@
+{
+  "name": "@openclaw/slm-supervisor",
+  "version": "2026.2.23",
+  "description": "SLM-first supervisor orchestration extension",
+  "type": "module",
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.1.26"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

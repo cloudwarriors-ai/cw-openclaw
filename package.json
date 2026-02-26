@@ -76,7 +76,7 @@
     "slm:test:e2e": "vitest run --config vitest.slm.e2e.config.ts",
     "slm:test:integration": "vitest run --config vitest.slm.config.ts",
     "slm:test:playwright": "vitest run --config vitest.slm.playwright.config.ts",
-    "slm:test:smoke": "bash scripts/slm-local/smoke-issue-9.sh",
+    "slm:test:smoke": "bash scripts/slm-local/smoke-issues-5-6-7.sh",
     "start": "node scripts/run-node.mjs",
     "test": "node scripts/test-parallel.mjs",
     "test:all": "pnpm lint && pnpm build && pnpm test && pnpm test:e2e && pnpm test:live && pnpm test:docker:all",

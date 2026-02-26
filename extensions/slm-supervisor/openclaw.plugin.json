@@ -1,0 +1,8 @@
+{
+  "id": "slm-supervisor",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
