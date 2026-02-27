@@ -12,7 +12,7 @@ services:
       context: .
       args:
         NGROK_AUTH_TOKEN: ${NGROK_AUTH_TOKEN}
-    image: openclaw:v2026.2.14-test
+    image: openclaw:v2026.2.26-test
     container_name: openclaw
     user: root
     environment:
@@ -48,7 +48,6 @@ services:
       - ADMIN_DOMAIN=${ADMIN_DOMAIN:-cloudwarriors.ai}
       - GH_TOKEN=${GITHUB_READ_ACCESS}
       - NODE_OPTIONS=--max-old-space-size=3072
-      - OPENCLAW_NO_RESPAWN=1
     volumes:
       # Mount extensions + config + code for bot access
       - ./extensions:/app/extensions
@@ -65,9 +64,15 @@ services:
       - "1455:1455"
     command:
       [
-        "bash",
-        "-lc",
-        "command -v gh >/dev/null 2>&1 || (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq gh); pnpm exec tsx watch src/entry.ts gateway --bind lan --port 18789 --allow-unconfigured",
+        "node",
+        "--max-old-space-size=3072",
+        "dist/entry.js",
+        "gateway",
+        "--bind",
+        "lan",
+        "--port",
+        "18789",
+        "--allow-unconfigured",
       ]
     mem_limit: 4g
     memswap_limit: 4g

@@ -1,0 +1,61 @@
+[
+  {
+    "id": "main-identity",
+    "agent": "main",
+    "prompt": "Who are you? What is your name and what do you do?",
+    "assertNotContains": ["internal server error", "undefined"],
+    "judgeCriteria": "The response should identify itself as a bot/assistant. It should mention its name or purpose."
+  },
+  {
+    "id": "main-domain-knowledge",
+    "agent": "main",
+    "prompt": "What UCaaS platforms do you know about? Name at least three.",
+    "assertNotContains": ["I don't know", "I cannot"],
+    "judgeCriteria": "The response should list at least three UCaaS platforms (e.g. Zoom, Teams, RingCentral, Dialpad, GoTo, etc.)."
+  },
+  {
+    "id": "main-memory-store",
+    "agent": "main",
+    "prompt": "Remember this test fact: the harness verification code is TANGO-7742. Confirm you stored it.",
+    "sessionKey": "test-harness-memory-main",
+    "assertNotContains": ["internal server error"],
+    "judgeCriteria": "The response should confirm it has stored or will remember the fact about TANGO-7742."
+  },
+  {
+    "id": "main-memory-recall",
+    "agent": "main",
+    "prompt": "What is the harness verification code I told you to remember?",
+    "sessionKey": "test-harness-memory-main",
+    "assertContainsAll": ["TANGO-7742"],
+    "judgeCriteria": "The response must include the exact code TANGO-7742 that was stored in the previous turn."
+  },
+  {
+    "id": "pulsebot-identity",
+    "agent": "pulsebot",
+    "prompt": "What tools do you have access to? List your available Project Pulse tools.",
+    "assertNotContains": ["I don't have any tools", "undefined"],
+    "judgeCriteria": "The response should list Project Pulse related tools such as pp_list_projects, gh_search_issues, pp_correlate_logs, or similar."
+  },
+  {
+    "id": "pulsebot-gh-search",
+    "agent": "pulsebot",
+    "prompt": "Use gh_search_issues to find recent issues about authentication. Report the top result.",
+    "timeoutMs": 180000,
+    "assertNotContains": ["gh: not found", "command not found"],
+    "judgeCriteria": "The response should indicate it attempted a GitHub issue search and either provide an issue reference or clearly state no matches were found."
+  },
+  {
+    "id": "presales-identity",
+    "agent": "presales",
+    "prompt": "Introduce yourself. Who are you and what is your role?",
+    "assertNotContains": ["internal server error", "undefined"],
+    "judgeCriteria": "The response should identify itself as a presales assistant or similar role focused on helping with sales or product demos."
+  },
+  {
+    "id": "presales-capabilities",
+    "agent": "presales",
+    "prompt": "A customer is considering migrating from a legacy PBX to a cloud VoIP platform. What would you recommend and why?",
+    "assertNotContains": ["I don't know", "I cannot help"],
+    "judgeCriteria": "The response should provide a substantive VoIP migration recommendation mentioning cloud benefits, specific platforms, or migration considerations."
+  }
+]
