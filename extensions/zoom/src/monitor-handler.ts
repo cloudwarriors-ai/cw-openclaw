@@ -259,7 +259,7 @@ function resolveParentSessionKeyForThread(params: {
 
   const parentRoute = resolveZoomAgentRoute({
     runtime: params.runtime,
-    cfg: params.cfg,
+    cfg: params.runtime.config.loadConfig(),
     senderId: params.senderId,
     conversationId: params.conversationId,
     channelJid: params.channelJid,
@@ -311,6 +311,12 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
     // Handle bot added to a channel — auto-enable observe mode
     if (eventType === "team_chat.app_conversation_opened" || eventType === "team_chat.app_invited" || eventType === "team_chat.channel_app_added") {
       await handleAppConversationOpened(event);
+      return;
+    }
+
+    // Handle bot removed from channel or channel deleted — clean up stale state
+    if (eventType === "team_chat.channel_app_removed" || eventType === "team_chat.bot_removed" || eventType === "team_chat.channel_deleted") {
+      await handleChannelRemoved(event);
       return;
     }
 
@@ -825,7 +831,7 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
         const threading = resolveZoomThreadingConfig(zoomCfg, log);
         const route = resolveZoomAgentRoute({
           runtime: core,
-          cfg,
+          cfg: core.config.loadConfig(),
           senderId: blockedSet.senderJid || blockedSet.senderName,
           conversationId: blockedSet.channelJid,
           channelJid: blockedSet.channelJid,
@@ -1039,7 +1045,7 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
         // Resolve agent route for the original channel
         const route = resolveZoomAgentRoute({
           runtime: core,
-          cfg,
+          cfg: core.config.loadConfig(),
           senderId: pending.originalSenderName,
           conversationId: pending.originalChannelJid,
           channelJid: pending.originalChannelJid,
@@ -1572,6 +1578,18 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
     knownBotChannels.add(channelJid);
     persistKnownBotChannels();
 
+    // Store channel in conversation store so name→JID lookup works immediately
+    if (channelName) {
+      await conversationStore.upsert(channelJid, {
+        channelJid,
+        channelName,
+        robotJid: creds.botJid,
+        accountId: (p.account_id ?? p.accountId) as string | undefined,
+        conversationType: "channel",
+      });
+      log.info(`stored channel in conversation store: ${channelName} → ${channelJid}`);
+    }
+
     // Auto-enable observe mode for this channel
     await enableObserveChannel(channelJid, channelName);
     log.info(`auto-enabled observe mode for channel: ${channelName ?? channelJid}`);
@@ -1580,7 +1598,7 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
     const { fetchAndTrainFromHistory } = await import("./history.js");
     const historyRoute = resolveZoomAgentRoute({
       runtime: core,
-      cfg,
+      cfg: core.config.loadConfig(),
       senderId: "system",
       conversationId: channelJid,
       channelJid,
@@ -1592,6 +1610,38 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
     }).catch((err) =>
       log.error(`history ingest failed for ${channelName ?? channelJid}: ${err}`),
     );
+  }
+
+  async function handleChannelRemoved(event: ZoomWebhookEvent) {
+    const payload = event.payload?.object ?? event.payload;
+    log.info(`channel_removed/deleted payload: ${JSON.stringify(event.payload)}`);
+    if (!payload) return;
+
+    const p = payload as Record<string, unknown>;
+    const rawChannelId = p.channel_id ?? p.toJid ?? p.to_jid ?? p.jid;
+    if (!rawChannelId) {
+      log.debug("handleChannelRemoved: no channel_id in payload, skipping");
+      return;
+    }
+
+    const channelJid = String(rawChannelId).includes("@")
+      ? String(rawChannelId)
+      : `${rawChannelId}@conference.xmpp.zoom.us`;
+
+    // Remove from known bot channels
+    if (knownBotChannels.has(channelJid)) {
+      knownBotChannels.delete(channelJid);
+      persistKnownBotChannels();
+      log.info(`removed ${channelJid} from known-bot-channels`);
+    }
+
+    // Remove from conversation store
+    const removed = await conversationStore.remove(channelJid);
+    if (removed) {
+      log.info(`removed ${channelJid} from conversation store`);
+    }
+
+    log.info(`channel cleanup complete for ${channelJid}`);
   }
 
   async function routeToAgent(params: {
@@ -1652,7 +1702,7 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
       const threading = resolveZoomThreadingConfig(zoomCfg, log);
       const route = resolveZoomAgentRoute({
         runtime: core,
-        cfg,
+        cfg: core.config.loadConfig(),
         senderId: training.originalSenderName,
         conversationId: training.originalChannelJid,
         channelJid: training.originalChannelJid,
@@ -1878,9 +1928,10 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
         }).catch((err) => log.warn("observe ack failed", { err: String(err) }));
       }
 
+      const liveCfg = core.config.loadConfig();
       const route = resolveZoomAgentRoute({
         runtime: core,
-        cfg,
+        cfg: liveCfg,
         senderId,
         conversationId,
         channelJid,
@@ -1891,7 +1942,7 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
       });
       const parentSessionKey = resolveParentSessionKeyForThread({
         runtime: core,
-        cfg,
+        cfg: liveCfg,
         senderId,
         conversationId,
         channelJid,
@@ -2375,10 +2426,11 @@ export async function routeMessageToAgent(params: {
       textLength: text.length,
     });
 
+    const liveCfg = core.config.loadConfig();
     const threading = resolveZoomThreadingConfig(zoomCfg, log);
     const route = resolveZoomAgentRoute({
       runtime: core,
-      cfg,
+      cfg: liveCfg,
       senderId,
       conversationId,
       channelJid,
@@ -2388,25 +2440,18 @@ export async function routeMessageToAgent(params: {
       log,
     });
 
-    // For channels, read fresh config from disk to resolve speaker name.
-    // The closure-captured `cfg` may be stale (e.g., after ETL mode activation/deactivation).
-    // We read fresh bindings to determine the correct speaker name ("ETL Bot says:"
-    // vs "cwbot says:"). When no binding exists, resolve the default agent's name from
-    // fresh config so deactivation properly reverts the speaker name.
+    // Resolve speaker name from live config so binding changes (ETL mode
+    // activation/deactivation) are reflected without a gateway restart.
     let speakerName: string | undefined;
     if (!isDirect) {
       try {
-        const fs = await import("node:fs");
-        const configDir = process.env.OPENCLAW_STATE_DIR
-          || (process.env.HOME ? `${process.env.HOME}/.openclaw` : "/home/node/.openclaw");
-        const freshCfg = JSON.parse(fs.readFileSync(`${configDir}/openclaw.json`, "utf-8"));
-        const freshBindings = Array.isArray(freshCfg.bindings) ? freshCfg.bindings : [];
+        const freshBindings = Array.isArray(liveCfg.bindings) ? liveCfg.bindings : [];
         const binding = freshBindings.find((b: Record<string, unknown>) => {
           const m = b?.match as Record<string, unknown> | undefined;
           const p = m?.peer as Record<string, unknown> | undefined;
           return m?.channel === "zoom" && p?.kind === "channel" && p?.id === conversationId;
         });
-        const agents = Array.isArray(freshCfg.agents?.list) ? freshCfg.agents.list : [];
+        const agents = Array.isArray(liveCfg.agents?.list) ? liveCfg.agents.list : [];
         if (binding && typeof binding.agentId === "string") {
           const agent = agents.find((a: Record<string, unknown>) =>
             typeof a?.id === "string" && a.id.trim() === (binding.agentId as string).trim()
@@ -2427,14 +2472,14 @@ export async function routeMessageToAgent(params: {
 
     const resolvedAgentId = agentIdOverride?.trim() || route.agentId;
     if (isDirect || !speakerName) {
-      speakerName = resolveAgentSpeakerName(cfg, resolvedAgentId);
+      speakerName = resolveAgentSpeakerName(liveCfg, resolvedAgentId);
     }
 
     const resolvedAccountId = accountIdOverride?.trim() || route.accountId;
     const resolvedSessionKey = sessionKeyOverride?.trim() || route.sessionKey;
     const parentSessionKey = resolveParentSessionKeyForThread({
       runtime: core,
-      cfg,
+      cfg: liveCfg,
       senderId,
       conversationId,
       channelJid,

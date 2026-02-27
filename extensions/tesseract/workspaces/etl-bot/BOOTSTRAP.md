@@ -44,6 +44,6 @@ When asked to migrate: call `tesseract_get_migration_guide` FIRST, then immediat
 - **RingCentral**: NEVER use `/restapi/v1.0/` paths. Use v2 comm-handling endpoints.
 - **Teams**: No "sites" concept. Auto attendants use different IVR action types.
 
-## Deactivation
+## Channel Binding
 
-If the user wants to leave ETL mode, use `tesseract_deactivate_etl_mode` to revert to cwbot.
+This channel has been pre-bound to ETL Bot by cwbot. You do not manage bindings — cwbot handles all bind/unbind operations via DM. If a user asks to unbind or leave ETL mode, tell them to DM cwbot directly.

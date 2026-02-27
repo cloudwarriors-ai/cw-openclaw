@@ -2,6 +2,7 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 import * as fs from "node:fs";
+import * as crypto from "node:crypto";
 import * as path from "node:path";
 import {
   tesseractToolCall,
@@ -10,7 +11,6 @@ import {
   getActiveUser,
   getSessionInfo,
   listSessions,
-  clearAllSessions,
   externalizeUrl,
 } from "./tesseract-auth.js";
 
@@ -43,6 +43,149 @@ function modifyConfig(modifier: (config: Record<string, unknown>) => void): void
   const config = JSON.parse(raw) as Record<string, unknown>;
   modifier(config);
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n", "utf-8");
+}
+
+/**
+ * Inject a synthetic message into cwbot's session transcript for a channel.
+ * This tells cwbot that ETL mode was deactivated, preventing stale context
+ * from making cwbot think ETL mode is still active.
+ */
+function injectDeactivationIntoSession(jid: string): void {
+  const SESSIONS_DIR = path.join(CONFIG_DIR, "agents", "main", "sessions");
+  const SESSIONS_JSON = path.join(SESSIONS_DIR, "sessions.json");
+  const sessionKey = `agent:main:zoom:channel:${jid}`;
+
+  try {
+    console.log(`[tesseract] injectDeactivation: looking up session for key=${sessionKey}`);
+    const raw = fs.readFileSync(SESSIONS_JSON, "utf-8");
+    const sessions = JSON.parse(raw) as Record<string, { sessionId?: string; sessionFile?: string }>;
+    const entry = sessions[sessionKey];
+    if (!entry?.sessionFile) {
+      console.log(`[tesseract] injectDeactivation: no sessionFile found for key`);
+      return;
+    }
+
+    const transcriptPath = entry.sessionFile;
+    console.log(`[tesseract] injectDeactivation: transcriptPath=${transcriptPath} exists=${fs.existsSync(transcriptPath)}`);
+    if (!fs.existsSync(transcriptPath)) return;
+
+    const now = new Date().toISOString();
+    const userMsgId = crypto.randomBytes(4).toString("hex");
+    const asstMsgId = crypto.randomBytes(4).toString("hex");
+
+    // Read last message to get its ID for parentId chaining
+    const content = fs.readFileSync(transcriptPath, "utf-8").trimEnd();
+    const lines = content.split("\n");
+    let lastId: string | undefined;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const obj = JSON.parse(lines[i]);
+        if (obj.id) { lastId = obj.id; break; }
+      } catch { /* skip malformed lines */ }
+    }
+
+    console.log(`[tesseract] injectDeactivation: lastId=${lastId} lineCount=${lines.length}`);
+
+    // Append a synthetic user notification + assistant acknowledgment
+    const userMsg = {
+      type: "message",
+      id: userMsgId,
+      parentId: lastId ?? null,
+      timestamp: now,
+      message: {
+        role: "user",
+        content: [{
+          type: "text",
+          text: "[System notification] ETL Bot mode has been deactivated for this channel. " +
+            "You are cwbot again — the general-purpose assistant. All ETL tools and context " +
+            "from the ETL Bot session are no longer relevant. Do not reference ETL mode, " +
+            "do not say 'ETL Bot says:', and do not offer to reactivate unless the user asks.",
+        }],
+      },
+    };
+    const asstMsg = {
+      type: "message",
+      id: asstMsgId,
+      parentId: userMsgId,
+      timestamp: now,
+      message: {
+        role: "assistant",
+        content: [{
+          type: "text",
+          text: "Understood. ETL Bot mode has been deactivated. I'm cwbot, the general-purpose assistant. How can I help?",
+        }],
+      },
+    };
+
+    const payload = "\n" + JSON.stringify(userMsg) + "\n" + JSON.stringify(asstMsg);
+    fs.appendFileSync(transcriptPath, payload);
+    console.log(`[tesseract] injectDeactivation: appended ${payload.length} bytes to ${transcriptPath}`);
+  } catch (err) {
+    console.log(`[tesseract] injectDeactivation: ERROR ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+// --- Zoom conversation store (read-only) ---
+
+const ZOOM_CONVERSATIONS_PATH = path.join(CONFIG_DIR, "zoom-conversations.json");
+
+interface ZoomConversationEntry {
+  channelJid?: string;
+  channelName?: string;
+  conversationType?: string;
+  robotJid?: string;
+  accountId?: string;
+  lastSeenAt?: string;
+}
+
+/**
+ * Read the Zoom conversation store and return channel entries (name + JID).
+ */
+function getKnownZoomChannels(): Array<{ jid: string; name: string; accountId?: string; lastSeenAt?: string }> {
+  try {
+    const raw = fs.readFileSync(ZOOM_CONVERSATIONS_PATH, "utf-8");
+    const store = JSON.parse(raw) as { conversations?: Record<string, ZoomConversationEntry> };
+    const convos = store.conversations || {};
+    return Object.values(convos)
+      .filter((e) => e.conversationType === "channel" && e.channelJid && e.channelName)
+      .map((e) => ({
+        jid: e.channelJid!,
+        name: e.channelName!,
+        accountId: e.accountId,
+        lastSeenAt: e.lastSeenAt,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Resolve a channel name or JID to a JID. Checks the conversation store for name matches.
+ * When multiple channels share the same name (from different accounts), picks the most recent.
+ */
+function resolveChannelJid(input: string): { jid: string; name?: string } | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  // Already a JID
+  if (trimmed.includes("@conference.")) return { jid: trimmed };
+  // Look up by name (case-insensitive), sort by most recently seen
+  const channels = getKnownZoomChannels()
+    .sort((a, b) => (b.lastSeenAt || "").localeCompare(a.lastSeenAt || ""));
+  const lower = trimmed.toLowerCase();
+  // Deduplicate by JID (same channel seen by multiple bot installations)
+  const seen = new Set<string>();
+  const deduped = channels.filter((c) => {
+    if (seen.has(c.jid)) return false;
+    seen.add(c.jid);
+    return true;
+  });
+  // Exact match (most recent wins)
+  const exact = deduped.find((c) => c.name.toLowerCase() === lower);
+  if (exact) return { jid: exact.jid, name: exact.name };
+  // Partial match — only if unambiguous
+  const partial = deduped.filter((c) => c.name.toLowerCase().includes(lower));
+  if (partial.length === 1) return { jid: partial[0].jid, name: partial[0].name };
+  return null;
 }
 
 // --- Helpers ---
@@ -99,10 +242,6 @@ function requireConnectedUser(channel?: string) {
   return null;
 }
 
-// ETL Bot uses the PulseBot model: all behavioral rules live in tool descriptions.
-// No prompt injection, no separate agent session. Activation adds a binding that
-// gates tool visibility and changes the speaker name to "ETL Bot says:".
-
 // --- Plugin ---
 
 const plugin = {
@@ -116,36 +255,40 @@ const plugin = {
 
   register(api: OpenClawPluginApi) {
     // =====================================================================
-    // ETL MODE ACTIVATION TOOLS — available to ALL agents (cwbot)
-    // Activation adds a binding to openclaw.json which:
-    //   1. Makes ETL tools visible (isEtlBoundChannel gate)
-    //   2. Changes speaker name to "ETL Bot says:" (resolveAgentSpeakerName)
+    // ETL CHANNEL BINDING — cwbot only (sole binding controller)
+    // Called from DM to bind a Zoom channel to etl-bot.
     // =====================================================================
 
     api.registerTool((ctx) => {
-      // Hide activation/deactivation from web frontend — ETL tools are always available there
+      if (ctx.agentId === "etl-bot") return null;
       if (ctx.sessionKey?.includes("tesseract-web-")) return null;
       return ({
-        name: "tesseract_activate_etl_mode",
+        name: "tesseract_bind_etl_channel",
         description:
-          "Activate ETL Bot mode for the current Zoom channel. " +
-          "This enables full access to Tesseract platform migration tools. " +
-          "The user must explicitly request activation. Only works in Zoom group channels.\n" +
-          "After activation, the first thing to do is check connection status with " +
-          "tesseract_who_am_i and guide the user through sign-in if not connected.",
-        parameters: Type.Object({}),
-        async execute() {
-          const sessionKey = ctx.sessionKey;
-          if (!sessionKey || REJECT_SESSION_KEYS.has(sessionKey)) {
-            return errorResult(new Error("Cannot identify this channel — no valid session key."));
+          "Bind a Zoom channel to the ETL Bot agent. All future messages in that " +
+          "channel will route to the ETL Bot with its own isolated session. " +
+          "Accepts a channel name (looked up from known channels) or a full JID.",
+        parameters: Type.Object({
+          channel: Type.String({
+            description: "Channel name (e.g., 'CcompanyETL') or full JID (e.g., abc123@conference.xmpp.zoom.us)"
+          }),
+        }),
+        async execute(_id: string, params: Record<string, unknown>) {
+          const input = (params.channel as string || "").trim();
+          if (!input) {
+            return errorResult(new Error("channel is required. Provide a channel name or JID."));
           }
-          const jid = extractZoomChannelJid(sessionKey);
-          if (!jid) {
+          const resolved = resolveChannelJid(input);
+          if (!resolved) {
+            const known = getKnownZoomChannels().map((c) => c.name);
             return errorResult(new Error(
-              "ETL Bot activation is only supported in Zoom group channels. " +
-              `Session key format not recognized: ${sessionKey}`
+              `Could not find a channel matching "${input}". ` +
+              (known.length > 0
+                ? `Known channels: ${known.join(", ")}`
+                : "No known channels found. The bot must be added to the channel first.")
             ));
           }
+          const jid = resolved.jid;
           try {
             let alreadyBound = false;
             modifyConfig((config) => {
@@ -157,10 +300,7 @@ const plugin = {
                 return match?.channel === "zoom" && peer?.id === jid;
               });
               if (existing) {
-                if (existing.agentId === "etl-bot") {
-                  alreadyBound = true;
-                  return;
-                }
+                if (existing.agentId === "etl-bot") { alreadyBound = true; return; }
                 existing.agentId = "etl-bot";
               } else {
                 bindings.push({
@@ -170,13 +310,13 @@ const plugin = {
               }
             });
             if (alreadyBound) {
-              return jsonResult({ ok: true, message: "ETL Bot mode is already active in this channel." });
+              return jsonResult({ ok: true, message: `That channel is already bound to ETL Bot.`, channel_name: resolved.name, bound_jid: jid });
             }
             return jsonResult({
               ok: true,
-              message: "ETL Bot mode activated! From the next message onward, this channel will " +
-                "show 'ETL Bot says:' with full access to Tesseract ETL tools. " +
-                "Say 'deactivate ETL mode' to switch back to cwbot.",
+              message: `Channel "${resolved.name || jid}" bound to ETL Bot. All messages in that channel will now route to the ETL Bot agent with its own session.`,
+              channel_name: resolved.name,
+              bound_jid: jid,
             });
           } catch (err) {
             return errorResult(err);
@@ -185,23 +325,38 @@ const plugin = {
       });
     });
 
+    // =====================================================================
+    // ETL CHANNEL UNBINDING — cwbot only (sole binding controller)
+    // Called from DM to remove etl-bot binding from a channel.
+    // =====================================================================
+
     api.registerTool((ctx) => {
+      if (ctx.agentId === "etl-bot") return null;
       if (ctx.sessionKey?.includes("tesseract-web-")) return null;
       return ({
-        name: "tesseract_deactivate_etl_mode",
+        name: "tesseract_unbind_etl_channel",
         description:
-          "Deactivate ETL Bot mode for the current Zoom channel, " +
-          "reverting to the default cwbot agent. The user must explicitly request this.",
-        parameters: Type.Object({}),
-        async execute() {
-          const sessionKey = ctx.sessionKey;
-          if (!sessionKey || REJECT_SESSION_KEYS.has(sessionKey)) {
-            return errorResult(new Error("Cannot identify this channel — no valid session key."));
+          "Remove the ETL Bot binding from a Zoom channel. " +
+          "Accepts a channel name or JID. Messages will revert to the default agent (cwbot).",
+        parameters: Type.Object({
+          channel: Type.String({
+            description: "Channel name (e.g., 'CcompanyETL') or full JID to unbind"
+          }),
+        }),
+        async execute(_id: string, params: Record<string, unknown>) {
+          const input = (params.channel as string || "").trim();
+          if (!input) return errorResult(new Error("channel is required. Provide a channel name or JID."));
+          const resolved = resolveChannelJid(input);
+          if (!resolved) {
+            const known = getKnownZoomChannels().map((c) => c.name);
+            return errorResult(new Error(
+              `Could not find a channel matching "${input}". ` +
+              (known.length > 0
+                ? `Known channels: ${known.join(", ")}`
+                : "No known channels found.")
+            ));
           }
-          const jid = extractZoomChannelJid(sessionKey);
-          if (!jid) {
-            return errorResult(new Error(`Session key format not recognized: ${sessionKey}`));
-          }
+          const jid = resolved.jid;
           try {
             let wasRemoved = false;
             modifyConfig((config) => {
@@ -211,16 +366,14 @@ const plugin = {
                 const peer = match?.peer as Record<string, unknown> | undefined;
                 return match?.channel === "zoom" && peer?.id === jid && b.agentId === "etl-bot";
               });
-              if (idx !== -1) {
-                bindings.splice(idx, 1);
-                wasRemoved = true;
-              }
+              if (idx !== -1) { bindings.splice(idx, 1); wasRemoved = true; }
               config.bindings = bindings;
             });
             if (!wasRemoved) {
-              return jsonResult({ ok: true, message: "ETL Bot mode is not active in this channel. No changes made." });
+              return jsonResult({ ok: true, message: "No ETL Bot binding found for that channel." });
             }
-            return jsonResult({ ok: true, message: "ETL Bot mode deactivated. This channel is back to cwbot." });
+            injectDeactivationIntoSession(jid);
+            return jsonResult({ ok: true, message: `ETL Bot unbound from "${resolved.name || jid}". Channel reverts to cwbot.` });
           } catch (err) {
             return errorResult(err);
           }
@@ -229,53 +382,87 @@ const plugin = {
     });
 
     // =====================================================================
-    // ETL TOOLS — only visible in channels bound to etl-bot
+    // LIST ETL BINDINGS — cwbot only
+    // =====================================================================
+
+    api.registerTool((ctx) => {
+      if (ctx.agentId === "etl-bot") return null;
+      if (ctx.sessionKey?.includes("tesseract-web-")) return null;
+      return ({
+        name: "tesseract_list_etl_bindings",
+        description: "List all Zoom channels currently bound to the ETL Bot agent.",
+        parameters: Type.Object({}),
+        async execute() {
+          try {
+            const raw = fs.readFileSync(CONFIG_PATH, "utf-8");
+            const config = JSON.parse(raw);
+            const bindings = (config.bindings || []) as Array<Record<string, unknown>>;
+            const knownChannels = getKnownZoomChannels();
+            const etlBindings = bindings
+              .filter((b) => b.agentId === "etl-bot")
+              .map((b) => {
+                const match = b.match as Record<string, unknown>;
+                const peer = match?.peer as Record<string, unknown>;
+                const jid = peer?.id as string | undefined;
+                const known = jid ? knownChannels.find((c) => c.jid === jid) : undefined;
+                return { channel_jid: jid, channel_name: known?.name, channel: match?.channel };
+              });
+            return jsonResult({ ok: true, bindings: etlBindings, count: etlBindings.length });
+          } catch (err) {
+            return errorResult(err);
+          }
+        },
+      });
+    });
+
+    // =====================================================================
+    // LIST BOT CHANNELS — cwbot only
+    // Shows all Zoom channels the bot knows about (for name→JID lookup).
+    // =====================================================================
+
+    api.registerTool((ctx) => {
+      if (ctx.agentId === "etl-bot") return null;
+      if (ctx.sessionKey?.includes("tesseract-web-")) return null;
+      return ({
+        name: "tesseract_list_bot_channels",
+        description:
+          "List all Zoom channels the bot has been added to. " +
+          "Returns channel names and JIDs. Use this to find the right channel " +
+          "before calling tesseract_bind_etl_channel.",
+        parameters: Type.Object({}),
+        async execute() {
+          try {
+            const channels = getKnownZoomChannels();
+            return jsonResult({
+              ok: true,
+              channels: channels.map((c) => ({ name: c.name, jid: c.jid })),
+              count: channels.length,
+            });
+          } catch (err) {
+            return errorResult(err);
+          }
+        },
+      });
+    });
+
+    // =====================================================================
+    // ETL TOOLS — visible to etl-bot agent and Tesseract web frontend
     // =====================================================================
 
     /**
-     * Should ETL tools be visible for this session?
-     * - Tesseract web frontend: ALWAYS (it's our own UI)
-     * - Zoom channels: only when bound to etl-bot via openclaw.json
+     * Should ETL tools be visible for this context?
+     * - Tesseract web frontend: always (it's our own UI)
+     * - Zoom channels: only when the current agent is etl-bot
      */
-    function shouldShowEtlTools(sessionKey: string | undefined): boolean {
-      if (!sessionKey) return false;
-
-      // Tesseract web frontend always gets ETL tools.
-      // Session key format: "agent:main:tesseract-web-{email}" or "tesseract-web-{email}"
-      if (sessionKey.includes("tesseract-web-")) {
-        console.log(`[tesseract] shouldShowEtlTools: web frontend detected, sessionKey="${sessionKey}"`);
-        return true;
-      }
-
-      // Zoom channels: check for etl-bot binding in config
-      const jid = extractZoomChannelJid(sessionKey);
-      if (!jid) {
-        console.log(`[tesseract] shouldShowEtlTools: no match, sessionKey="${sessionKey}"`);
-        return false;
-      }
-      try {
-        const fs = require("node:fs") as typeof import("node:fs");
-        const configDir = process.env.OPENCLAW_STATE_DIR
-          || (process.env.HOME ? `${process.env.HOME}/.openclaw` : "/home/node/.openclaw");
-        const freshCfg = JSON.parse(fs.readFileSync(`${configDir}/openclaw.json`, "utf-8"));
-        const bindings = Array.isArray(freshCfg.bindings) ? freshCfg.bindings : [];
-        return bindings.some((b: Record<string, unknown>) => {
-          const match = b?.match as Record<string, unknown> | undefined;
-          const peer = match?.peer as Record<string, unknown> | undefined;
-          return match?.channel === "zoom"
-            && peer?.kind === "channel"
-            && peer?.id === jid
-            && b?.agentId === "etl-bot";
-        });
-      } catch {
-        return false;
-      }
+    function shouldShowEtlTools(ctx: { sessionKey?: string; agentId?: string }): boolean {
+      if (ctx.sessionKey?.includes("tesseract-web-")) return true;
+      return ctx.agentId === "etl-bot";
     }
 
-    /** Register an ETL tool — visible in web frontend always, Zoom only when ETL-bound. */
+    /** Register an ETL tool — visible to etl-bot agent and web frontend. */
     const registerEtlTool: typeof api.registerTool = (factory, opts) => {
       api.registerTool((ctx) => {
-        if (!shouldShowEtlTools(ctx.sessionKey)) return null;
+        if (!shouldShowEtlTools(ctx)) return null;
         return typeof factory === "function" ? factory(ctx) : factory;
       }, opts);
     };
@@ -286,16 +473,10 @@ const plugin = {
       name: "tesseract_call_platform_api",
       description:
         "Make an API request to any platform gateway. Auth is automatic once connected. " +
-        "Use tesseract_search_endpoints FIRST if you don't know the exact path.\n" +
-        "PLATFORM NOTES:\n" +
-        "- Zoom: POST /phone/users is DEPRECATED (405). Use PATCH /users/{email}/settings " +
-        "with {\"feature\":{\"zoom_phone\":true}} to enable Zoom Phone. Type 3010 = ZP Basic.\n" +
-        "- Zoom IVR: NEVER use this tool for IVR key presses — use tesseract_configure_zoom_ar_ivr instead.\n" +
-        "- RingCentral: NEVER use /restapi/v1.0/ paths (404). Use gateway routes. " +
-        "v1.0 answering-rules disabled (CMN-468) — use v2 comm-handling.\n" +
-        "- Teams: No 'sites' concept. Auto attendants use different IVR action types.\n" +
-        "When asked about a specific platform, ONLY check that platform. " +
-        "Do NOT mention other platforms unless the user says 'migrate'.",
+        "Use tesseract_search_endpoints first if you don't know the exact path.\n" +
+        "Platform notes: Zoom POST /phone/users is deprecated (405) — use PATCH /users/{email}/settings. " +
+        "Zoom IVR — use tesseract_configure_zoom_ar_ivr instead. " +
+        "RingCentral v1.0 answering-rules disabled (CMN-468) — use v2 comm-handling.",
       parameters: Type.Object({
         platform: Type.String({ description: "Platform: zoom, ringcentral, teams, goto, or dialpad" }),
         method: Type.String({ description: "HTTP method: GET, POST, PUT, PATCH, or DELETE" }),
@@ -321,8 +502,8 @@ const plugin = {
       name: "tesseract_search_endpoints",
       description:
         "Search available API endpoints for a platform. Returns paths, methods, " +
-        "descriptions, and body format hints. ALWAYS call this BEFORE tesseract_call_platform_api " +
-        "when you don't know the exact path. Auth is automatic once connected.",
+        "descriptions, and body format hints. Call before tesseract_call_platform_api " +
+        "when you don't know the exact path.",
       parameters: Type.Object({
         platform: Type.String({ description: "Platform: zoom, ringcentral, teams, goto, or dialpad" }),
         query: Type.String({ description: "Search term (e.g., 'call queues', 'users', 'phone numbers')" }),
@@ -369,18 +550,7 @@ const plugin = {
       name: "tesseract_get_migration_guide",
       description:
         "Load the migration guide for a source->target platform pair. " +
-        "MUST be called FIRST when a user asks to migrate. The guide contains step-by-step " +
-        "instructions — these are COMMANDS, not suggestions.\n" +
-        "MIGRATION RULES:\n" +
-        "- After loading the guide, your VERY NEXT ACTION must be tool calls to gather data — NOT text.\n" +
-        "- Steps are numbered. Complete them IN ORDER. Do NOT skip, combine, or reorder.\n" +
-        "- After each step, state which step you finished and which is next.\n" +
-        "- When a step says execute immediately, do it — don't ask permission.\n" +
-        "- Present decisions ONE question at a time. Wait for answer. Give recommendation.\n" +
-        "- NEVER say 'I will fetch details later' — gather data NOW.\n" +
-        "- NEVER say 'this will need manual configuration' — try API first.\n" +
-        "- NEVER use tesseract_query_etl during a migration (it queries internal DB, not live platform data).\n" +
-        "- Report results with checkmarks as you execute.",
+        "Contains step-by-step instructions for the migration workflow.",
       parameters: Type.Object({
         source: Type.String({ description: "Source platform: zoom, ringcentral, teams, goto, or dialpad" }),
         target: Type.String({ description: "Target platform: zoom, ringcentral, teams, goto, or dialpad" }),
@@ -525,7 +695,6 @@ const plugin = {
       name: "tesseract_configure_zoom_ar_ivr",
       description:
         "Configure IVR key presses on a Zoom Auto Receptionist. " +
-        "ALWAYS use this tool for IVR config — NEVER use tesseract_call_platform_api for IVR.\n" +
         "Action codes: 100=connect to extension, 10=voicemail, 21=repeat menu, " +
         "-1=disconnect, 7=dial by name.",
       parameters: Type.Object({
@@ -558,10 +727,8 @@ const plugin = {
     registerEtlTool(() => ({
       name: "tesseract_query_etl",
       description:
-        "Query the internal Tesseract ETL database. This queries INTERNAL data " +
-        "(job types, extractors, loaders, field mappings, etc.) — NOT live platform data.\n" +
-        "WARNING: NEVER use this during a migration workflow. To get data from platforms, " +
-        "ALWAYS use tesseract_call_platform_api or tesseract_get_platform_users instead.",
+        "Query the internal Tesseract ETL database (job types, extractors, loaders, " +
+        "field mappings, etc.). This queries internal data, not live platform APIs.",
       parameters: Type.Object({
         resource: Type.String({
           description: "Resource type: platforms, job_types, jobs, job_status, job_groups, extractors, loaders, data_records, field_mappings",
@@ -581,10 +748,7 @@ const plugin = {
 
     registerEtlTool(() => ({
       name: "tesseract_check_health",
-      description:
-        "Check if a platform gateway is healthy. " +
-        "Only call when the user explicitly asks about health or status. " +
-        "Do NOT call proactively.",
+      description: "Check if a platform gateway is healthy.",
       parameters: Type.Object({
         platform: Type.String({ description: "Platform: zoom, ringcentral, teams, goto, or dialpad" }),
       }),
@@ -604,9 +768,8 @@ const plugin = {
       name: "tesseract_request_signin",
       description:
         "Generate a secure one-time sign-in link for user identity verification. " +
-        "NEVER ask for passwords in chat — always use this tool instead.\n" +
-        "After calling: paste the FULL URL into your reply so the user can click it. " +
-        "Then poll tesseract_check_signin until verified=true, then call tesseract_connect_as.",
+        "Returns a URL to share with the user. Poll tesseract_check_signin until " +
+        "verified=true, then call tesseract_connect_as.",
       parameters: Type.Object({
         user_email: Type.String({ description: "Email of the Tesseract user" }),
       }),
@@ -632,8 +795,8 @@ const plugin = {
     registerEtlTool(() => ({
       name: "tesseract_check_signin",
       description:
-        "Check if a user completed sign-in verification. Poll this until verified=true. " +
-        "Once verified, call tesseract_connect_as with the email to activate the session.",
+        "Check if a user completed sign-in verification. Poll until verified=true, " +
+        "then call tesseract_connect_as.",
       parameters: Type.Object({
         token: Type.String({ description: "The token from tesseract_request_signin" }),
       }),
@@ -651,9 +814,8 @@ const plugin = {
       name: "tesseract_connect_as",
       description:
         "Activate a verified user's session for this channel. " +
-        "NEVER call without first verifying identity via tesseract_request_signin + tesseract_check_signin. " +
-        "Anyone can claim any email — the sign-in link proves they know the password.\n" +
-        "Pass empty email to disconnect. Session expires after 24h of inactivity.",
+        "Requires prior identity verification via tesseract_request_signin + tesseract_check_signin. " +
+        "Pass empty email to disconnect.",
       parameters: Type.Object({
         email: Type.String({ description: "Email of the verified user, or empty to disconnect" }),
       }),
@@ -689,16 +851,8 @@ const plugin = {
     registerEtlTool((ctx) => ({
       name: "tesseract_who_am_i",
       description:
-        "Check connection status for this channel. " +
-        "IMPORTANT: Call this FIRST when ETL tools become available (after activation). " +
-        "If not connected, guide the user through sign-in:\n" +
-        "1. Ask if they have an existing Tesseract account\n" +
-        "2. If yes: ask for their email, then call tesseract_request_signin\n" +
-        "3. Share the sign-in URL with them (tell them to click it)\n" +
-        "4. Poll tesseract_check_signin until verified=true\n" +
-        "5. Call tesseract_connect_as with the verified email\n" +
-        "If new user: direct them to the Tesseract web app to create an account first.\n" +
-        "NEVER ask for passwords in chat — always use secure sign-in links.",
+        "Check connection status for this channel. Returns the active user email " +
+        "or indicates that sign-in is needed.",
       parameters: Type.Object({}),
       async execute() {
         const ch = resolveChannel(undefined, ctx.sessionKey);
@@ -727,9 +881,7 @@ const plugin = {
 
     registerEtlTool(() => ({
       name: "tesseract_list_sessions",
-      description:
-        "List all active sessions across all channels. " +
-        "Each channel has its own independent session — sessions are NEVER shared across channels.",
+      description: "List all active sessions across all channels.",
       parameters: Type.Object({}),
       async execute() {
         const sessions = listSessions();
@@ -741,10 +893,7 @@ const plugin = {
 
     registerEtlTool(() => ({
       name: "tesseract_onboard_company",
-      description:
-        "Create a new Tesseract user account for a company. " +
-        "Prefer directing new users to the Tesseract web app instead. " +
-        "Only use this if the web app is unavailable.",
+      description: "Create a new Tesseract user account for a company.",
       parameters: Type.Object({
         email: Type.String({ description: "Email for the new account" }),
         password: Type.String({ description: "Password for the account" }),
@@ -805,8 +954,7 @@ const plugin = {
       name: "tesseract_request_credentials",
       description:
         "Generate a secure link for the user to enter platform credentials privately. " +
-        "NEVER ask for credentials or secrets in chat — always use this secure link. " +
-        "Share the full URL so the user can click it.",
+        "Returns a URL to share with the user.",
       parameters: Type.Object({
         user_email: Type.String({ description: "Email of the Tesseract user" }),
         platform: Type.String({ description: "Platform: zoom, ringcentral, teams, goto, or dialpad" }),
@@ -844,7 +992,7 @@ const plugin = {
       },
     }));
 
-    console.log("[tesseract] Registered 2 activation tools + 22 ETL tools (all agents)");
+    console.log("[tesseract] Registered: bind/unbind/list-bindings/list-channels (cwbot), 22 ETL tools (etl-bot + web)");
   },
 };
 

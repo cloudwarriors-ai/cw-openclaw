@@ -77,7 +77,7 @@ Channel isolation is automatic — do NOT pass a `channel` parameter to any tool
 - **`tesseract_configure_zoom_ar_ivr(ar_id, key_actions, no_input_action?)`** — Configure IVR on a Zoom Auto Receptionist.
 - **`tesseract_query_etl(resource, id?, filters?)`** — Query internal ETL database (internal data, not platform-specific).
 - **`tesseract_get_migration_guide(source, target)`** — Load the migration guide for a source-target pair.
-- **`tesseract_deactivate_etl_mode()`** — Revert this channel to cwbot.
+- **Channel unbinding** — Managed by cwbot via DM. If user asks to unbind, tell them to DM cwbot.
 
 ## Migration Workflow
 
