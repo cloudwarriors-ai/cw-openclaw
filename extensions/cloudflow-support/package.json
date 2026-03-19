@@ -1,0 +1,14 @@
+{
+  "name": "@openclaw/cloudflow-support",
+  "version": "0.1.0",
+  "description": "CloudFlow platform support, operations API, and issue management tools",
+  "type": "module",
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

@@ -1,16 +1,27 @@
 export const optionalBundledClusters = [
+  "2fa-github",
   "acpx",
+  "bigheadbot",
+  "claude-mem",
+  "cloudflow-support",
+  "devtools",
   "diagnostics-otel",
   "diffs",
+  "external-org-autopilot",
   "googlechat",
   "matrix",
   "memory-lancedb",
   "msteams",
   "nostr",
+  "pulsebot",
+  "tesseract",
   "tlon",
   "twitch",
   "ui",
   "zalouser",
+  "zoomwarriors",
+  "zoomwarriors-write",
+  "zoomwarriorssupportbot",
 ];
 
 export const optionalBundledClusterSet = new Set(optionalBundledClusters);

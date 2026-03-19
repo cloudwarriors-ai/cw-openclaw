@@ -45,9 +45,16 @@ services:
       - ZOOM_REPORT_CLIENT_SECRET=${ZOOM_REPORT_CLIENT_SECRET}
       - ZOOM_REPORT_USER=${ZOOM_REPORT_USER}
       - MENTION_PROXY=${MENTION_PROXY}
+      - TESSERACT_URL=${TESSERACT_URL:-https://api.tesseract.pscx.ai}
+      - TESSERACT_EXTERNAL_URL=${TESSERACT_EXTERNAL_URL:-https://api.tesseract.pscx.ai}
+      - TESSERACT_USERNAME=${TESSERACT_USERNAME}
+      - TESSERACT_PASSWORD=${TESSERACT_PASSWORD}
       - ADMIN_DOMAIN=${ADMIN_DOMAIN:-cloudwarriors.ai}
       - GH_TOKEN=${GITHUB_READ_ACCESS}
+      - BIGHEAD_DEVTOOLS_API_URL=http://bighead-devtools-api:9100
+      - BIGHEAD_DEV_TOOLS_API=bighead-dev-key-2026
       - NODE_OPTIONS=--max-old-space-size=3072
+      - OPENCLAW_BUNDLED_PLUGINS_DIR=/app/extensions
     volumes:
       # Mount extensions + config + code for bot access
       - ./extensions:/app/extensions

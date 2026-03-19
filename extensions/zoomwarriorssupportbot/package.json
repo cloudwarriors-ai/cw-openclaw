@@ -1,0 +1,14 @@
+{
+  "name": "@openclaw/zoomwarriorssupportbot",
+  "version": "0.1.0",
+  "description": "ZoomWarriors2 break/fix support agent tools",
+  "type": "module",
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

@@ -4,14 +4,13 @@ import type {
   GroupPolicy,
   GroupToolPolicyConfig,
 } from "openclaw/plugin-sdk";
+import { resolveToolsBySender } from "openclaw/plugin-sdk/channel-policy";
 import {
   buildChannelKeyCandidates,
   normalizeChannelSlug,
-  resolveToolsBySender,
   resolveChannelEntryMatchWithFallback,
   resolveNestedAllowlistDecision,
-} from "openclaw/plugin-sdk";
-
+} from "openclaw/plugin-sdk/channel-runtime";
 import type { ZoomConfig, ZoomChannelConfig } from "./types.js";
 
 export type ZoomResolvedRouteConfig = {

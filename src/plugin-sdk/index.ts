@@ -68,3 +68,16 @@ export type { ContextEngineFactory } from "../context-engine/registry.js";
 export { emptyPluginConfigSchema } from "../plugins/config-schema.js";
 export { registerContextEngine } from "../context-engine/registry.js";
 export { delegateCompactionToRuntime } from "../context-engine/delegate.js";
+
+// Channel config helpers (used by zoom + other channel extensions)
+export {
+  normalizeChannelSlug,
+  buildChannelKeyCandidates,
+  resolveChannelEntryMatchWithFallback,
+  resolveNestedAllowlistDecision,
+} from "../channels/channel-config.js";
+export { resolveToolsBySender } from "../config/group-policy.js";
+export type { AllowlistMatch } from "../channels/allowlist-match.js";
+export type { ChannelGroupContext } from "../channels/plugins/types.core.js";
+export type { GroupPolicy } from "../config/types.base.js";
+export type { GroupToolPolicyConfig } from "../config/types.tools.js";
