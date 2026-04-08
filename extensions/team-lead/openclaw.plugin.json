@@ -1,0 +1,10 @@
+{
+  "id": "team-lead",
+  "name": "Team Lead",
+  "description": "Project tracking for team lead — receives status updates from remote agents, assigns project IDs, and provides a dashboard view",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
