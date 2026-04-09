@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import { getProject, getEventLog } from "../storage.js";
+import { getProject, getEventLog, listDocs } from "../storage.js";
 
 export const projectGetSchema = Type.Object({
   projectId: Type.String({ description: "Project ID to retrieve (e.g. proj_a1b2c3d4)" }),
@@ -24,12 +24,13 @@ export function executeProjectGet(
   }
 
   const events = getEventLog(projectId);
+  const docs = listDocs(projectId).map(({ content: _, ...meta }) => meta);
 
   return {
     content: [
       {
         type: "text" as const,
-        text: JSON.stringify({ ok: true, project, events }),
+        text: JSON.stringify({ ok: true, project, events, docs }),
       },
     ],
   };

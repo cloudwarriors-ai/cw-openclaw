@@ -16,6 +16,7 @@ import type {
   QueuedTask,
   AgentHeartbeat,
   ProjectEvent,
+  ArchitectureDoc,
 } from "./types.js";
 
 let stateDir = "";
@@ -24,7 +25,7 @@ let stateDir = "";
 
 export function initStorage(dir: string): void {
   stateDir = dir;
-  for (const sub of ["projects", "queue", "agents"]) {
+  for (const sub of ["projects", "queue", "agents", "docs"]) {
     const p = join(stateDir, sub);
     if (!existsSync(p)) mkdirSync(p, { recursive: true });
   }
@@ -57,6 +58,10 @@ export function generateProjectId(): string {
 
 export function generateTaskId(): string {
   return `task_${randomBytes(4).toString("hex")}`;
+}
+
+export function generateDocId(): string {
+  return `doc_${randomBytes(4).toString("hex")}`;
 }
 
 function generateEventId(): string {
@@ -243,4 +248,60 @@ export function getEventLog(projectId: string): ProjectEvent[] {
   } catch {
     return [];
   }
+}
+
+// --- Architecture Docs CRUD ---
+
+function ensureDocsDir(projectId: string): string {
+  const dir = join(stateDir, "docs", projectId);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+export function saveDoc(doc: ArchitectureDoc): void {
+  const dir = ensureDocsDir(doc.projectId);
+  writeFileSync(join(dir, `${doc.slug}.json`), JSON.stringify(doc, null, 2), "utf-8");
+}
+
+export function getDoc(projectId: string, slug: string): ArchitectureDoc | null {
+  const fp = join(stateDir, "docs", projectId, `${slug}.json`);
+  if (!existsSync(fp)) return null;
+  try {
+    return JSON.parse(readFileSync(fp, "utf-8")) as ArchitectureDoc;
+  } catch {
+    return null;
+  }
+}
+
+export function listDocs(projectId?: string): ArchitectureDoc[] {
+  const docsRoot = join(stateDir, "docs");
+  if (!existsSync(docsRoot)) return [];
+
+  const projectDirs = projectId
+    ? [projectId]
+    : readdirSync(docsRoot).filter((f) => !f.startsWith("."));
+
+  const docs: ArchitectureDoc[] = [];
+  for (const pid of projectDirs) {
+    const dir = join(docsRoot, pid);
+    if (!existsSync(dir)) continue;
+    const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+    for (const file of files) {
+      try {
+        const data = JSON.parse(readFileSync(join(dir, file), "utf-8")) as ArchitectureDoc;
+        docs.push(data);
+      } catch {
+        // Skip corrupt files
+      }
+    }
+  }
+
+  return docs.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+}
+
+export function deleteDoc(projectId: string, slug: string): boolean {
+  const fp = join(stateDir, "docs", projectId, `${slug}.json`);
+  if (!existsSync(fp)) return false;
+  unlinkSync(fp);
+  return true;
 }
