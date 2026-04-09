@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import { getDoc, listDocs } from "../storage.js";
+import { getDoc, listDocs, getProject } from "../storage.js";
 import type { ArchitectureDoc } from "../types.js";
 
 export const docGetSchema = Type.Object({
@@ -9,13 +9,19 @@ export const docGetSchema = Type.Object({
   slug: Type.Optional(
     Type.String({ description: "Doc slug to retrieve full content. Requires projectId." }),
   ),
+  repo: Type.Optional(
+    Type.String({
+      description:
+        "Filter docs by repository (e.g. 'cloudwarriors-ai/myapp'). Returns docs from all projects in that repo.",
+    }),
+  ),
 });
 
 export function executeDocGet(
   _id: string,
   params: Record<string, unknown>,
 ): { content: Array<{ type: "text"; text: string }> } {
-  const { projectId, slug } = params as { projectId?: string; slug?: string };
+  const { projectId, slug, repo } = params as { projectId?: string; slug?: string; repo?: string };
 
   // Single doc with full content
   if (projectId && slug) {
@@ -38,8 +44,17 @@ export function executeDocGet(
     };
   }
 
-  // List docs (for one project or all)
-  const docs = listDocs(projectId);
+  // List docs (for one project, one repo, or all)
+  let docs = listDocs(projectId);
+
+  // Filter by repo if specified
+  if (repo && !projectId) {
+    docs = docs.filter((d) => {
+      const p = getProject(d.projectId);
+      return p && p.project.repo === repo;
+    });
+  }
+
   const metadata: Omit<ArchitectureDoc, "content">[] = docs.map(({ content: _, ...rest }) => rest);
 
   const header = "| Project | Slug | Title | Author | Updated |";

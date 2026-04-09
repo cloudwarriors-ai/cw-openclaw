@@ -7,6 +7,11 @@ export const docUploadSchema = Type.Object({
   title: Type.String({ description: "Document title (e.g. 'API Architecture', 'Data Flow')" }),
   content: Type.String({ description: "Document content in Markdown" }),
   author: Type.String({ description: "Author name (agent or human)" }),
+  branch: Type.Optional(
+    Type.String({
+      description: "Branch name — appended to slug to prevent collisions across branches",
+    }),
+  ),
 });
 
 function slugify(title: string): string {
@@ -21,11 +26,12 @@ export function executeDocUpload(
   _id: string,
   params: Record<string, unknown>,
 ): { content: Array<{ type: "text"; text: string }> } {
-  const { projectId, title, content, author } = params as {
+  const { projectId, title, content, author, branch } = params as {
     projectId: string;
     title: string;
     content: string;
     author: string;
+    branch?: string;
   };
 
   const project = getProject(projectId);
@@ -40,7 +46,7 @@ export function executeDocUpload(
     };
   }
 
-  const slug = slugify(title);
+  const slug = branch ? slugify(`${title}-${branch}`) : slugify(title);
   if (!slug) {
     return {
       content: [

@@ -1,5 +1,13 @@
 import { Type } from "@sinclair/typebox";
-import { getTask, deleteTask, generateProjectId, saveProject, appendEvent } from "../storage.js";
+import {
+  getTask,
+  deleteTask,
+  generateProjectId,
+  saveProject,
+  appendEvent,
+  listDocs,
+  getProject,
+} from "../storage.js";
 import type { StoredProject } from "../types.js";
 
 export const taskStartSchema = Type.Object({
@@ -81,6 +89,15 @@ export function executeTaskStart(
     },
   });
 
+  // Find docs from previous projects on the same repo
+  const allDocs = listDocs();
+  const existingDocs = allDocs
+    .filter((d) => {
+      const p = getProject(d.projectId);
+      return p && p.project.repo === task.project.repo && p.projectId !== projectId;
+    })
+    .map(({ content: _, ...meta }) => meta);
+
   return {
     content: [
       {
@@ -91,6 +108,7 @@ export function executeTaskStart(
           started: true,
           taskId,
           ...(task.configProfile && { configProfile: task.configProfile }),
+          ...(existingDocs.length > 0 && { existingDocs }),
         }),
       },
     ],
