@@ -39,6 +39,7 @@ export interface ProjectUpdatePayload {
   };
   timestamp: string;
   configProfile?: string;
+  pullRequest?: Omit<PullRequestInfo, "updatedAt">;
 }
 
 export interface HistoryEntry {
@@ -46,6 +47,15 @@ export interface HistoryEntry {
   status: ProjectStatus;
   summary: string;
   details: string;
+}
+
+export interface PullRequestInfo {
+  url: string;
+  number: number;
+  status: "open" | "merged" | "closed";
+  checksStatus?: "pending" | "passing" | "failing" | null;
+  title?: string;
+  updatedAt: string;
 }
 
 export interface StoredProject {
@@ -59,6 +69,7 @@ export interface StoredProject {
   createdAt: string;
   updatedAt: string;
   configProfile?: string;
+  pullRequest?: PullRequestInfo;
 }
 
 export interface ProjectStore {
@@ -76,6 +87,7 @@ export interface DashboardProject {
   status: ProjectStatus;
   lastUpdate: string;
   configProfile?: string;
+  pullRequest?: PullRequestInfo;
 }
 
 // --- v2: Task Queue ---
@@ -114,7 +126,21 @@ export type ProjectEventType =
   | "status_changed"
   | "updated"
   | "config_changed"
-  | "deleted";
+  | "deleted"
+  | "pr_updated"
+  | "doc_added"
+  | "doc_updated";
+
+export interface ArchitectureDoc {
+  docId: string;
+  projectId: string;
+  slug: string;
+  title: string;
+  content: string;
+  author: string;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface ProjectEvent {
   eventId: string;

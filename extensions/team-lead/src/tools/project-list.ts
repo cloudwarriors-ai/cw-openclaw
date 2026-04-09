@@ -39,12 +39,18 @@ export function executeProjectList(
     status: p.currentStatus,
     lastUpdate: p.updatedAt,
     ...(p.configProfile && { configProfile: p.configProfile }),
+    ...(p.pullRequest && { pullRequest: p.pullRequest }),
   }));
 
   const header = "| Agent | Group | Project | Config | Branch / PR | Problem | Status |";
   const sep = "|-------|-------|---------|--------|-------------|---------|--------|";
   const rows = dashboard.map((d) => {
-    const branchPr = d.pr ? `${d.branch} ${d.pr}` : d.branch;
+    let branchPr: string;
+    if (d.pullRequest) {
+      branchPr = `${d.branch} #${d.pullRequest.number} (${d.pullRequest.status})`;
+    } else {
+      branchPr = d.pr ? `${d.branch} ${d.pr}` : d.branch;
+    }
     const grp = d.group ?? "—";
     const cfg = d.configProfile ?? "—";
     return `| ${d.agent} | ${grp} | ${d.projectName} | ${cfg} | ${branchPr} | ${d.problem} | ${d.status} |`;

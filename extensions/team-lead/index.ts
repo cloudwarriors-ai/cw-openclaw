@@ -2,8 +2,10 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 // Services
 import { createHeartbeatMonitorService } from "./src/services/heartbeat-monitor.js";
-import { initStorage, listProjects, listAgents, listQueue } from "./src/storage.js";
+import { initStorage, listProjects, listAgents, listQueue, listDocs } from "./src/storage.js";
 import { agentStatusSchema, executeAgentStatus } from "./src/tools/agent-status.js";
+import { docGetSchema, executeDocGet } from "./src/tools/doc-get.js";
+import { docUploadSchema, executeDocUpload } from "./src/tools/doc-upload.js";
 import { heartbeatSchema, executeHeartbeat } from "./src/tools/heartbeat.js";
 import { projectDeleteSchema, executeProjectDelete } from "./src/tools/project-delete.js";
 import { projectGetSchema, executeProjectGet } from "./src/tools/project-get.js";
@@ -113,6 +115,26 @@ const plugin = {
       execute: executeAgentStatus,
     }));
 
+    // --- Architecture docs tools ---
+
+    api.registerTool(() => ({
+      name: "team_lead_upload_doc",
+      description:
+        "Upload or update an architecture document for a tracked project. " +
+        "Documents are keyed by title (slug). Re-uploading the same title overwrites the content.",
+      parameters: docUploadSchema,
+      execute: executeDocUpload,
+    }));
+
+    api.registerTool(() => ({
+      name: "team_lead_get_docs",
+      description:
+        "Retrieve architecture docs. Provide projectId + slug for a single doc with full content, " +
+        "only projectId for that project's doc list, or omit both to browse all docs across all projects.",
+      parameters: docGetSchema,
+      execute: executeDocGet,
+    }));
+
     // --- Heartbeat monitor service ---
 
     api.registerService(createHeartbeatMonitorService());
@@ -138,13 +160,19 @@ const plugin = {
           status: p.currentStatus,
           lastUpdate: p.updatedAt,
           ...(p.configProfile && { configProfile: p.configProfile }),
+          ...(p.pullRequest && { pullRequest: p.pullRequest }),
         }));
 
         // Projects table
         const pHeader = "| Agent | Group | Project | Config | Branch / PR | Problem | Status |";
         const pSep = "|-------|-------|---------|--------|-------------|---------|--------|";
         const pRows = dashboard.map((d) => {
-          const branchPr = d.pr ? `${d.branch} ${d.pr}` : d.branch;
+          let branchPr: string;
+          if (d.pullRequest) {
+            branchPr = `${d.branch} #${d.pullRequest.number} (${d.pullRequest.status})`;
+          } else {
+            branchPr = d.pr ? `${d.branch} ${d.pr}` : d.branch;
+          }
           const grp = d.group ?? "—";
           const cfg = d.configProfile ?? "—";
           return `| ${d.agent} | ${grp} | ${d.projectName} | ${cfg} | ${branchPr} | ${d.problem} | ${d.status} |`;
@@ -167,13 +195,17 @@ const plugin = {
           : "No agents registered.";
 
         const queueCount = queue.length;
+        const openPRs = dashboard.filter((d) => d.pullRequest?.status === "open").length;
+        const allDocs = listDocs();
+        const docProjects = new Set(allDocs.map((d) => d.projectId)).size;
 
         return {
           type: "text" as const,
           body:
             `## Project Dashboard\n\n${projectTable}\n\n` +
             `## Agent Health\n\n${agentTable}\n\n` +
-            `_${projects.length} project(s) tracked, ${agents.length} agent(s) registered, ${queueCount} task(s) queued_`,
+            `_${projects.length} project(s) tracked, ${agents.length} agent(s) registered, ${queueCount} task(s) queued, ` +
+            `${openPRs} open PR(s), ${allDocs.length} doc(s) across ${docProjects} project(s)_`,
         };
       },
     });

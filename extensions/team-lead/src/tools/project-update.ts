@@ -1,6 +1,6 @@
 import { Type } from "@sinclair/typebox";
 import { getProject, saveProject, generateProjectId, appendEvent } from "../storage.js";
-import type { ProjectUpdatePayload, StoredProject } from "../types.js";
+import type { ProjectUpdatePayload, StoredProject, PullRequestInfo } from "../types.js";
 
 export const projectUpdateSchema = Type.Object({
   projectId: Type.Union([Type.String(), Type.Null()], {
@@ -45,6 +45,26 @@ export const projectUpdateSchema = Type.Object({
       description: "Config profile to set or update on this project",
     }),
   ),
+  pullRequest: Type.Optional(
+    Type.Object({
+      url: Type.String({
+        description: "Full GitHub PR URL (e.g. https://github.com/org/repo/pull/42)",
+      }),
+      number: Type.Integer({ description: "PR number" }),
+      status: Type.Union([Type.Literal("open"), Type.Literal("merged"), Type.Literal("closed")], {
+        description: "Current PR status",
+      }),
+      checksStatus: Type.Optional(
+        Type.Union([
+          Type.Literal("pending"),
+          Type.Literal("passing"),
+          Type.Literal("failing"),
+          Type.Null(),
+        ]),
+      ),
+      title: Type.Optional(Type.String({ description: "PR title" })),
+    }),
+  ),
 });
 
 export function executeProjectUpdate(
@@ -80,7 +100,16 @@ export function executeProjectUpdate(
       createdAt: now,
       updatedAt: now,
       ...(payload.configProfile && { configProfile: payload.configProfile }),
+      ...(payload.pullRequest && {
+        pullRequest: { ...payload.pullRequest, updatedAt: now } as PullRequestInfo,
+      }),
     };
+
+    // Backfill project.pr from pullRequest if not already set
+    if (payload.pullRequest && !project.project.pr) {
+      project.project.pr = `#${payload.pullRequest.number}`;
+    }
+
     saveProject(project);
 
     appendEvent(projectId, {
@@ -94,6 +123,16 @@ export function executeProjectUpdate(
         ...(payload.configProfile && { configProfile: payload.configProfile }),
       },
     });
+
+    if (payload.pullRequest) {
+      appendEvent(projectId, {
+        projectId,
+        timestamp: now,
+        type: "pr_updated",
+        actor: payload.agent.name,
+        data: { ...payload.pullRequest },
+      });
+    }
   } else {
     const prevStatus = existing.currentStatus;
     existing.agent = payload.agent;
@@ -111,6 +150,26 @@ export function executeProjectUpdate(
           type: "config_changed",
           actor: payload.agent.name,
           data: { prevConfig: prevConfig ?? null, configProfile: payload.configProfile },
+        });
+      }
+    }
+    if (payload.pullRequest) {
+      const prevPR = existing.pullRequest;
+      existing.pullRequest = { ...payload.pullRequest, updatedAt: now } as PullRequestInfo;
+      if (!existing.project.pr) {
+        existing.project.pr = `#${payload.pullRequest.number}`;
+      }
+      if (
+        !prevPR ||
+        prevPR.status !== payload.pullRequest.status ||
+        prevPR.url !== payload.pullRequest.url
+      ) {
+        appendEvent(projectId!, {
+          projectId: projectId!,
+          timestamp: now,
+          type: "pr_updated",
+          actor: payload.agent.name,
+          data: { prevStatus: prevPR?.status ?? null, ...payload.pullRequest },
         });
       }
     }
