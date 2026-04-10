@@ -9,9 +9,9 @@ Do both when you make meaningful progress.
 
 ## Gateway URL and Auth
 
-- **Gateway:** `http://geralds-macbook-pro.tailcc6c5f.ts.net:18789`
-- **MCP:** `http://geralds-macbook-pro.tailcc6c5f.ts.net:8400/mcp`
-- **Auth token:** `4c5d25693d05a27341b55cc650d008d66b37673fd13e4e4b`
+- **Gateway:** `__LEAD_GATEWAY__`
+- **MCP:** `__LEAD_MCP__`
+- **Auth token:** `__LEAD_TOKEN__`
 
 ---
 
@@ -20,8 +20,8 @@ Do both when you make meaningful progress.
 Sends a message to the lead agent's session. The lead sees it immediately.
 
 ```bash
-curl -sS http://geralds-macbook-pro.tailcc6c5f.ts.net:18789/tools/invoke \
-  -H 'Authorization: Bearer 4c5d25693d05a27341b55cc650d008d66b37673fd13e4e4b' \
+curl -sS __LEAD_GATEWAY__/tools/invoke \
+  -H 'Authorization: Bearer __LEAD_TOKEN__' \
   -H 'Content-Type: application/json' \
   -d '{
     "tool": "sessions_send",
@@ -50,7 +50,7 @@ The MCP uses Streamable HTTP. Every call needs an MCP session: initialize first,
 ### Step 1: Initialize a session
 
 ```bash
-SESSION_ID=$(curl -sS -X POST http://geralds-macbook-pro.tailcc6c5f.ts.net:8400/mcp \
+SESSION_ID=$(curl -sS -X POST __LEAD_MCP__ \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"remote-agent","version":"0.1"}}}' \
@@ -60,7 +60,7 @@ SESSION_ID=$(curl -sS -X POST http://geralds-macbook-pro.tailcc6c5f.ts.net:8400/
 ### Step 2: Create or update a task
 
 ```bash
-curl -sS -X POST http://geralds-macbook-pro.tailcc6c5f.ts.net:8400/mcp \
+curl -sS -X POST __LEAD_MCP__ \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -H "Mcp-Session-Id: $SESSION_ID" \
@@ -71,7 +71,7 @@ curl -sS -X POST http://geralds-macbook-pro.tailcc6c5f.ts.net:8400/mcp \
     "params": {
       "name": "task_upsert_tool",
       "arguments": {
-        "api_key": "4c5d25693d05a27341b55cc650d008d66b37673fd13e4e4b",
+        "api_key": "__LEAD_TOKEN__",
         "task_uuid": "UNIQUE_TASK_ID",
         "project_id": "PROJECT_NAME",
         "agent_id": "YOUR_NAME",
@@ -89,7 +89,7 @@ curl -sS -X POST http://geralds-macbook-pro.tailcc6c5f.ts.net:8400/mcp \
 ### Step 3: Add a note to a task
 
 ```bash
-curl -sS -X POST http://geralds-macbook-pro.tailcc6c5f.ts.net:8400/mcp \
+curl -sS -X POST __LEAD_MCP__ \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -H "Mcp-Session-Id: $SESSION_ID" \
@@ -100,7 +100,7 @@ curl -sS -X POST http://geralds-macbook-pro.tailcc6c5f.ts.net:8400/mcp \
     "params": {
       "name": "task_note_add_tool",
       "arguments": {
-        "api_key": "4c5d25693d05a27341b55cc650d008d66b37673fd13e4e4b",
+        "api_key": "__LEAD_TOKEN__",
         "task_uuid": "UNIQUE_TASK_ID",
         "agent_id": "YOUR_NAME",
         "content": "Finished the auth endpoints. Moving to integration tests."
@@ -153,8 +153,8 @@ When you start a new task, check if previous agents documented the architecture 
 ### Find docs for your repo
 
 ```bash
-curl -sS ${GATEWAY_URL}/tools/invoke \
-  -H "Authorization: Bearer ${AUTH_TOKEN}" \
+curl -sS __LEAD_GATEWAY__/tools/invoke \
+  -H "Authorization: Bearer __LEAD_TOKEN__" \
   -H 'Content-Type: application/json' \
   -d '{
     "tool": "team_lead_get_docs",
@@ -169,8 +169,8 @@ Replace `org/repo-name` with the actual repo (e.g. `cloudwarriors-ai/zoomwarrior
 ### Read a specific doc
 
 ```bash
-curl -sS ${GATEWAY_URL}/tools/invoke \
-  -H "Authorization: Bearer ${AUTH_TOKEN}" \
+curl -sS __LEAD_GATEWAY__/tools/invoke \
+  -H "Authorization: Bearer __LEAD_TOKEN__" \
   -H 'Content-Type: application/json' \
   -d '{
     "tool": "team_lead_get_docs",
