@@ -35,7 +35,7 @@ export function mergeSlackAccountConfig(
   accountId: string,
 ): SlackAccountConfig {
   return resolveMergedAccountConfig<SlackAccountConfig>({
-    channelConfig: cfg.channels?.slack as SlackAccountConfig | undefined,
+    channelConfig: cfg.channels?.slack,
     accounts: cfg.channels?.slack?.accounts as
       | Record<string, Partial<SlackAccountConfig>>
       | undefined,

@@ -11,7 +11,7 @@ export function setFeishuNamedAccountEnabled(
   accountId: string,
   enabled: boolean,
 ): OpenClawConfig {
-  const feishuCfg = cfg.channels?.feishu as FeishuConfig | undefined;
+  const feishuCfg = cfg.channels?.feishu;
   return {
     ...cfg,
     channels: {

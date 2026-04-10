@@ -88,7 +88,7 @@ function sendError(
   error: string,
   extra?: Record<string, unknown>,
 ) {
-  opts.respond(false, { error, ...(extra ?? {}) });
+  opts.respond(false, { error, ...extra });
 }
 
 function buildMeshEvent(
@@ -101,7 +101,7 @@ function buildMeshEvent(
     status,
     from_agent: stringValue(params.from_agent),
     from_identity: stringValue(params.from_identity),
-    ...(extra ?? {}),
+    ...extra,
   };
 }
 

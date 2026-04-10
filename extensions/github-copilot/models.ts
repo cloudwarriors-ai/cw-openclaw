@@ -39,10 +39,7 @@ export function resolveCopilotForwardCompatModel(
   // to preserve any special settings the registry has for codex models.
   if (lowerModelId === CODEX_GPT_54_MODEL_ID) {
     for (const templateId of CODEX_TEMPLATE_MODEL_IDS) {
-      const template = ctx.modelRegistry.find(
-        PROVIDER_ID,
-        templateId,
-      ) as ProviderRuntimeModel | null;
+      const template = ctx.modelRegistry.find(PROVIDER_ID, templateId);
       if (!template) {
         continue;
       }

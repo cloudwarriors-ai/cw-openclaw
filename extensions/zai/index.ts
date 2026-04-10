@@ -44,19 +44,13 @@ function resolveGlm5ForwardCompatModel(
     return undefined;
   }
 
-  const existing = ctx.modelRegistry.find(
-    PROVIDER_ID,
-    trimmedModelId,
-  ) as ProviderRuntimeModel | null;
+  const existing = ctx.modelRegistry.find(PROVIDER_ID, trimmedModelId);
   if (existing) {
     return existing;
   }
 
   const def = buildZaiModelDefinition({ id: trimmedModelId });
-  const template = ctx.modelRegistry.find(
-    PROVIDER_ID,
-    GLM5_TEMPLATE_MODEL_ID,
-  ) as ProviderRuntimeModel | null;
+  const template = ctx.modelRegistry.find(PROVIDER_ID, GLM5_TEMPLATE_MODEL_ID);
   return normalizeModelCompat({
     ...template,
     id: def.id,

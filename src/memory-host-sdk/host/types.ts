@@ -20,7 +20,9 @@ export function resolveSearchPathPrefix(
   channelSlug: string | undefined,
   excludeSlugs?: string[],
 ): ScopeResolution | undefined {
-  if (!scope || scope === "global") return undefined;
+  if (!scope || scope === "global") {
+    return undefined;
+  }
   if (scope === "all-customers") {
     const excludePrefixes = excludeSlugs
       ?.map((s) => s.replace(/[/\\]+/g, "/").replace(/^\/|\/$/g, ""))
@@ -32,9 +34,13 @@ export function resolveSearchPathPrefix(
     };
   }
   // scope === "channel"
-  if (!channelSlug) return { denied: true };
+  if (!channelSlug) {
+    return { denied: true };
+  }
   const slug = channelSlug.replace(/[/\\]+/g, "/").replace(/^\/|\/$/g, "");
-  if (!slug) return { denied: true };
+  if (!slug) {
+    return { denied: true };
+  }
   return { prefix: `memory/customers/${slug}` };
 }
 

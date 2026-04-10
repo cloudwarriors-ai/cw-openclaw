@@ -54,7 +54,7 @@ export async function sendMessageIrc(
   opts: SendIrcOptions = {},
 ): Promise<SendIrcResult> {
   const runtime = getIrcRuntime();
-  const cfg = (opts.cfg ?? runtime.config.loadConfig()) as CoreConfig;
+  const cfg = opts.cfg ?? runtime.config.loadConfig();
   const account = resolveIrcAccount({
     cfg,
     accountId: opts.accountId,
