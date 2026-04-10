@@ -12,6 +12,9 @@ Do both when you make meaningful progress.
 - **Gateway:** `__LEAD_GATEWAY__`
 - **MCP:** `__LEAD_MCP__`
 - **Auth token:** `__LEAD_TOKEN__`
+- **Lead session key:** `__LEAD_SESSION_KEY__`
+
+If the lead uses Tailscale Serve, keep using the HTTPS tailnet URL here even if the gateway itself listens only on `127.0.0.1` on the lead machine.
 
 ---
 
@@ -24,9 +27,10 @@ curl -sS __LEAD_GATEWAY__/tools/invoke \
   -H 'Authorization: Bearer __LEAD_TOKEN__' \
   -H 'Content-Type: application/json' \
   -d '{
+    "sessionKey": "__LEAD_SESSION_KEY__",
     "tool": "sessions_send",
     "args": {
-      "sessionKey": "main",
+      "sessionKey": "__LEAD_SESSION_KEY__",
       "message": "{\"type\":\"status_update\",\"from\":\"YOUR_NAME\",\"project\":\"PROJECT_NAME\",\"signal\":\"SIGNAL\",\"summary\":\"ONE_LINE_SUMMARY\",\"timestamp\":\"ISO_TIMESTAMP\"}",
       "timeoutSeconds": 0
     }
@@ -46,6 +50,8 @@ curl -sS __LEAD_GATEWAY__/tools/invoke \
 ## 2. Log to Team MCP (persistent task tracking)
 
 The MCP uses Streamable HTTP. Every call needs an MCP session: initialize first, then call tools with the session ID.
+
+If the lead gave you an HTTPS Serve URL for the gateway, ask them for the MCP URL explicitly. It is often a separate endpoint and may not be derivable from the Serve URL.
 
 ### Step 1: Initialize a session
 
@@ -157,6 +163,7 @@ curl -sS __LEAD_GATEWAY__/tools/invoke \
   -H "Authorization: Bearer __LEAD_TOKEN__" \
   -H 'Content-Type: application/json' \
   -d '{
+    "sessionKey": "__LEAD_SESSION_KEY__",
     "tool": "team_lead_get_docs",
     "args": {
       "repo": "org/repo-name"
@@ -173,6 +180,7 @@ curl -sS __LEAD_GATEWAY__/tools/invoke \
   -H "Authorization: Bearer __LEAD_TOKEN__" \
   -H 'Content-Type: application/json' \
   -d '{
+    "sessionKey": "__LEAD_SESSION_KEY__",
     "tool": "team_lead_get_docs",
     "args": {
       "projectId": "<projectId from doc metadata>",

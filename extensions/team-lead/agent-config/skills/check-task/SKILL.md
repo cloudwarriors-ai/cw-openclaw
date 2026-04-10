@@ -47,6 +47,7 @@ curl -sS -X POST "<gateway-url>/tools/invoke" \
   -H "Authorization: Bearer <gateway-token>" \
   -H "Content-Type: application/json" \
   -d '{
+    "sessionKey": "<session-key>",
     "tool": "sessions_send",
     "args": {
       "sessionKey": "<session-key>",

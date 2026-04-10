@@ -7,7 +7,7 @@ metadata: { "openclaw": { "emoji": "👥", "requires": { "bins": ["curl"] } } }
 
 # check-team — Check Team Member Connectivity
 
-Pings each team member's gateway to see who's online and reachable. Reads the team roster and checks each gateway's health endpoint.
+Pings each team member's gateway to see who's online and reachable. Reads the team roster and checks whether the HTTP `/tools/invoke` endpoint responds, which works with both raw host:port URLs and Tailscale Serve URLs.
 
 ## Arguments
 
@@ -24,12 +24,15 @@ Read `~/.openclaw/workspace/team-roster.json`.
 For each member in the roster (or just the specified person):
 
 ```bash
-curl -sS --connect-timeout 3 "<gateway-url>/health"
+curl -sS --connect-timeout 3 -o /dev/null -w "%{http_code}" \
+  -X POST "<gateway-url>/tools/invoke" \
+  -H 'Content-Type: application/json' \
+  -d '{}'
 ```
 
 Record the result:
 
-- **Online:** Health check returned successfully
+- **Online:** Any HTTP response is returned (for example `400` or `401`)
 - **Offline:** Connection refused, timed out, or error
 
 If a member has `"status": "not-configured"`, mark them as "Not configured (hooks not enabled)" without pinging.
@@ -41,9 +44,9 @@ Display a table:
 ```
 | Name     | Status          | Gateway                                           |
 |----------|-----------------|---------------------------------------------------|
-| gerald   | Online          | geralds-macbook-pro.tailcc6c5f.ts.net:18789       |
-| dev-test | Offline         | 127.0.0.1:19001                                   |
-| chad     | Not configured  | chads-macbook-pro.tail...:18789                    |
+| gerald   | Online          | https://geralds-macbook-pro.tailnet.ts.net        |
+| dev-test | Offline         | ws://127.0.0.1:19001                              |
+| chad     | Not configured  | https://chads-macbook-pro.tailnet.ts.net          |
 ```
 
 If everyone is offline, suggest checking Tailscale connectivity (`tailscale status`).
