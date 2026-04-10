@@ -6,6 +6,7 @@ import type { SpawnSubagentMode } from "./subagent-spawn.js";
 export type SubagentRunRecord = {
   runId: string;
   childSessionKey: string;
+  controllerSessionKey?: string;
   requesterSessionKey: string;
   requesterOrigin?: DeliveryContext;
   requesterDisplayKey: string;
@@ -13,10 +14,13 @@ export type SubagentRunRecord = {
   cleanup: "delete" | "keep";
   label?: string;
   model?: string;
+  workspaceDir?: string;
   runTimeoutSeconds?: number;
   spawnMode?: SpawnSubagentMode;
   createdAt: number;
   startedAt?: number;
+  sessionStartedAt?: number;
+  accumulatedRuntimeMs?: number;
   endedAt?: number;
   outcome?: SubagentRunOutcome;
   archiveAtMs?: number;
@@ -24,12 +28,17 @@ export type SubagentRunRecord = {
   cleanupHandled?: boolean;
   suppressAnnounceReason?: "steer-restart" | "killed";
   expectsCompletionMessage?: boolean;
-  /** Number of announce delivery attempts that returned false (deferred). */
   announceRetryCount?: number;
-  /** Timestamp of the last announce retry attempt (for backoff). */
   lastAnnounceRetryAt?: number;
-  /** Terminal lifecycle reason recorded when the run finishes. */
   endedReason?: SubagentLifecycleEndedReason;
-  /** Set after the subagent_ended hook has been emitted successfully once. */
+  wakeOnDescendantSettle?: boolean;
+  frozenResultText?: string | null;
+  frozenResultCapturedAt?: number;
+  fallbackFrozenResultText?: string | null;
+  fallbackFrozenResultCapturedAt?: number;
   endedHookEmittedAt?: number;
+  completionAnnouncedAt?: number;
+  attachmentsDir?: string;
+  attachmentsRootDir?: string;
+  retainAttachmentsOnKeep?: boolean;
 };

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { runCronIsolatedAgentTurn } from "../../src/cron/isolated-agent.js";
 import type { CronJob } from "../../src/cron/types.js";
+import { MESH_SCOPE } from "../../src/gateway/operator-scopes.js";
 import type { GatewayRequestHandlerOptions } from "../../src/gateway/server-methods/types.js";
 
 type MeshGatewayConfig = {
@@ -204,98 +205,114 @@ const plugin = {
   register(api: OpenClawPluginApi) {
     const config = resolveConfig(api.pluginConfig);
 
-    api.registerGatewayMethod("mesh.health", (opts) => {
-      const authz = authorizeMeshClient(config, opts);
-      opts.respond(true, {
-        ok: authz.ok,
-        enabled: config.enabled,
-        gateway_reachable: true,
-        tailscale_auth_active: opts.client?.authMethod === "tailscale",
-        peer_authorized: authz.ok,
-        callback_route_healthy: Boolean(opts.client?.connId),
-        identity: authz.identity,
-        displayName: config.displayName,
-        reason: authz.ok ? undefined : authz.reason,
-      });
-    });
+    api.registerGatewayMethod(
+      "mesh.health",
+      (opts) => {
+        const authz = authorizeMeshClient(config, opts);
+        opts.respond(true, {
+          ok: authz.ok,
+          enabled: config.enabled,
+          gateway_reachable: true,
+          tailscale_auth_active: opts.client?.authMethod === "tailscale",
+          peer_authorized: authz.ok,
+          callback_route_healthy: Boolean(opts.client?.connId),
+          identity: authz.identity,
+          displayName: config.displayName,
+          reason: authz.ok ? undefined : authz.reason,
+        });
+      },
+      { scope: MESH_SCOPE },
+    );
 
-    api.registerGatewayMethod("mesh.list_capabilities", (opts) => {
-      const authz = authorizeMeshClient(config, opts);
-      if (!authz.ok) {
-        sendError(opts, authz.reason, { identity: authz.identity });
-        return;
-      }
-      opts.respond(true, {
-        agent: config.displayName ?? "openclaw",
-        identity: authz.identity,
-        methods: ["mesh.health", "mesh.list_capabilities", "mesh.send_task", "mesh.reply"],
-        delivery: "async_task_callback",
-        task_states: [...TASK_STATES],
-      });
-    });
+    api.registerGatewayMethod(
+      "mesh.list_capabilities",
+      (opts) => {
+        const authz = authorizeMeshClient(config, opts);
+        if (!authz.ok) {
+          sendError(opts, authz.reason, { identity: authz.identity });
+          return;
+        }
+        opts.respond(true, {
+          agent: config.displayName ?? "openclaw",
+          identity: authz.identity,
+          methods: ["mesh.health", "mesh.list_capabilities", "mesh.send_task", "mesh.reply"],
+          delivery: "async_task_callback",
+          task_states: [...TASK_STATES],
+        });
+      },
+      { scope: MESH_SCOPE },
+    );
 
-    api.registerGatewayMethod("mesh.reply", (opts) => {
-      const authz = authorizeMeshClient(config, opts);
-      if (!authz.ok) {
-        sendError(opts, authz.reason, { identity: authz.identity });
-        return;
-      }
-      const taskId = stringValue(opts.params.task_id);
-      const status = stringValue(opts.params.status);
-      if (!taskId || !status || !TASK_STATES.has(status)) {
-        sendError(opts, "invalid_reply_payload");
-        return;
-      }
-      const payload = {
-        task_id: taskId,
-        status,
-        summary: stringValue(opts.params.summary),
-        details: opts.params.details,
-        artifacts: Array.isArray(opts.params.artifacts) ? opts.params.artifacts : [],
-        from_agent: stringValue(opts.params.from_agent),
-        from_identity: authz.identity,
-      };
-      emitToCurrentClient(opts, "mesh.reply", payload);
-      opts.respond(true, { accepted: true, task_id: taskId });
-    });
+    api.registerGatewayMethod(
+      "mesh.reply",
+      (opts) => {
+        const authz = authorizeMeshClient(config, opts);
+        if (!authz.ok) {
+          sendError(opts, authz.reason, { identity: authz.identity });
+          return;
+        }
+        const taskId = stringValue(opts.params.task_id);
+        const status = stringValue(opts.params.status);
+        if (!taskId || !status || !TASK_STATES.has(status)) {
+          sendError(opts, "invalid_reply_payload");
+          return;
+        }
+        const payload = {
+          task_id: taskId,
+          status,
+          summary: stringValue(opts.params.summary),
+          details: opts.params.details,
+          artifacts: Array.isArray(opts.params.artifacts) ? opts.params.artifacts : [],
+          from_agent: stringValue(opts.params.from_agent),
+          from_identity: authz.identity,
+        };
+        emitToCurrentClient(opts, "mesh.reply", payload);
+        opts.respond(true, { accepted: true, task_id: taskId });
+      },
+      { scope: MESH_SCOPE },
+    );
 
-    api.registerGatewayMethod("mesh.send_task", (opts) => {
-      const authz = authorizeMeshClient(config, opts);
-      if (!authz.ok) {
-        sendError(opts, authz.reason, { identity: authz.identity });
-        return;
-      }
-      const agentAuthzError = authorizeAgent(config, opts.params);
-      if (agentAuthzError) {
-        sendError(opts, agentAuthzError);
-        return;
-      }
-      const taskId = stringValue(opts.params.task_id) ?? randomUUID();
-      const message = stringValue(opts.params.message);
-      if (!message) {
-        sendError(opts, "message_required");
-        return;
-      }
-      const taskParams: Record<string, unknown> = {
-        ...opts.params,
-        task_id: taskId,
-        from_identity: authz.identity,
-      };
-      const accepted = buildMeshEvent(taskParams, "accepted", {
-        reply_target: opts.client?.connId ? { conn_id: opts.client.connId } : undefined,
-      });
-      emitToCurrentClient(opts, "mesh.task", accepted);
-      opts.respond(true, accepted);
-      void runMeshTask({
-        api,
-        opts,
-        eventParams: taskParams,
-        taskId,
-        message,
-        title: stringValue(taskParams.title),
-        model: stringValue(taskParams.model),
-      });
-    });
+    api.registerGatewayMethod(
+      "mesh.send_task",
+      (opts) => {
+        const authz = authorizeMeshClient(config, opts);
+        if (!authz.ok) {
+          sendError(opts, authz.reason, { identity: authz.identity });
+          return;
+        }
+        const agentAuthzError = authorizeAgent(config, opts.params);
+        if (agentAuthzError) {
+          sendError(opts, agentAuthzError);
+          return;
+        }
+        const taskId = stringValue(opts.params.task_id) ?? randomUUID();
+        const message = stringValue(opts.params.message);
+        if (!message) {
+          sendError(opts, "message_required");
+          return;
+        }
+        const taskParams: Record<string, unknown> = {
+          ...opts.params,
+          task_id: taskId,
+          from_identity: authz.identity,
+        };
+        const accepted = buildMeshEvent(taskParams, "accepted", {
+          reply_target: opts.client?.connId ? { conn_id: opts.client.connId } : undefined,
+        });
+        emitToCurrentClient(opts, "mesh.task", accepted);
+        opts.respond(true, accepted);
+        void runMeshTask({
+          api,
+          opts,
+          eventParams: taskParams,
+          taskId,
+          message,
+          title: stringValue(taskParams.title),
+          model: stringValue(taskParams.model),
+        });
+      },
+      { scope: MESH_SCOPE },
+    );
   },
 };
 
