@@ -1,0 +1,17 @@
+{
+  "id": "cloudflow-support",
+  "name": "CloudFlowSupport",
+  "description": "CloudFlow platform support, operations API, and issue management tools",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "cfRepos": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": ["cloudwarriors-ai/cloudflow"],
+        "description": "GitHub repos scoped for CloudFlow issue management"
+      }
+    }
+  }
+}

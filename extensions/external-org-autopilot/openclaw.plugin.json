@@ -1,0 +1,17 @@
+{
+  "id": "external-org-autopilot",
+  "name": "EOAutopilot",
+  "description": "External Org Autopilot onboarding, sync, execution, and reporting tools",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "eoaRepos": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": ["cloudwarriors-ai/external-org-autopilot"],
+        "description": "GitHub repos scoped for EOA issue management"
+      }
+    }
+  }
+}

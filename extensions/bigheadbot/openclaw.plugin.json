@@ -1,0 +1,17 @@
+{
+  "id": "bigheadbot",
+  "name": "BigheadBot",
+  "description": "Bighead break/fix research agent tools",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "bhRepos": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": ["cloudwarriors-ai/bighead"],
+        "description": "GitHub repos scoped for Bighead issue management"
+      }
+    }
+  }
+}

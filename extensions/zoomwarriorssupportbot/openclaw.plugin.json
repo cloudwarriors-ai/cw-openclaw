@@ -1,0 +1,17 @@
+{
+  "id": "zoomwarriorssupportbot",
+  "name": "ZoomWarriorsSupportBot",
+  "description": "ZoomWarriors2 break/fix support agent tools",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "zwsRepos": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": ["cloudwarriors-ai/zoomwarriors2"],
+        "description": "GitHub repos scoped for ZoomWarriors2 issue management"
+      }
+    }
+  }
+}
