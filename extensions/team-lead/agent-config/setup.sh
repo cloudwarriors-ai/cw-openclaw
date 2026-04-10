@@ -44,14 +44,25 @@ fatal() { error "$@"; exit 1; }
 LEAD_GATEWAY=""
 LEAD_TOKEN=""
 LEAD_MCP=""
+LEAD_SESSION_KEY=""
 LEAD_NAME=""
 AGENT_NAME=""
+
+derive_default_mcp_url() {
+  local gateway="${1%/}"
+  if [[ "$gateway" =~ ^http://[^/]+:[0-9]+$ ]]; then
+    printf '%s\n' "${gateway%:*}:8400/mcp"
+    return
+  fi
+  printf '\n'
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --lead-gateway) LEAD_GATEWAY="$2"; shift 2 ;;
     --lead-token)   LEAD_TOKEN="$2"; shift 2 ;;
     --lead-mcp)     LEAD_MCP="$2"; shift 2 ;;
+    --lead-session-key) LEAD_SESSION_KEY="$2"; shift 2 ;;
     --lead-name)    LEAD_NAME="$2"; shift 2 ;;
     --agent-name)   AGENT_NAME="$2"; shift 2 ;;
     -h|--help)
@@ -62,9 +73,10 @@ while [[ $# -gt 0 ]]; do
       echo "extension as an OpenClaw plugin — that's separate."
       echo ""
       echo "Options:"
-      echo "  --lead-gateway URL    Lead's gateway URL (e.g. http://host.tailnet:18789)"
-      echo "  --lead-token TOKEN    Auth token for the lead gateway"
-      echo "  --lead-mcp URL        Lead's MCP URL (default: derived from gateway, port 8400)"
+      echo "  --lead-gateway URL    Lead's gateway URL (e.g. https://lead-host.tailnet.ts.net)"
+      echo "  --lead-token TOKEN    Lead gateway token for /tools/invoke"
+      echo "  --lead-mcp URL        Lead's MCP URL (required if not derivable from the gateway URL)"
+      echo "  --lead-session-key KEY  Lead session key for /tools/invoke (default: agent:main:main)"
       echo "  --lead-name NAME      Lead's name (default: 'daniel')"
       echo "  --agent-name NAME     Your agent name (defaults to hostname)"
       exit 0
@@ -91,7 +103,7 @@ if [[ -z "$AGENT_NAME" ]]; then
 fi
 
 if [[ -z "$LEAD_GATEWAY" ]]; then
-  read -rp "Lead gateway URL (e.g. http://daniels-macbook-pro.tailcc6c5f.ts.net:18789): " LEAD_GATEWAY
+  read -rp "Lead gateway URL (e.g. https://lead-host.tailnet.ts.net): " LEAD_GATEWAY
 fi
 [[ -z "$LEAD_GATEWAY" ]] && fatal "Lead gateway URL is required."
 
@@ -100,11 +112,25 @@ if [[ -z "$LEAD_TOKEN" ]]; then
 fi
 [[ -z "$LEAD_TOKEN" ]] && fatal "Lead gateway auth token is required."
 
-# Derive MCP URL from gateway if not provided (swap port to 8400, append /mcp)
+if [[ -z "$LEAD_SESSION_KEY" ]]; then
+  read -rp "Lead session key [agent:main:main]: " LEAD_SESSION_KEY
+  LEAD_SESSION_KEY="${LEAD_SESSION_KEY:-agent:main:main}"
+fi
+
+# Derive MCP URL from the raw gateway host:port when possible.
 if [[ -z "$LEAD_MCP" ]]; then
-  LEAD_MCP="$(echo "$LEAD_GATEWAY" | sed 's|:[0-9]*$|:8400|')/mcp"
-  read -rp "Lead MCP URL [$LEAD_MCP]: " LEAD_MCP_INPUT
-  LEAD_MCP="${LEAD_MCP_INPUT:-$LEAD_MCP}"
+  DEFAULT_LEAD_MCP="$(derive_default_mcp_url "$LEAD_GATEWAY")"
+  if [[ -n "$DEFAULT_LEAD_MCP" ]]; then
+    read -rp "Lead MCP URL [$DEFAULT_LEAD_MCP]: " LEAD_MCP_INPUT
+    LEAD_MCP="${LEAD_MCP_INPUT:-$DEFAULT_LEAD_MCP}"
+  else
+    read -rp "Lead MCP URL (required when the gateway uses a Serve URL): " LEAD_MCP
+  fi
+fi
+
+if [[ -z "$LEAD_MCP" ]]; then
+  warn "Lead MCP URL not set; REMOTE-AGENT.md will keep a placeholder for MCP calls"
+  LEAD_MCP="ASK_THE_LEAD_FOR_MCP_URL"
 fi
 
 if [[ -z "$LEAD_NAME" ]]; then
@@ -149,6 +175,7 @@ sed \
   -e "s|__LEAD_GATEWAY__|${LEAD_GATEWAY}|g" \
   -e "s|__LEAD_MCP__|${LEAD_MCP}|g" \
   -e "s|__LEAD_TOKEN__|${LEAD_TOKEN}|g" \
+  -e "s|__LEAD_SESSION_KEY__|${LEAD_SESSION_KEY}|g" \
   "$REMOTE_AGENT_SRC" > "$REMOTE_AGENT_DST"
 
 # Verify no placeholders remain
@@ -167,6 +194,8 @@ cat > "$ROSTER_FILE" <<EOF
   "description": "Team configuration. Lead gateway and auth for status reporting.",
   "lead_gateway": "${LEAD_GATEWAY}",
   "lead_token": "${LEAD_TOKEN}",
+  "gateway_token": "${LEAD_TOKEN}",
+  "lead_session_key": "${LEAD_SESSION_KEY}",
   "lead": "${LEAD_NAME}",
   "members": {}
 }
@@ -193,48 +222,68 @@ else
   info "current-project.json already exists (keeping)"
 fi
 
-# --- Step 5: Connectivity check ---
+# --- Step 5: Reachability + auth check ---
 echo ""
 echo "--- Testing connectivity to lead gateway ---"
 
-HTTP_CODE=$(curl -sS --max-time 10 -o /dev/null -w "%{http_code}" \
-  "${LEAD_GATEWAY}/health" 2>/dev/null || echo "000")
+INVOKE_HTTP_CODE=$(curl -sS --max-time 10 -o /dev/null -w "%{http_code}" \
+  -X POST "${LEAD_GATEWAY}/tools/invoke" \
+  -H "Authorization: Bearer ${LEAD_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{}' 2>/dev/null || echo "000")
 
-if [[ "$HTTP_CODE" == "200" ]]; then
-  info "Lead gateway reachable (HTTP 200)"
-elif [[ "$HTTP_CODE" == "000" ]]; then
+if [[ "$INVOKE_HTTP_CODE" == "400" ]]; then
+  info "Gateway HTTP reachability works via ${LEAD_GATEWAY}/tools/invoke"
+elif [[ "$INVOKE_HTTP_CODE" == "401" ]] || [[ "$INVOKE_HTTP_CODE" == "403" ]]; then
+  error "Lead gateway is reachable but auth failed (HTTP ${INVOKE_HTTP_CODE})"
+  fatal "Setup incomplete — fix the gateway token and re-run"
+else
   error "Cannot reach lead gateway at ${LEAD_GATEWAY}"
+  error "Tried HTTP probe: ${LEAD_GATEWAY}/tools/invoke"
   error "Possible causes:"
   error "  - Tailscale not connected"
   error "  - Lead's gateway not running"
-  error "  - Lead's gateway bound to loopback (needs 0.0.0.0)"
+  error "  - Wrong gateway token"
+  error "  - Wrong Serve URL or remote host:port"
   echo ""
   fatal "Setup incomplete — fix connectivity and re-run"
-elif [[ "$HTTP_CODE" == "401" ]] || [[ "$HTTP_CODE" == "403" ]]; then
-  warn "Lead gateway reachable but auth failed (HTTP ${HTTP_CODE})"
-  warn "The gateway URL works but the token may be wrong"
-else
-  warn "Lead gateway returned HTTP ${HTTP_CODE} (expected 200)"
-  warn "Gateway may be reachable but not healthy"
 fi
 
 # --- Step 6: Test actual tool invocation ---
 echo ""
 echo "--- Testing tool access ---"
 
-TOOL_RESPONSE=$(curl -sS --max-time 10 -X POST "${LEAD_GATEWAY}/tools/invoke" \
+SESSION_RESPONSE=$(curl -sS --max-time 10 -X POST "${LEAD_GATEWAY}/tools/invoke" \
   -H "Authorization: Bearer ${LEAD_TOKEN}" \
   -H "Content-Type: application/json" \
-  -d '{"tool": "team_lead_list_projects", "args": {}}' 2>/dev/null || echo '{"error":"connection_failed"}')
+  -d "{\"tool\":\"sessions_send\",\"sessionKey\":\"${LEAD_SESSION_KEY}\",\"args\":{\"sessionKey\":\"${LEAD_SESSION_KEY}\",\"message\":\"[setup] Connectivity check from ${AGENT_NAME}\",\"timeoutSeconds\":0}}" 2>/dev/null || echo '{"error":"connection_failed"}')
 
-if echo "$TOOL_RESPONSE" | grep -q '"ok"'; then
-  info "Tool invocation works — agent can communicate with lead"
-elif echo "$TOOL_RESPONSE" | grep -q 'connection_failed'; then
-  error "Tool invocation failed — could not connect"
+if echo "$SESSION_RESPONSE" | grep -q '"ok"[[:space:]]*:[[:space:]]*true'; then
+  info "sessions_send works — the lead should see a one-time setup ping"
+elif echo "$SESSION_RESPONSE" | grep -q 'connection_failed'; then
+  error "sessions_send failed — could not connect"
   fatal "Setup incomplete — fix connectivity and re-run"
+elif echo "$SESSION_RESPONSE" | grep -q '"not_found"'; then
+  error "sessions_send is blocked on the lead gateway"
+  error "Lead needs gateway.tools.allow=[\"sessions_send\"] and tools.sessions.visibility=\"agent\""
+  fatal "Setup incomplete — fix the lead gateway config and re-run"
 else
-  warn "Tool invocation returned unexpected response: ${TOOL_RESPONSE:0:200}"
-  warn "Gateway is reachable but tools may not be configured correctly on the lead's side"
+  error "sessions_send returned unexpected response: ${SESSION_RESPONSE:0:200}"
+  fatal "Setup incomplete — fix the lead gateway config and re-run"
+fi
+
+TEAM_LEAD_RESPONSE=$(curl -sS --max-time 10 -X POST "${LEAD_GATEWAY}/tools/invoke" \
+  -H "Authorization: Bearer ${LEAD_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d "{\"tool\":\"team_lead_list_projects\",\"sessionKey\":\"${LEAD_SESSION_KEY}\",\"args\":{}}" 2>/dev/null || echo '{"error":"connection_failed"}')
+
+if echo "$TEAM_LEAD_RESPONSE" | grep -q '"ok"[[:space:]]*:[[:space:]]*true'; then
+  info "team_lead_* tools are available on the lead gateway"
+elif echo "$TEAM_LEAD_RESPONSE" | grep -q '"not_found"'; then
+  warn "team_lead_* tools are not available yet"
+  warn "Transport is working; the lead still needs the team-lead extension loaded"
+else
+  warn "team_lead_list_projects returned: ${TEAM_LEAD_RESPONSE:0:200}"
 fi
 
 # --- Done ---
@@ -245,6 +294,7 @@ echo "Installed:"
 echo "  - 6 skills in ${SKILLS_DIR}/"
 echo "  - REMOTE-AGENT.md in ${WORKSPACE_DIR}/"
 echo "  - team-roster.json in ${WORKSPACE_DIR}/"
+echo "  - lead session key: ${LEAD_SESSION_KEY}"
 echo ""
 echo "Your agent (${AGENT_NAME}) can now:"
 echo "  - Report status:  /report-status --new \"project\" \"description\""
