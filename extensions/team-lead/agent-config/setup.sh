@@ -2,21 +2,30 @@
 set -euo pipefail
 
 # Team Lead Agent Config Setup
-# Installs skills, REMOTE-AGENT.md, and configures openclaw.json for team participation.
+# Installs skills and REMOTE-AGENT.md so a remote agent can communicate
+# with the team lead's gateway.
 #
 # Usage:
 #   ./setup.sh                          # Interactive — prompts for values
 #   ./setup.sh --lead-gateway URL       # Non-interactive with flags
 #
+# What this does:
+#   1. Copies 6 skill files into ~/.openclaw/skills/
+#   2. Templates REMOTE-AGENT.md with your lead's gateway URL/token
+#   3. Creates team-roster.json and current-project.json
+#   4. Tests connectivity to the lead gateway
+#
+# What this does NOT do:
+#   - Install the team-lead extension (that runs on the LEAD's machine only)
+#   - Modify your openclaw.json plugins (remote agents don't need the plugin)
+#
 # Prerequisites:
-#   - OpenClaw installed and configured (~/.openclaw/openclaw.json exists)
+#   - OpenClaw installed (~/.openclaw/ directory exists)
 #   - Tailscale connected to team tailnet
-#   - gh CLI authenticated (for PR features)
+#   - Lead's gateway running and reachable
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-EXTENSION_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 OPENCLAW_DIR="${HOME}/.openclaw"
-OPENCLAW_JSON="${OPENCLAW_DIR}/openclaw.json"
 SKILLS_DIR="${OPENCLAW_DIR}/skills"
 WORKSPACE_DIR="${OPENCLAW_DIR}/workspace"
 
@@ -48,13 +57,14 @@ while [[ $# -gt 0 ]]; do
     -h|--help)
       echo "Usage: ./setup.sh [OPTIONS]"
       echo ""
-      echo "Installs team-lead agent skills and configures your OpenClaw instance"
-      echo "for team participation."
+      echo "Installs team agent skills and configures reporting to the lead gateway."
+      echo "This is for REMOTE AGENTS, not the lead. The lead runs the team-lead"
+      echo "extension as an OpenClaw plugin — that's separate."
       echo ""
       echo "Options:"
-      echo "  --lead-gateway URL    Lead agent's gateway URL (e.g. http://host:18789)"
+      echo "  --lead-gateway URL    Lead's gateway URL (e.g. http://host.tailnet:18789)"
       echo "  --lead-token TOKEN    Auth token for the lead gateway"
-      echo "  --lead-mcp URL        Lead's MCP URL (default: derived from gateway with port 8400)"
+      echo "  --lead-mcp URL        Lead's MCP URL (default: derived from gateway, port 8400)"
       echo "  --lead-name NAME      Lead's name (default: 'daniel')"
       echo "  --agent-name NAME     Your agent name (defaults to hostname)"
       exit 0
@@ -65,17 +75,13 @@ done
 
 # --- Preflight checks ---
 echo ""
-echo "=== Team Lead Agent Config Setup ==="
+echo "=== Team Agent Setup ==="
 echo ""
 
-if [[ ! -f "$OPENCLAW_JSON" ]]; then
-  fatal "OpenClaw not configured. Run 'openclaw configure' first."
+if [[ ! -d "$OPENCLAW_DIR" ]]; then
+  fatal "~/.openclaw/ not found. Install OpenClaw first."
 fi
-info "OpenClaw config found at $OPENCLAW_JSON"
-
-if ! command -v jq &>/dev/null; then
-  fatal "jq is required. Install with: brew install jq"
-fi
+info "OpenClaw directory found"
 
 # --- Gather inputs ---
 if [[ -z "$AGENT_NAME" ]]; then
@@ -87,20 +93,14 @@ fi
 if [[ -z "$LEAD_GATEWAY" ]]; then
   read -rp "Lead gateway URL (e.g. http://daniels-macbook-pro.tailcc6c5f.ts.net:18789): " LEAD_GATEWAY
 fi
-
-if [[ -z "$LEAD_GATEWAY" ]]; then
-  fatal "Lead gateway URL is required."
-fi
+[[ -z "$LEAD_GATEWAY" ]] && fatal "Lead gateway URL is required."
 
 if [[ -z "$LEAD_TOKEN" ]]; then
   read -rp "Lead gateway auth token: " LEAD_TOKEN
 fi
+[[ -z "$LEAD_TOKEN" ]] && fatal "Lead gateway auth token is required."
 
-if [[ -z "$LEAD_TOKEN" ]]; then
-  fatal "Lead gateway auth token is required."
-fi
-
-# Derive MCP URL from gateway if not provided (replace port with 8400, append /mcp)
+# Derive MCP URL from gateway if not provided (swap port to 8400, append /mcp)
 if [[ -z "$LEAD_MCP" ]]; then
   LEAD_MCP="$(echo "$LEAD_GATEWAY" | sed 's|:[0-9]*$|:8400|')/mcp"
   read -rp "Lead MCP URL [$LEAD_MCP]: " LEAD_MCP_INPUT
@@ -128,18 +128,8 @@ for skill in "${SKILL_NAMES[@]}"; do
   fi
 
   mkdir -p "$(dirname "$dst")"
-
-  if [[ -f "$dst" ]]; then
-    if diff -q "$src" "$dst" &>/dev/null; then
-      info "$skill — already up to date"
-    else
-      cp "$src" "$dst"
-      info "$skill — updated"
-    fi
-  else
-    cp "$src" "$dst"
-    info "$skill — installed"
-  fi
+  cp "$src" "$dst"
+  info "$skill — installed"
 done
 
 # --- Step 2: Install REMOTE-AGENT.md ---
@@ -151,23 +141,27 @@ REMOTE_AGENT_SRC="${SCRIPT_DIR}/REMOTE-AGENT.md"
 REMOTE_AGENT_DST="${WORKSPACE_DIR}/REMOTE-AGENT.md"
 
 if [[ ! -f "$REMOTE_AGENT_SRC" ]]; then
-  warn "REMOTE-AGENT.md source missing (skipping)"
-else
-  # Replace all placeholders with actual values
-  sed \
-    -e "s|__LEAD_GATEWAY__|${LEAD_GATEWAY}|g" \
-    -e "s|__LEAD_MCP__|${LEAD_MCP}|g" \
-    -e "s|__LEAD_TOKEN__|${LEAD_TOKEN}|g" \
-    "$REMOTE_AGENT_SRC" > "$REMOTE_AGENT_DST"
-  info "REMOTE-AGENT.md installed (gateway: ${LEAD_GATEWAY}, mcp: ${LEAD_MCP})"
+  fatal "REMOTE-AGENT.md source missing at $REMOTE_AGENT_SRC"
 fi
 
-# --- Step 3: Create/update team-roster.json ---
+# Replace all placeholders with actual values
+sed \
+  -e "s|__LEAD_GATEWAY__|${LEAD_GATEWAY}|g" \
+  -e "s|__LEAD_MCP__|${LEAD_MCP}|g" \
+  -e "s|__LEAD_TOKEN__|${LEAD_TOKEN}|g" \
+  "$REMOTE_AGENT_SRC" > "$REMOTE_AGENT_DST"
+
+# Verify no placeholders remain
+if grep -q '__LEAD_' "$REMOTE_AGENT_DST"; then
+  fatal "REMOTE-AGENT.md still contains unreplaced placeholders"
+fi
+info "REMOTE-AGENT.md installed"
+
+# --- Step 3: Create team-roster.json ---
 echo ""
 echo "--- Configuring team-roster.json ---"
 
 ROSTER_FILE="${WORKSPACE_DIR}/team-roster.json"
-
 cat > "$ROSTER_FILE" <<EOF
 {
   "description": "Team configuration. Lead gateway and auth for status reporting.",
@@ -179,80 +173,7 @@ cat > "$ROSTER_FILE" <<EOF
 EOF
 info "team-roster.json created"
 
-# --- Step 4: Register the team-lead extension ---
-echo ""
-echo "--- Registering team-lead extension ---"
-
-# Check if the extension code is accessible
-if [[ ! -f "${EXTENSION_DIR}/index.ts" ]] && [[ ! -f "${EXTENSION_DIR}/index.js" ]]; then
-  warn "team-lead extension code not found at ${EXTENSION_DIR}"
-  warn "The team-lead plugin requires the extension to be built."
-fi
-
-# Check if node_modules exist (extension needs to be installed)
-if [[ ! -d "${EXTENSION_DIR}/node_modules" ]]; then
-  warn "team-lead extension dependencies not installed."
-  echo "  Run: cd ${EXTENSION_DIR} && npm install"
-fi
-
-# Add team-lead to plugins with the extension path so OpenClaw can find it
-if jq -e '.plugins.entries["team-lead"]' "$OPENCLAW_JSON" &>/dev/null; then
-  info "team-lead plugin already configured"
-else
-  # Backup
-  cp "$OPENCLAW_JSON" "${OPENCLAW_JSON}.backup.$(date +%s)"
-  info "Backed up openclaw.json"
-
-  jq --arg path "$EXTENSION_DIR" \
-    '.plugins.entries["team-lead"] = {"enabled": true, "path": $path}' \
-    "$OPENCLAW_JSON" > "${OPENCLAW_JSON}.tmp" \
-    && mv "${OPENCLAW_JSON}.tmp" "$OPENCLAW_JSON"
-  info "team-lead plugin enabled (path: ${EXTENSION_DIR})"
-fi
-
-# --- Step 5: Update openclaw.json — gateway tools ---
-echo ""
-echo "--- Updating openclaw.json ---"
-
-# Add doc tools to gateway allow-list if gateway exists
-if jq -e '.gateway.tools.allow' "$OPENCLAW_JSON" &>/dev/null; then
-  TOOLS_TO_ADD=("team_lead_upload_doc" "team_lead_get_docs")
-  for tool in "${TOOLS_TO_ADD[@]}"; do
-    if jq -e --arg t "$tool" '.gateway.tools.allow | index($t)' "$OPENCLAW_JSON" &>/dev/null; then
-      info "Gateway tool $tool already in allow-list"
-    else
-      jq --arg t "$tool" '.gateway.tools.allow += [$t]' "$OPENCLAW_JSON" > "${OPENCLAW_JSON}.tmp" \
-        && mv "${OPENCLAW_JSON}.tmp" "$OPENCLAW_JSON"
-      info "Added $tool to gateway allow-list"
-    fi
-  done
-else
-  info "No gateway configured (normal for remote agents)"
-fi
-
-# Add team-lead to agent tools allow-list
-if jq -e '.agents.list[0].tools.alsoAllow' "$OPENCLAW_JSON" &>/dev/null; then
-  if jq -e '.agents.list[0].tools.alsoAllow | index("team-lead")' "$OPENCLAW_JSON" &>/dev/null; then
-    info "team-lead already in agent tools allow-list"
-  else
-    jq '.agents.list[0].tools.alsoAllow += ["team-lead"]' "$OPENCLAW_JSON" > "${OPENCLAW_JSON}.tmp" \
-      && mv "${OPENCLAW_JSON}.tmp" "$OPENCLAW_JSON"
-    info "Added team-lead to agent tools allow-list"
-  fi
-fi
-
-# Enable hooks if not already enabled
-if jq -e '.hooks.enabled == true' "$OPENCLAW_JSON" &>/dev/null; then
-  info "Hooks already enabled"
-else
-  warn "Hooks not enabled. The lead needs your hooks token to send you tasks."
-  warn "Run 'openclaw configure' and enable hooks, then share your token with the lead."
-fi
-
-# --- Step 6: Create current-project.json template ---
-echo ""
-echo "--- Setting up workspace ---"
-
+# --- Step 4: Create current-project.json ---
 CURRENT_PROJECT="${WORKSPACE_DIR}/current-project.json"
 if [[ ! -f "$CURRENT_PROJECT" ]]; then
   cat > "$CURRENT_PROJECT" <<EOF
@@ -267,21 +188,53 @@ if [[ ! -f "$CURRENT_PROJECT" ]]; then
   "configApplied": null
 }
 EOF
-  info "current-project.json template created"
+  info "current-project.json created"
 else
-  info "current-project.json already exists"
+  info "current-project.json already exists (keeping)"
 fi
 
-# --- Step 7: Connectivity check ---
+# --- Step 5: Connectivity check ---
 echo ""
-echo "--- Testing connectivity ---"
+echo "--- Testing connectivity to lead gateway ---"
 
-if curl -sS --max-time 5 -o /dev/null -w "%{http_code}" \
-  "${LEAD_GATEWAY}/health" 2>/dev/null | grep -q "200"; then
-  info "Lead gateway reachable"
+HTTP_CODE=$(curl -sS --max-time 10 -o /dev/null -w "%{http_code}" \
+  "${LEAD_GATEWAY}/health" 2>/dev/null || echo "000")
+
+if [[ "$HTTP_CODE" == "200" ]]; then
+  info "Lead gateway reachable (HTTP 200)"
+elif [[ "$HTTP_CODE" == "000" ]]; then
+  error "Cannot reach lead gateway at ${LEAD_GATEWAY}"
+  error "Possible causes:"
+  error "  - Tailscale not connected"
+  error "  - Lead's gateway not running"
+  error "  - Lead's gateway bound to loopback (needs 0.0.0.0)"
+  echo ""
+  fatal "Setup incomplete — fix connectivity and re-run"
+elif [[ "$HTTP_CODE" == "401" ]] || [[ "$HTTP_CODE" == "403" ]]; then
+  warn "Lead gateway reachable but auth failed (HTTP ${HTTP_CODE})"
+  warn "The gateway URL works but the token may be wrong"
 else
-  warn "Could not reach lead gateway at ${LEAD_GATEWAY}"
-  warn "Make sure Tailscale is connected and the lead's gateway is running"
+  warn "Lead gateway returned HTTP ${HTTP_CODE} (expected 200)"
+  warn "Gateway may be reachable but not healthy"
+fi
+
+# --- Step 6: Test actual tool invocation ---
+echo ""
+echo "--- Testing tool access ---"
+
+TOOL_RESPONSE=$(curl -sS --max-time 10 -X POST "${LEAD_GATEWAY}/tools/invoke" \
+  -H "Authorization: Bearer ${LEAD_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"tool": "team_lead_list_projects", "args": {}}' 2>/dev/null || echo '{"error":"connection_failed"}')
+
+if echo "$TOOL_RESPONSE" | grep -q '"ok"'; then
+  info "Tool invocation works — agent can communicate with lead"
+elif echo "$TOOL_RESPONSE" | grep -q 'connection_failed'; then
+  error "Tool invocation failed — could not connect"
+  fatal "Setup incomplete — fix connectivity and re-run"
+else
+  warn "Tool invocation returned unexpected response: ${TOOL_RESPONSE:0:200}"
+  warn "Gateway is reachable but tools may not be configured correctly on the lead's side"
 fi
 
 # --- Done ---
@@ -292,12 +245,11 @@ echo "Installed:"
 echo "  - 6 skills in ${SKILLS_DIR}/"
 echo "  - REMOTE-AGENT.md in ${WORKSPACE_DIR}/"
 echo "  - team-roster.json in ${WORKSPACE_DIR}/"
-echo "  - team-lead extension registered from ${EXTENSION_DIR}"
 echo ""
-echo "Next steps:"
-echo "  1. Install extension dependencies: cd ${EXTENSION_DIR} && npm install"
-echo "  2. Make sure Tailscale is connected to the team tailnet"
-echo "  3. If hooks aren't enabled, run 'openclaw configure' and enable them"
-echo "  4. Share your hooks token with the lead so they can add you to the roster"
-echo "  5. Test with: /report-status --new \"test\" \"Testing team connectivity\""
+echo "Your agent (${AGENT_NAME}) can now:"
+echo "  - Report status:  /report-status --new \"project\" \"description\""
+echo "  - Send heartbeat: /heartbeat"
+echo "  - Check team:     /check-team"
+echo ""
+echo "Tell the lead your hooks token so they can send you tasks."
 echo ""
