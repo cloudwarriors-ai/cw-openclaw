@@ -809,6 +809,23 @@ describe("gateway server auth/connect", () => {
       ws.close();
     });
 
+    test("allows mesh-only backend clients without device identity when tailscale auth is available", async () => {
+      const ws = await openTailscaleWs(port);
+      const res = await connectReq(ws, {
+        token: "dummy",
+        device: null,
+        scopes: ["operator.mesh"],
+        client: {
+          id: GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT,
+          version: "1.0.0",
+          platform: "test",
+          mode: GATEWAY_CLIENT_MODES.BACKEND,
+        },
+      });
+      expect(res.ok).toBe(true);
+      ws.close();
+    });
+
     test("allows shared token to skip device when tailscale auth is enabled", async () => {
       const ws = await openTailscaleWs(port);
       const res = await connectReq(ws, { token: "secret", device: null });

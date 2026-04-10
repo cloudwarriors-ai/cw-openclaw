@@ -414,6 +414,12 @@ importers:
         specifier: workspace:*
         version: link:../..
 
+  extensions/mesh-gateway:
+    devDependencies:
+      openclaw:
+        specifier: workspace:*
+        version: link:../..
+
   extensions/minimax-portal-auth: {}
 
   extensions/msteams:

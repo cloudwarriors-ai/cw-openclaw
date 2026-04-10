@@ -43,6 +43,16 @@ describe("operator scope authorization", () => {
     });
   });
 
+  it("requires mesh scope for mesh methods", () => {
+    expect(authorizeOperatorScopesForMethod("mesh.send_task", ["operator.mesh"])).toEqual({
+      allowed: true,
+    });
+    expect(authorizeOperatorScopesForMethod("mesh.send_task", ["operator.write"])).toEqual({
+      allowed: false,
+      missingScope: "operator.mesh",
+    });
+  });
+
   it("requires admin for unknown methods", () => {
     expect(authorizeOperatorScopesForMethod("unknown.method", ["operator.read"])).toEqual({
       allowed: false,

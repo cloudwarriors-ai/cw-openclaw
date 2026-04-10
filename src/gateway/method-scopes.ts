@@ -3,13 +3,15 @@ export const READ_SCOPE = "operator.read" as const;
 export const WRITE_SCOPE = "operator.write" as const;
 export const APPROVALS_SCOPE = "operator.approvals" as const;
 export const PAIRING_SCOPE = "operator.pairing" as const;
+export const MESH_SCOPE = "operator.mesh" as const;
 
 export type OperatorScope =
   | typeof ADMIN_SCOPE
   | typeof READ_SCOPE
   | typeof WRITE_SCOPE
   | typeof APPROVALS_SCOPE
-  | typeof PAIRING_SCOPE;
+  | typeof PAIRING_SCOPE
+  | typeof MESH_SCOPE;
 
 export const CLI_DEFAULT_OPERATOR_SCOPES: OperatorScope[] = [
   ADMIN_SCOPE,
@@ -41,6 +43,7 @@ const METHOD_SCOPE_GROUPS: Record<OperatorScope, readonly string[]> = {
     "device.token.revoke",
     "node.rename",
   ],
+  [MESH_SCOPE]: ["mesh.health", "mesh.list_capabilities", "mesh.send_task", "mesh.reply"],
   [READ_SCOPE]: [
     "health",
     "doctor.memory.status",
