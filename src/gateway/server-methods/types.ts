@@ -18,6 +18,8 @@ export type GatewayClient = {
   connect: ConnectParams;
   connId?: string;
   clientIp?: string;
+  authUser?: string;
+  authMethod?: string;
 };
 
 export type RespondFn = (

@@ -37,6 +37,7 @@ import {
   buildDeviceAuthPayloadV3,
   normalizeDeviceMetadataForAuth,
 } from "../../device-auth.js";
+import { MESH_SCOPE } from "../../method-scopes.js";
 import {
   isLocalishHost,
   isLoopbackAddress,
@@ -45,7 +46,7 @@ import {
 } from "../../net.js";
 import { resolveNodeCommandAllowlist } from "../../node-command-policy.js";
 import { checkBrowserOrigin } from "../../origin-check.js";
-import { GATEWAY_CLIENT_IDS } from "../../protocol/client-info.js";
+import { GATEWAY_CLIENT_IDS, GATEWAY_CLIENT_MODES } from "../../protocol/client-info.js";
 import {
   ConnectErrorDetailCodes,
   resolveAuthConnectErrorDetailCode,
@@ -519,6 +520,20 @@ export function attachGatewayWsMessageHandler(params: {
           rateLimiter: authRateLimiter,
           clientIp: browserRateLimitClientIp,
         });
+        const isMeshBackendClient =
+          connectParams.client.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT &&
+          connectParams.client.mode === GATEWAY_CLIENT_MODES.BACKEND;
+        const requestedMeshOnly = scopes.every((scope) => scope === MESH_SCOPE);
+        const canSkipDeviceViaTailscaleMesh =
+          authOk &&
+          authMethod === "tailscale" &&
+          isMeshBackendClient &&
+          requestedMeshOnly &&
+          role === "operator";
+        if (canSkipDeviceViaTailscaleMesh && scopes.length === 0) {
+          scopes = [MESH_SCOPE];
+          connectParams.scopes = scopes;
+        }
         const rejectUnauthorized = (failedAuth: GatewayAuthResult) => {
           markHandshakeFailure("unauthorized", {
             authMode: resolvedAuth.mode,
@@ -557,7 +572,12 @@ export function attachGatewayWsMessageHandler(params: {
           close(1008, truncateCloseReason(authMessage));
         };
         const clearUnboundScopes = () => {
-          if (scopes.length > 0 && !controlUiAuthPolicy.allowBypass && !sharedAuthOk) {
+          if (
+            scopes.length > 0 &&
+            !controlUiAuthPolicy.allowBypass &&
+            !sharedAuthOk &&
+            !canSkipDeviceViaTailscaleMesh
+          ) {
             scopes = [];
             connectParams.scopes = scopes;
           }
@@ -565,6 +585,9 @@ export function attachGatewayWsMessageHandler(params: {
         const handleMissingDeviceIdentity = (): boolean => {
           if (!device) {
             clearUnboundScopes();
+            if (canSkipDeviceViaTailscaleMesh) {
+              return true;
+            }
           }
           const trustedProxyAuthOk = isTrustedProxyControlUiOperatorAuth({
             isControlUi,
@@ -1023,6 +1046,8 @@ export function attachGatewayWsMessageHandler(params: {
           connId,
           presenceKey,
           clientIp: reportedClientIp,
+          authUser: authResult.user,
+          authMethod,
           canvasCapability,
           canvasCapabilityExpiresAtMs,
         };

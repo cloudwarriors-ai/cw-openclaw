@@ -1,0 +1,21 @@
+{
+  "id": "mesh-gateway",
+  "name": "Mesh Gateway",
+  "description": "Tokenless Tailscale-authenticated mesh RPC gateway for agent-to-agent task exchange",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": { "type": "boolean" },
+      "displayName": { "type": "string" },
+      "allowedUsers": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "allowedAgents": {
+        "type": "array",
+        "items": { "type": "string" }
+      }
+    }
+  }
+}
