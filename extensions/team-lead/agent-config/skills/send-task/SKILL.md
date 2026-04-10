@@ -53,7 +53,7 @@ The roster has this format:
 {
   "members": {
     "name": {
-      "gateway": "http://hostname:port",
+      "gateway": "https://hostname.tailnet.ts.net",
       "hooks_token": "token-for-hooks-endpoint",
       "gateway_token": "token-for-tools-invoke-endpoint",
       "tailscale_ip": "100.x.y.z"
@@ -69,17 +69,20 @@ The roster has this format:
 
 If only `hooks_token` is present and `--wait` was requested, fall back to fire-and-forget mode and tell the user that `gateway_token` is needed in the roster for `--wait` to work.
 
-If the person isn't in the roster, tell the user and ask for their Tailscale hostname, gateway port, and hooks token.
+If the person isn't in the roster, tell the user and ask for their Tailscale hostname (or Serve URL), plus hooks and gateway tokens if they want both fire-and-forget and `--wait` mode to work.
 
 If the person has `"status": "not-configured"` in their roster entry, tell the user that person hasn't enabled hooks yet and explain what they need to do (see Adding New Team Members section).
 
 ### Step 3: Verify Connectivity
 
 ```bash
-curl -sS --connect-timeout 5 "<gateway-url>/health"
+curl -sS --connect-timeout 5 -o /dev/null -w "%{http_code}" \
+  -X POST "<gateway-url>/tools/invoke" \
+  -H 'Content-Type: application/json' \
+  -d '{}'
 ```
 
-If this fails, the remote gateway is down or unreachable. Tell the user.
+If this fails at the network level, the remote gateway is down or unreachable. If it returns an HTTP code like `400` or `401`, the gateway is reachable and you can continue with the real send step.
 
 ### Step 4: Build the Session Key
 
@@ -136,6 +139,7 @@ curl -sS -X POST "<gateway-url>/tools/invoke" \
   -H "Authorization: Bearer <gateway-token>" \
   -H "Content-Type: application/json" \
   -d '{
+    "sessionKey": "<session-key>",
     "tool": "sessions_send",
     "args": {
       "sessionKey": "<session-key>",
@@ -215,10 +219,13 @@ To add someone to the roster, update `~/.openclaw/workspace/team-roster.json`:
 
 ```json
 {
-  "name": {
-    "gateway": "http://<their-tailscale-hostname>:18789",
-    "hooks_token": "<their-hooks-token>",
-    "tailscale_ip": "<their-tailscale-ip>"
+  "members": {
+    "name": {
+      "gateway": "https://<their-tailscale-hostname>.ts.net",
+      "hooks_token": "<their-hooks-token>",
+      "gateway_token": "<their-gateway-token>",
+      "tailscale_ip": "<their-tailscale-ip>"
+    }
   }
 }
 ```
