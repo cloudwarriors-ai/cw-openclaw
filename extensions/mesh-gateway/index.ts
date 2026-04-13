@@ -720,6 +720,16 @@ const plugin = {
             status: res.payload?.["status"] ?? "accepted",
             agent: agent_name,
           };
+
+          // Record outbound in per-contact mesh session
+          const contactIdentity = agent.expected_identity ?? agent_name;
+          const sessionKey = `mesh:${contactIdentity}`;
+          void api.runtime.subagent.run({
+            sessionKey,
+            message: `[Outbound mesh task to ${agent_name}] ${message}`,
+            lane: "mesh",
+          }).catch(() => {});
+
           return {
             content: [{ type: "text" as const, text: JSON.stringify(result) }],
             details: result,
@@ -813,6 +823,16 @@ const plugin = {
             response: final.payload?.["details"] ?? final.payload?.["summary"],
             agent: agent_name,
           };
+
+          // Record outbound in per-contact mesh session
+          const contactIdentity = agent.expected_identity ?? agent_name;
+          const sessionKey = `mesh:${contactIdentity}`;
+          void api.runtime.subagent.run({
+            sessionKey,
+            message: `[Outbound mesh message to ${agent_name}] ${message}\n\n[Response] ${result.response ?? "(no response)"}`,
+            lane: "mesh",
+          }).catch(() => {});
+
           return {
             content: [{ type: "text" as const, text: JSON.stringify(result) }],
             details: result,
