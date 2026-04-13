@@ -8,6 +8,7 @@ import type { GatewayRequestHandlerOptions } from "../../src/gateway/server-meth
 type MeshGatewayConfig = {
   enabled: boolean;
   displayName?: string;
+  agentIdentity?: string;
   allowedUsers: string[];
   allowedAgents: string[];
 };
@@ -45,6 +46,7 @@ function resolveConfig(raw: Record<string, unknown> | undefined): MeshGatewayCon
   return {
     enabled: raw?.enabled === true,
     displayName: stringValue(raw?.displayName),
+    agentIdentity: stringValue(raw?.agentIdentity),
     allowedUsers: stringArray(raw?.allowedUsers),
     allowedAgents: stringArray(raw?.allowedAgents),
   };
@@ -117,11 +119,12 @@ async function runMeshTask(params: {
   opts: GatewayRequestHandlerOptions;
   eventParams: Record<string, unknown>;
   taskId: string;
+  callerIdentity: string;
   message: string;
   title?: string;
   model?: string;
 }) {
-  const { api, opts, eventParams, taskId, message, title, model } = params;
+  const { api, opts, eventParams, taskId, callerIdentity, message, title, model } = params;
   emitToCurrentClient(opts, "mesh.task", buildMeshEvent(eventParams, "running"));
   const now = Date.now();
   const job: CronJob = {
@@ -143,7 +146,7 @@ async function runMeshTask(params: {
       deps: opts.context.deps,
       job,
       message,
-      sessionKey: `mesh:${taskId}`,
+      sessionKey: `mesh:${callerIdentity}`,
       lane: "mesh",
     });
     const status =
@@ -196,6 +199,7 @@ const plugin = {
       properties: {
         enabled: { type: "boolean" },
         displayName: { type: "string" },
+        agentIdentity: { type: "string" },
         allowedUsers: { type: "array", items: { type: "string" } },
         allowedAgents: { type: "array", items: { type: "string" } },
       },
@@ -216,6 +220,10 @@ const plugin = {
           tailscale_auth_active: opts.client?.authMethod === "tailscale",
           peer_authorized: authz.ok,
           callback_route_healthy: Boolean(opts.client?.connId),
+          caller_identity: authz.identity,
+          auth_user: authz.identity,
+          gateway_identity: config.agentIdentity,
+          agent_identity: config.agentIdentity,
           identity: authz.identity,
           displayName: config.displayName,
           reason: authz.ok ? undefined : authz.reason,
@@ -235,6 +243,10 @@ const plugin = {
         opts.respond(true, {
           agent: config.displayName ?? "openclaw",
           identity: authz.identity,
+          caller_identity: authz.identity,
+          auth_user: authz.identity,
+          gateway_identity: config.agentIdentity,
+          agent_identity: config.agentIdentity,
           methods: ["mesh.health", "mesh.list_capabilities", "mesh.send_task", "mesh.reply"],
           delivery: "async_task_callback",
           task_states: [...TASK_STATES],
@@ -306,6 +318,7 @@ const plugin = {
           opts,
           eventParams: taskParams,
           taskId,
+          callerIdentity: authz.identity,
           message,
           title: stringValue(taskParams.title),
           model: stringValue(taskParams.model),

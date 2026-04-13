@@ -26,6 +26,7 @@ function createApi() {
     pluginConfig: {
       enabled: true,
       displayName: "Chad Agent",
+      agentIdentity: "agent@cloudwarriors.ai",
       allowedUsers: ["chad.simon@cloudwarriors.ai"],
     },
     runtime: {},
@@ -89,7 +90,7 @@ describe("mesh-gateway plugin", () => {
 
   it("registers the mesh RPC surface", () => {
     const { handlers } = createApi();
-    expect([...handlers.keys()].sort()).toEqual([
+    expect([...handlers.keys()].toSorted()).toEqual([
       "mesh.health",
       "mesh.list_capabilities",
       "mesh.reply",
@@ -100,7 +101,7 @@ describe("mesh-gateway plugin", () => {
   it("reports Tailscale authorization state in mesh.health", () => {
     const { handlers } = createApi();
     const opts = createOptions();
-    handlers.get("mesh.health")?.(opts);
+    void handlers.get("mesh.health")?.(opts);
     expect(opts.respond).toHaveBeenCalledWith(
       true,
       expect.objectContaining({
@@ -109,6 +110,9 @@ describe("mesh-gateway plugin", () => {
         tailscale_auth_active: true,
         peer_authorized: true,
         identity: "chad.simon@cloudwarriors.ai",
+        caller_identity: "chad.simon@cloudwarriors.ai",
+        gateway_identity: "agent@cloudwarriors.ai",
+        agent_identity: "agent@cloudwarriors.ai",
       }),
     );
   });
@@ -119,7 +123,7 @@ describe("mesh-gateway plugin", () => {
       {},
       { client: { authMethod: "tailscale", authUser: "nope@example.com" } as never },
     );
-    handlers.get("mesh.list_capabilities")?.(opts);
+    void handlers.get("mesh.list_capabilities")?.(opts);
     expect(opts.respond).toHaveBeenCalledWith(
       false,
       expect.objectContaining({ error: "identity_not_allowlisted" }),
@@ -129,7 +133,7 @@ describe("mesh-gateway plugin", () => {
   it("rejects invalid replies", () => {
     const { handlers } = createApi();
     const opts = createOptions({ task_id: "task-1", status: "nonsense" });
-    handlers.get("mesh.reply")?.(opts);
+    void handlers.get("mesh.reply")?.(opts);
     expect(opts.respond).toHaveBeenCalledWith(
       false,
       expect.objectContaining({ error: "invalid_reply_payload" }),
@@ -146,7 +150,7 @@ describe("mesh-gateway plugin", () => {
       model: "ollama/gemma4:26b",
     });
 
-    handlers.get("mesh.send_task")?.(opts);
+    void handlers.get("mesh.send_task")?.(opts);
 
     expect(opts.respond).toHaveBeenCalledWith(
       true,
@@ -155,7 +159,7 @@ describe("mesh-gateway plugin", () => {
     expect(runCronIsolatedAgentTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         message: "Say hello",
-        sessionKey: "mesh:task-1",
+        sessionKey: "mesh:chad.simon@cloudwarriors.ai",
         job: expect.objectContaining({
           payload: expect.objectContaining({
             kind: "agentTurn",
