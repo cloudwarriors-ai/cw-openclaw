@@ -1,4 +1,9 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { Type } from "@sinclair/typebox";
+import WebSocket from "ws";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { runCronIsolatedAgentTurn } from "../../src/cron/isolated-agent.js";
 import type { CronJob } from "../../src/cron/types.js";
@@ -11,6 +16,7 @@ type MeshGatewayConfig = {
   agentIdentity?: string;
   allowedUsers: string[];
   allowedAgents: string[];
+  rosterPath?: string;
 };
 
 type MeshAuthz = { ok: true; identity: string } | { ok: false; identity?: string; reason: string };
@@ -49,7 +55,240 @@ function resolveConfig(raw: Record<string, unknown> | undefined): MeshGatewayCon
     agentIdentity: stringValue(raw?.agentIdentity),
     allowedUsers: stringArray(raw?.allowedUsers),
     allowedAgents: stringArray(raw?.allowedAgents),
+    rosterPath: stringValue(raw?.rosterPath),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Outbound mesh client types and helpers
+// ---------------------------------------------------------------------------
+
+type RosterAgent = {
+  gateway_url: string;
+  expected_identity?: string;
+  display_name?: string;
+  token?: string;
+};
+
+type Roster = {
+  agents: Record<string, RosterAgent>;
+};
+
+type WsFrame = {
+  type: "req" | "res" | "event";
+  id?: string;
+  ok?: boolean;
+  method?: string;
+  event?: string;
+  params?: Record<string, unknown>;
+  payload?: Record<string, unknown>;
+  error?: { message?: string };
+};
+
+const MESH_CONNECT_TIMEOUT_MS = 8_000;
+const MESH_SEND_TIMEOUT_MS = 10_000;
+const MESH_SYNC_TIMEOUT_MS = 120_000;
+const FINAL_TASK_STATES = new Set(["completed", "failed", "rejected"]);
+
+function defaultRosterPath(): string {
+  return path.join(os.homedir(), ".chad-agent", "mesh-roster.json");
+}
+
+function wsUrl(gatewayUrl: string): string {
+  const url = new URL(gatewayUrl.replace(/\/$/, ""));
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString();
+}
+
+function tokenValue(agent: RosterAgent): string | undefined {
+  const raw = (agent.token ?? "").trim();
+  if (!raw) return undefined;
+  if (raw.toLowerCase().startsWith("bearer ")) {
+    return raw.slice(7).trim() || undefined;
+  }
+  return raw;
+}
+
+async function loadRoster(rosterPath: string): Promise<Roster> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(rosterPath, "utf8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    throw new Error(
+      code === "ENOENT"
+        ? `Roster file not found: ${rosterPath}`
+        : `Failed to read roster file: ${(err as Error).message}`,
+    );
+  }
+  try {
+    return JSON.parse(raw) as Roster;
+  } catch {
+    throw new Error(`Roster file is not valid JSON: ${rosterPath}`);
+  }
+}
+
+function lookupAgent(roster: Roster, agentName: string): RosterAgent {
+  const agent = roster.agents?.[agentName];
+  if (!agent) {
+    const available = Object.keys(roster.agents ?? {}).join(", ") || "(none)";
+    throw new Error(
+      `Agent "${agentName}" not found in roster. Available: ${available}`,
+    );
+  }
+  return agent;
+}
+
+class MeshClient {
+  private ws: WebSocket | null = null;
+  private connId: string | null = null;
+  private readonly agent: RosterAgent;
+  private readonly fromDisplayName: string;
+
+  constructor(agent: RosterAgent, fromDisplayName: string) {
+    this.agent = agent;
+    this.fromDisplayName = fromDisplayName;
+  }
+
+  async connect(timeoutMs: number): Promise<void> {
+    const url = wsUrl(this.agent.gateway_url);
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        ws.terminate();
+        reject(new Error(`WebSocket connect timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      const ws = new WebSocket(url);
+      this.ws = ws;
+      ws.once("open", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      ws.once("error", (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+    });
+    const token = tokenValue(this.agent);
+    const connectParams: Record<string, unknown> = {
+      minProtocol: 3,
+      maxProtocol: 3,
+      client: {
+        id: "gateway-client",
+        displayName: this.fromDisplayName,
+        version: "chad-agent/0.2.0",
+        platform: "typescript",
+        mode: "backend",
+      },
+      role: "operator",
+      scopes: ["operator.mesh"],
+    };
+    if (token) {
+      connectParams["auth"] = { token };
+    }
+    const res = await this.rpc("connect", connectParams, timeoutMs);
+    if (!res.ok) {
+      throw new Error(
+        `Mesh connect rejected: ${res.error?.message ?? "unknown error"}`,
+      );
+    }
+    const server = res.payload?.["server"] as Record<string, unknown> | undefined;
+    this.connId = typeof server?.["connId"] === "string" ? server["connId"] : null;
+  }
+
+  async rpc(
+    method: string,
+    params: Record<string, unknown>,
+    timeoutMs: number,
+  ): Promise<WsFrame> {
+    if (!this.ws) throw new Error("WebSocket not connected");
+    const reqId = randomUUID();
+    const frame: WsFrame = { type: "req", id: reqId, method, params };
+    this.ws.send(JSON.stringify(frame));
+    return this.recvUntil(reqId, timeoutMs);
+  }
+
+  async recvUntil(expectedId: string | null, timeoutMs: number): Promise<WsFrame> {
+    if (!this.ws) throw new Error("WebSocket not connected");
+    const ws = this.ws;
+    return new Promise<WsFrame>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`Timed out waiting for response (${timeoutMs}ms)`));
+      }, timeoutMs);
+
+      function onMessage(data: WebSocket.RawData) {
+        let frame: WsFrame;
+        try {
+          frame = JSON.parse(data.toString()) as WsFrame;
+        } catch {
+          return;
+        }
+        if (frame.type === "event") {
+          // keep receiving — don't resolve on events when waiting for a specific id
+          if (expectedId === null) {
+            cleanup();
+            resolve(frame);
+          }
+          return;
+        }
+        if (expectedId === null || frame.id === expectedId) {
+          cleanup();
+          resolve(frame);
+        }
+      }
+
+      function onError(err: Error) {
+        cleanup();
+        reject(err);
+      }
+
+      function onClose() {
+        cleanup();
+        reject(new Error("WebSocket closed unexpectedly"));
+      }
+
+      function cleanup() {
+        clearTimeout(timer);
+        ws.off("message", onMessage);
+        ws.off("error", onError);
+        ws.off("close", onClose);
+      }
+
+      ws.on("message", onMessage);
+      ws.once("error", onError);
+      ws.once("close", onClose);
+    });
+  }
+
+  async waitForTask(taskId: string, timeoutMs: number): Promise<WsFrame> {
+    const deadline = Date.now() + timeoutMs;
+    while (true) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        throw new Error(`Timed out waiting for task ${taskId} (${timeoutMs}ms)`);
+      }
+      const frame = await this.recvUntil(null, remaining);
+      if (
+        frame.type === "event" &&
+        frame.event === "mesh.task" &&
+        frame.payload?.["task_id"] === taskId
+      ) {
+        const status = frame.payload?.["status"] as string | undefined;
+        if (status && FINAL_TASK_STATES.has(status)) {
+          return frame;
+        }
+      }
+    }
+  }
+
+  close(): void {
+    this.ws?.close();
+    this.ws = null;
+  }
+
+  get connectionId(): string | null {
+    return this.connId;
+  }
 }
 
 function authorizeMeshClient(
@@ -326,6 +565,269 @@ const plugin = {
       },
       { scope: MESH_SCOPE },
     );
+
+    // -------------------------------------------------------------------------
+    // Outbound agent tools
+    // -------------------------------------------------------------------------
+
+    const resolvedRosterPath =
+      config.rosterPath ??
+      process.env["MESH_ROSTER_PATH"] ??
+      defaultRosterPath();
+
+    api.registerTool({
+      name: "mesh_list_agents",
+      label: "List Mesh Agents",
+      description:
+        "List agents on the Tailscale mesh with their online/offline status. Pings each agent's mesh.health endpoint.",
+      parameters: Type.Object({}),
+      async execute(_toolCallId, _params) {
+        let roster: Roster;
+        try {
+          roster = await loadRoster(resolvedRosterPath);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({ error: msg }) }],
+            details: { error: msg },
+          };
+        }
+
+        const agentNames = Object.keys(roster.agents ?? {});
+        const results = await Promise.all(
+          agentNames.map(async (name) => {
+            const agent = roster.agents[name];
+            const client = new MeshClient(
+              agent,
+              config.displayName ?? "openclaw",
+            );
+            try {
+              await client.connect(MESH_CONNECT_TIMEOUT_MS);
+              const health = await client.rpc(
+                "mesh.health",
+                {},
+                MESH_CONNECT_TIMEOUT_MS,
+              );
+              client.close();
+              const payload = health.payload ?? {};
+              return {
+                name,
+                display_name: agent.display_name ?? name,
+                gateway_url: agent.gateway_url,
+                online: true,
+                gateway_identity: payload["gateway_identity"] ?? payload["agent_identity"],
+                authorized: payload["peer_authorized"] === true,
+              };
+            } catch {
+              client.close();
+              return {
+                name,
+                display_name: agent.display_name ?? name,
+                gateway_url: agent.gateway_url,
+                online: false,
+              };
+            }
+          }),
+        );
+
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(results, null, 2) }],
+          details: { agents: results },
+        };
+      },
+    });
+
+    api.registerTool({
+      name: "mesh_send_task",
+      label: "Send Mesh Task",
+      description:
+        "Send an async task to another agent on the Tailscale mesh. Returns after acceptance — does not wait for completion.",
+      parameters: Type.Object({
+        agent_name: Type.String({ description: "Target agent name from the roster" }),
+        goal: Type.String({ description: "What needs to be done" }),
+        context: Type.Optional(Type.String({ description: "Background context" })),
+        start: Type.Optional(
+          Type.Union([Type.Literal("queued"), Type.Literal("now")], {
+            description: 'Start mode: "queued" (default) or "now"',
+          }),
+        ),
+      }),
+      async execute(_toolCallId, params) {
+        const { agent_name, goal, context: ctx, start } = params as {
+          agent_name: string;
+          goal: string;
+          context?: string;
+          start?: "queued" | "now";
+        };
+
+        let roster: Roster;
+        try {
+          roster = await loadRoster(resolvedRosterPath);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: msg }) }],
+            details: { ok: false, error: msg },
+          };
+        }
+
+        let agent: RosterAgent;
+        try {
+          agent = lookupAgent(roster, agent_name);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: msg }) }],
+            details: { ok: false, error: msg },
+          };
+        }
+
+        const client = new MeshClient(agent, config.displayName ?? "openclaw");
+        try {
+          await client.connect(MESH_CONNECT_TIMEOUT_MS);
+          const connId = client.connectionId;
+          const taskId = randomUUID();
+          const fromAgent = config.displayName ?? "openclaw";
+          const messageParts = [goal];
+          if (ctx) messageParts.push(`Context:\n${ctx}`);
+          const message = messageParts.join("\n\n");
+          const taskParams: Record<string, unknown> = {
+            task_id: taskId,
+            from_agent: fromAgent,
+            title: `Task from ${fromAgent}`,
+            message,
+            context: ctx ?? "",
+            reply_target: connId ? { conn_id: connId } : undefined,
+            requested_start_mode: start === "now" ? "now" : "queued",
+          };
+          const identity = config.agentIdentity;
+          if (identity) {
+            taskParams["from_identity"] = identity;
+          }
+          const res = await client.rpc("mesh.send_task", taskParams, MESH_SEND_TIMEOUT_MS);
+          client.close();
+          if (!res.ok) {
+            const errMsg = res.error?.message ?? "mesh send_task failed";
+            const result = { ok: false, error: errMsg };
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify(result) }],
+              details: result,
+            };
+          }
+          const result = {
+            ok: true,
+            task_id: taskId,
+            status: res.payload?.["status"] ?? "accepted",
+            agent: agent_name,
+          };
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            details: result,
+          };
+        } catch (err) {
+          client.close();
+          const msg = err instanceof Error ? err.message : String(err);
+          const result = { ok: false, error: msg };
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            details: result,
+          };
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "mesh_send_message",
+      label: "Send Mesh Message",
+      description:
+        "Send a message to another agent on the Tailscale mesh and wait for their response (up to 120s).",
+      parameters: Type.Object({
+        agent_name: Type.String({ description: "Target agent name from the roster" }),
+        message: Type.String({ description: "The message to send" }),
+      }),
+      async execute(_toolCallId, params) {
+        const { agent_name, message } = params as {
+          agent_name: string;
+          message: string;
+        };
+
+        let roster: Roster;
+        try {
+          roster = await loadRoster(resolvedRosterPath);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: msg }) }],
+            details: { ok: false, error: msg },
+          };
+        }
+
+        let agent: RosterAgent;
+        try {
+          agent = lookupAgent(roster, agent_name);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: msg }) }],
+            details: { ok: false, error: msg },
+          };
+        }
+
+        const client = new MeshClient(agent, config.displayName ?? "openclaw");
+        try {
+          await client.connect(MESH_CONNECT_TIMEOUT_MS);
+          const connId = client.connectionId;
+          const taskId = randomUUID();
+          const fromAgent = config.displayName ?? "openclaw";
+          const taskParams: Record<string, unknown> = {
+            task_id: taskId,
+            from_agent: fromAgent,
+            title: "Mesh Message",
+            message,
+            context: "",
+            reply_target: connId ? { conn_id: connId } : undefined,
+            requested_start_mode: "now",
+          };
+          const identity = config.agentIdentity;
+          if (identity) {
+            taskParams["from_identity"] = identity;
+          }
+          const ack = await client.rpc("mesh.send_task", taskParams, MESH_SEND_TIMEOUT_MS);
+          if (!ack.ok) {
+            client.close();
+            const errMsg = ack.error?.message ?? "mesh send_task failed";
+            const result = { ok: false, error: errMsg };
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify(result) }],
+              details: result,
+            };
+          }
+          const final = await client.waitForTask(taskId, MESH_SYNC_TIMEOUT_MS);
+          client.close();
+          const status = final.payload?.["status"] as string | undefined;
+          const result = {
+            ok: status === "completed",
+            task_id: taskId,
+            status,
+            summary: final.payload?.["summary"],
+            response: final.payload?.["details"] ?? final.payload?.["summary"],
+            agent: agent_name,
+          };
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            details: result,
+          };
+        } catch (err) {
+          client.close();
+          const msg = err instanceof Error ? err.message : String(err);
+          const result = { ok: false, error: msg };
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            details: result,
+          };
+        }
+      },
+    });
   },
 };
 
