@@ -448,9 +448,52 @@ const plugin = {
   register(api: OpenClawPluginApi) {
     const config = resolveConfig(api.pluginConfig);
 
+    // Capture deps from gateway method calls for use in outbound session routing
+    let capturedDeps: Record<string, unknown> | null = null;
+    function captureDeps(opts: GatewayRequestHandlerOptions): void {
+      if (!capturedDeps && opts.context?.deps) {
+        capturedDeps = opts.context.deps as Record<string, unknown>;
+      }
+    }
+
+    async function recordOutboundInMeshSession(
+      contactIdentity: string,
+      agentName: string,
+      outboundMessage: string,
+    ): Promise<void> {
+      if (!capturedDeps) return;
+      const now = Date.now();
+      const job: CronJob = {
+        id: `mesh-outbound-${randomUUID()}`,
+        name: `Outbound to ${agentName}`,
+        enabled: true,
+        deleteAfterRun: true,
+        createdAtMs: now,
+        updatedAtMs: now,
+        schedule: { kind: "at", at: new Date(now).toISOString() },
+        sessionTarget: "isolated",
+        wakeMode: "now",
+        payload: { kind: "agentTurn", message: outboundMessage },
+        state: {},
+      };
+      try {
+        await runCronIsolatedAgentTurn({
+          cfg: api.config,
+          deps: capturedDeps,
+          job,
+          message: outboundMessage,
+          sessionKey: `mesh:${contactIdentity}`,
+          lane: "mesh",
+        });
+      } catch (err) {
+        api.logger.error(`Failed to create mesh session for ${contactIdentity}:`, err);
+      }
+    }
+
     api.registerGatewayMethod(
       "mesh.health",
       (opts) => {
+        captureDeps(opts);
         const authz = authorizeMeshClient(config, opts);
         opts.respond(true, {
           ok: authz.ok,
@@ -526,6 +569,7 @@ const plugin = {
     api.registerGatewayMethod(
       "mesh.send_task",
       (opts) => {
+        captureDeps(opts);
         const authz = authorizeMeshClient(config, opts);
         if (!authz.ok) {
           sendError(opts, authz.reason, { identity: authz.identity });
@@ -723,12 +767,11 @@ const plugin = {
 
           // Record outbound in per-contact mesh session
           const contactIdentity = agent.expected_identity ?? agent_name;
-          const sessionKey = `mesh:${contactIdentity}`;
-          void api.runtime.subagent.run({
-            sessionKey,
-            message: `[Outbound mesh task to ${agent_name}] ${message}`,
-            lane: "mesh",
-          }).catch(() => {});
+          void recordOutboundInMeshSession(
+            contactIdentity,
+            agent_name,
+            `[Outbound mesh task to ${agent_name}] ${message}`,
+          );
 
           return {
             content: [{ type: "text" as const, text: JSON.stringify(result) }],
@@ -826,12 +869,11 @@ const plugin = {
 
           // Record outbound in per-contact mesh session
           const contactIdentity = agent.expected_identity ?? agent_name;
-          const sessionKey = `mesh:${contactIdentity}`;
-          void api.runtime.subagent.run({
-            sessionKey,
-            message: `[Outbound mesh message to ${agent_name}] ${message}\n\n[Response] ${result.response ?? "(no response)"}`,
-            lane: "mesh",
-          }).catch(() => {});
+          void recordOutboundInMeshSession(
+            contactIdentity,
+            agent_name,
+            `[Outbound mesh message to ${agent_name}] ${message}\n\n[Response] ${result.response ?? "(no response)"}`,
+          );
 
           return {
             content: [{ type: "text" as const, text: JSON.stringify(result) }],
