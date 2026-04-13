@@ -232,7 +232,11 @@ function createApi(pluginConfigOverrides: Record<string, unknown> = {}) {
       allowedUsers: ["chad.simon@cloudwarriors.ai"],
       ...pluginConfigOverrides,
     },
-    runtime: {},
+    runtime: {
+      subagent: {
+        run: vi.fn(async () => ({ runId: "mock-run-id" })),
+      },
+    },
     logger: {
       info: vi.fn(),
       warn: vi.fn(),
