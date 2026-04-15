@@ -126,3 +126,28 @@ dist/protocol.schema.json
 
 # Synthing
 **/.stfolder/
+# OMNIMEM:SYNC:START
+# Runtime / install artifacts (syncing these causes frequent conflicts).
+runtime/
+bin/
+lib/
+docs/
+spec/
+templates/
+db/
+__pycache__/
+*.pyc
+
+# Local SQLite (use JSONL/Markdown as the portable source of truth).
+data/omnimem.db
+data/omnimem.db-*
+data/omnimem.db-shm
+data/omnimem.db-wal
+data/omnimemory.db
+data/omnimemory.db-*
+data/omnimemory.db-shm
+data/omnimemory.db-wal
+
+# Optional: skip syncing selected markdown layers.
+data/markdown/archive/
+# OMNIMEM:SYNC:END

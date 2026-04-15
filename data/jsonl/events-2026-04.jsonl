@@ -1,0 +1,1 @@
+{"event_id": "a797a8f8999a4d188b729cdf298d05a6", "event_type": "memory.update", "event_time": "2026-04-15T22:17:18+00:00", "memory_id": "system000", "payload": {"action": "reindex", "ok": true, "reset": true, "jsonl_files": 0, "events_parsed": 0, "memories_indexed": 0, "events_skipped": 0}}
