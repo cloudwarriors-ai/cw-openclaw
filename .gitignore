@@ -147,4 +147,7 @@ data/omnimemory.db
 data/omnimemory.db-*
 data/omnimemory.db-shm
 data/omnimemory.db-wal
+
+# Optional: skip syncing selected markdown layers.
+data/markdown/archive/
 # OMNIMEM:SYNC:END
