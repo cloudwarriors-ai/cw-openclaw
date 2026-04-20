@@ -36,3 +36,15 @@ Authorization is explicit allowlist only:
 - If `allowedAgents` is set, inbound `from_agent` must also match that list.
 
 `mesh.send_task` is async-first. It returns `accepted`, then emits `running` and terminal `completed`, `failed`, or `rejected` callbacks as `mesh.task` events on the same gateway connection.
+
+## Task completion memory (for manager-side `task_status`)
+
+After each mesh task reaches a terminal state, the extension POSTs a `task-completed:<task_id>` memory to the local omni-mem HTTP API. The memory body includes a `<task-meta>JSON</task-meta>` block with `{ kind: "task_completion_record", task_id, status, completed_by, ... }` so that the manager-side [`task_status` MCP tool](https://github.com/Chaddacus/omni-mem) can close the loop by correlating dispatch records with completion records by `task_id`.
+
+| Config key                    | Default                 | Purpose                                                     |
+| ----------------------------- | ----------------------- | ----------------------------------------------------------- |
+| `completionMemoryEnabled`     | `true`                  | Set to `false` to skip the POST entirely (legacy behavior). |
+| `localOmniMemUrl`             | `http://localhost:8765` | Base URL of the local omni-mem HTTP server.                 |
+| `completionMemoryWorkspaceId` | `"default"`             | `workspaceId` field on the saved memory.                    |
+
+The POST is best-effort — failures are logged via the plugin logger and do not change the `mesh.task` event stream.
