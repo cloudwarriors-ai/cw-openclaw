@@ -8,6 +8,7 @@
     "properties": {
       "enabled": { "type": "boolean" },
       "displayName": { "type": "string" },
+      "agentIdentity": { "type": "string" },
       "allowedUsers": {
         "type": "array",
         "items": { "type": "string" }
@@ -15,6 +16,16 @@
       "allowedAgents": {
         "type": "array",
         "items": { "type": "string" }
+      },
+      "rosterPath": { "type": "string" },
+      "omniMem": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "url": { "type": "string" },
+          "workspaceId": { "type": "string" }
+        }
       }
     }
   }
