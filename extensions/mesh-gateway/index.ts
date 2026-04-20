@@ -3,12 +3,16 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Type } from "@sinclair/typebox";
-import WebSocket from "ws";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import WebSocket from "ws";
 import { runCronIsolatedAgentTurn } from "../../src/cron/isolated-agent.js";
 import type { CronJob } from "../../src/cron/types.js";
 import { MESH_SCOPE } from "../../src/gateway/operator-scopes.js";
 import type { GatewayRequestHandlerOptions } from "../../src/gateway/server-methods/types.js";
+import { postTaskCompletion, postTaskTransition } from "./omni-mem.js";
+
+const DEFAULT_OMNI_MEM_URL = "http://localhost:8765";
+const DEFAULT_OMNI_MEM_WORKSPACE = "default";
 
 type MeshGatewayConfig = {
   enabled: boolean;
@@ -17,6 +21,11 @@ type MeshGatewayConfig = {
   allowedUsers: string[];
   allowedAgents: string[];
   rosterPath?: string;
+  omniMem: {
+    enabled: boolean;
+    url: string;
+    workspaceId: string;
+  };
 };
 
 type MeshAuthz = { ok: true; identity: string } | { ok: false; identity?: string; reason: string };
@@ -48,7 +57,24 @@ function stringArray(value: unknown): string[] {
   );
 }
 
+function resolveOmniMemConfig(
+  raw: Record<string, unknown> | undefined,
+): MeshGatewayConfig["omniMem"] {
+  const explicitEnabled = typeof raw?.enabled === "boolean" ? raw.enabled : undefined;
+  const url = stringValue(raw?.url) ?? DEFAULT_OMNI_MEM_URL;
+  const workspaceId = stringValue(raw?.workspaceId) ?? DEFAULT_OMNI_MEM_WORKSPACE;
+  return {
+    enabled: explicitEnabled ?? Boolean(url),
+    url,
+    workspaceId,
+  };
+}
+
 function resolveConfig(raw: Record<string, unknown> | undefined): MeshGatewayConfig {
+  const omniMemRaw =
+    raw && typeof raw.omniMem === "object" && raw.omniMem !== null && !Array.isArray(raw.omniMem)
+      ? (raw.omniMem as Record<string, unknown>)
+      : undefined;
   return {
     enabled: raw?.enabled === true,
     displayName: stringValue(raw?.displayName),
@@ -56,7 +82,62 @@ function resolveConfig(raw: Record<string, unknown> | undefined): MeshGatewayCon
     allowedUsers: stringArray(raw?.allowedUsers),
     allowedAgents: stringArray(raw?.allowedAgents),
     rosterPath: stringValue(raw?.rosterPath),
+    omniMem: resolveOmniMemConfig(omniMemRaw),
   };
+}
+
+function shouldWriteToOmniMem(config: MeshGatewayConfig): boolean {
+  return Boolean(config.omniMem.enabled && config.omniMem.url && config.agentIdentity);
+}
+
+function recordTransitionBestEffort(
+  config: MeshGatewayConfig,
+  args: { taskId: string; status: "accepted" | "executing"; note?: string },
+) {
+  if (!shouldWriteToOmniMem(config)) {
+    return;
+  }
+  void postTaskTransition({
+    omniMemUrl: config.omniMem.url,
+    workspaceId: config.omniMem.workspaceId,
+    taskId: args.taskId,
+    status: args.status,
+    actor: config.agentIdentity as string,
+    note: args.note,
+  }).then((res) => {
+    if (!res?.ok && !res?.skipped) {
+      // eslint-disable-next-line no-console
+      console.warn(`[mesh-gateway] omni-mem transition write failed: ${res?.error ?? "unknown"}`);
+    }
+  });
+}
+
+function recordCompletionBestEffort(
+  config: MeshGatewayConfig,
+  args: {
+    taskId: string;
+    status: "completed" | "failed" | "rejected";
+    summary?: string;
+    details?: string;
+  },
+) {
+  if (!shouldWriteToOmniMem(config)) {
+    return;
+  }
+  void postTaskCompletion({
+    omniMemUrl: config.omniMem.url,
+    workspaceId: config.omniMem.workspaceId,
+    taskId: args.taskId,
+    status: args.status,
+    actor: config.agentIdentity as string,
+    summary: args.summary,
+    details: args.details,
+  }).then((res) => {
+    if (!res?.ok && !res?.skipped) {
+      // eslint-disable-next-line no-console
+      console.warn(`[mesh-gateway] omni-mem completion write failed: ${res?.error ?? "unknown"}`);
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -102,7 +183,9 @@ function wsUrl(gatewayUrl: string): string {
 
 function tokenValue(agent: RosterAgent): string | undefined {
   const raw = (agent.token ?? "").trim();
-  if (!raw) return undefined;
+  if (!raw) {
+    return undefined;
+  }
   if (raw.toLowerCase().startsWith("bearer ")) {
     return raw.slice(7).trim() || undefined;
   }
@@ -119,6 +202,7 @@ async function loadRoster(rosterPath: string): Promise<Roster> {
       code === "ENOENT"
         ? `Roster file not found: ${rosterPath}`
         : `Failed to read roster file: ${(err as Error).message}`,
+      { cause: err },
     );
   }
   try {
@@ -132,9 +216,7 @@ function lookupAgent(roster: Roster, agentName: string): RosterAgent {
   const agent = roster.agents?.[agentName];
   if (!agent) {
     const available = Object.keys(roster.agents ?? {}).join(", ") || "(none)";
-    throw new Error(
-      `Agent "${agentName}" not found in roster. Available: ${available}`,
-    );
+    throw new Error(`Agent "${agentName}" not found in roster. Available: ${available}`);
   }
   return agent;
 }
@@ -187,20 +269,16 @@ class MeshClient {
     }
     const res = await this.rpc("connect", connectParams, timeoutMs);
     if (!res.ok) {
-      throw new Error(
-        `Mesh connect rejected: ${res.error?.message ?? "unknown error"}`,
-      );
+      throw new Error(`Mesh connect rejected: ${res.error?.message ?? "unknown error"}`);
     }
     const server = res.payload?.["server"] as Record<string, unknown> | undefined;
     this.connId = typeof server?.["connId"] === "string" ? server["connId"] : null;
   }
 
-  async rpc(
-    method: string,
-    params: Record<string, unknown>,
-    timeoutMs: number,
-  ): Promise<WsFrame> {
-    if (!this.ws) throw new Error("WebSocket not connected");
+  async rpc(method: string, params: Record<string, unknown>, timeoutMs: number): Promise<WsFrame> {
+    if (!this.ws) {
+      throw new Error("WebSocket not connected");
+    }
     const reqId = randomUUID();
     const frame: WsFrame = { type: "req", id: reqId, method, params };
     this.ws.send(JSON.stringify(frame));
@@ -208,7 +286,9 @@ class MeshClient {
   }
 
   async recvUntil(expectedId: string | null, timeoutMs: number): Promise<WsFrame> {
-    if (!this.ws) throw new Error("WebSocket not connected");
+    if (!this.ws) {
+      throw new Error("WebSocket not connected");
+    }
     const ws = this.ws;
     return new Promise<WsFrame>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -219,7 +299,15 @@ class MeshClient {
       function onMessage(data: WebSocket.RawData) {
         let frame: WsFrame;
         try {
-          frame = JSON.parse(data.toString()) as WsFrame;
+          const raw =
+            typeof data === "string"
+              ? data
+              : Buffer.isBuffer(data)
+                ? data.toString("utf8")
+                : Array.isArray(data)
+                  ? Buffer.concat(data).toString("utf8")
+                  : Buffer.from(data).toString("utf8");
+          frame = JSON.parse(raw) as WsFrame;
         } catch {
           return;
         }
@@ -356,6 +444,7 @@ function emitToCurrentClient(opts: GatewayRequestHandlerOptions, event: string, 
 async function runMeshTask(params: {
   api: OpenClawPluginApi;
   opts: GatewayRequestHandlerOptions;
+  config: MeshGatewayConfig;
   eventParams: Record<string, unknown>;
   taskId: string;
   callerIdentity: string;
@@ -363,8 +452,13 @@ async function runMeshTask(params: {
   title?: string;
   model?: string;
 }) {
-  const { api, opts, eventParams, taskId, callerIdentity, message, title, model } = params;
+  const { api, opts, config, eventParams, taskId, callerIdentity, message, title, model } = params;
   emitToCurrentClient(opts, "mesh.task", buildMeshEvent(eventParams, "running"));
+  recordTransitionBestEffort(config, {
+    taskId,
+    status: "executing",
+    note: "Mesh-gateway dispatched to cron isolated-agent runtime.",
+  });
   const now = Date.now();
   const job: CronJob = {
     id: `mesh-${taskId}`,
@@ -400,6 +494,12 @@ async function runMeshTask(params: {
         artifacts: [],
       }),
     );
+    recordCompletionBestEffort(config, {
+      taskId,
+      status: status,
+      summary: result.summary,
+      details: result.outputText ?? result.error,
+    });
   } catch (error) {
     const messageText = error instanceof Error ? error.message : String(error);
     emitToCurrentClient(
@@ -412,6 +512,12 @@ async function runMeshTask(params: {
         artifacts: [],
       }),
     );
+    recordCompletionBestEffort(config, {
+      taskId,
+      status: "failed",
+      summary: "Mesh task failed",
+      details: messageText,
+    });
   }
 }
 
@@ -441,6 +547,16 @@ const plugin = {
         agentIdentity: { type: "string" },
         allowedUsers: { type: "array", items: { type: "string" } },
         allowedAgents: { type: "array", items: { type: "string" } },
+        rosterPath: { type: "string" },
+        omniMem: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            enabled: { type: "boolean" },
+            url: { type: "string" },
+            workspaceId: { type: "string" },
+          },
+        },
       },
     },
   },
@@ -461,7 +577,9 @@ const plugin = {
       agentName: string,
       outboundMessage: string,
     ): Promise<void> {
-      if (!capturedDeps) return;
+      if (!capturedDeps) {
+        return;
+      }
       const now = Date.now();
       const job: CronJob = {
         id: `mesh-outbound-${randomUUID()}`,
@@ -596,9 +714,15 @@ const plugin = {
         });
         emitToCurrentClient(opts, "mesh.task", accepted);
         opts.respond(true, accepted);
+        recordTransitionBestEffort(config, {
+          taskId,
+          status: "accepted",
+          note: `Mesh-gateway accepted task from ${authz.identity}.`,
+        });
         void runMeshTask({
           api,
           opts,
+          config,
           eventParams: taskParams,
           taskId,
           callerIdentity: authz.identity,
@@ -615,9 +739,7 @@ const plugin = {
     // -------------------------------------------------------------------------
 
     const resolvedRosterPath =
-      config.rosterPath ??
-      process.env["MESH_ROSTER_PATH"] ??
-      defaultRosterPath();
+      config.rosterPath ?? process.env["MESH_ROSTER_PATH"] ?? defaultRosterPath();
 
     api.registerTool({
       name: "mesh_list_agents",
@@ -641,17 +763,10 @@ const plugin = {
         const results = await Promise.all(
           agentNames.map(async (name) => {
             const agent = roster.agents[name];
-            const client = new MeshClient(
-              agent,
-              config.displayName ?? "openclaw",
-            );
+            const client = new MeshClient(agent, config.displayName ?? "openclaw");
             try {
               await client.connect(MESH_CONNECT_TIMEOUT_MS);
-              const health = await client.rpc(
-                "mesh.health",
-                {},
-                MESH_CONNECT_TIMEOUT_MS,
-              );
+              const health = await client.rpc("mesh.health", {}, MESH_CONNECT_TIMEOUT_MS);
               client.close();
               const payload = health.payload ?? {};
               return {
@@ -697,7 +812,12 @@ const plugin = {
         ),
       }),
       async execute(_toolCallId, params) {
-        const { agent_name, goal, context: ctx, start } = params as {
+        const {
+          agent_name,
+          goal,
+          context: ctx,
+          start,
+        } = params as {
           agent_name: string;
           goal: string;
           context?: string;
@@ -733,7 +853,9 @@ const plugin = {
           const taskId = randomUUID();
           const fromAgent = config.displayName ?? "openclaw";
           const messageParts = [goal];
-          if (ctx) messageParts.push(`Context:\n${ctx}`);
+          if (ctx) {
+            messageParts.push(`Context:\n${ctx}`);
+          }
           const message = messageParts.join("\n\n");
           const taskParams: Record<string, unknown> = {
             task_id: taskId,
@@ -869,10 +991,12 @@ const plugin = {
 
           // Record outbound in per-contact mesh session
           const contactIdentity = agent.expected_identity ?? agent_name;
+          const responseText =
+            typeof result.response === "string" ? result.response : "(no response)";
           void recordOutboundInMeshSession(
             contactIdentity,
             agent_name,
-            `[Outbound mesh message to ${agent_name}] ${message}\n\n[Response] ${result.response ?? "(no response)"}`,
+            `[Outbound mesh message to ${agent_name}] ${message}\n\n[Response] ${responseText}`,
           );
 
           return {
