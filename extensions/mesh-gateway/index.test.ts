@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCronIsolatedAgentTurn } from "../../src/cron/isolated-agent.js";
 import type {
   GatewayRequestHandler,
@@ -16,8 +16,9 @@ vi.mock("../../src/cron/isolated-agent.js", () => ({
   })),
 }));
 
-function createApi() {
+function createApi(pluginConfigOverrides: Record<string, unknown> = {}) {
   const handlers = new Map<string, GatewayRequestHandler>();
+  const warn = vi.fn();
   const api = {
     id: "mesh-gateway",
     name: "Mesh Gateway",
@@ -27,11 +28,12 @@ function createApi() {
       enabled: true,
       displayName: "Chad Agent",
       allowedUsers: ["chad.simon@cloudwarriors.ai"],
+      ...pluginConfigOverrides,
     },
     runtime: {},
     logger: {
       info: vi.fn(),
-      warn: vi.fn(),
+      warn,
       error: vi.fn(),
     },
     registerGatewayMethod(method: string, handler: GatewayRequestHandler) {
@@ -50,7 +52,7 @@ function createApi() {
     on: vi.fn(),
   } as unknown as OpenClawPluginApi;
   plugin.register(api);
-  return { api, handlers };
+  return { api, handlers, warn };
 }
 
 function createOptions(
@@ -83,8 +85,20 @@ function createOptions(
 }
 
 describe("mesh-gateway plugin", () => {
+  const originalFetch = globalThis.fetch;
+  let fetchMock: ReturnType<typeof vi.fn>;
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default: no-op fetch mock so the completion-memory POST never touches
+    // a real network. Individual tests can capture calls by inspecting
+    // `fetchMock.mock.calls` or by replacing the implementation.
+    fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ id: "mem-test" }), { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
   });
 
   it("registers the mesh RPC surface", () => {
@@ -182,5 +196,104 @@ describe("mesh-gateway plugin", () => {
       expect.objectContaining({ task_id: "task-1", status: "running" }),
       new Set(["conn-1"]),
     );
+  });
+
+  it("posts a task-completed memory with a <task-meta> block after a successful run", async () => {
+    const { handlers } = createApi({ localOmniMemUrl: "http://127.0.0.1:9999" });
+    const opts = createOptions({
+      task_id: "task-completion-1",
+      from_agent: "daniel",
+      dispatched_by: "chad.simon@cloudwarriors.ai",
+      title: "mesh test",
+      message: "run it",
+    });
+
+    handlers.get("mesh.send_task")?.(opts);
+
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalled();
+    });
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("http://127.0.0.1:9999/api/save-memory");
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.title).toBe("task-completed:task-completion-1");
+    expect(body.workspaceId).toBe("default");
+    expect(body.text).toContain("<task-meta>");
+    expect(body.text).toContain("</task-meta>");
+    const metaMatch = (body.text as string).match(/<task-meta>(.*)<\/task-meta>/s);
+    expect(metaMatch).toBeTruthy();
+    const meta = JSON.parse(metaMatch![1]!);
+    expect(meta).toMatchObject({
+      kind: "task_completion_record",
+      task_id: "task-completion-1",
+      status: "completed",
+      completed_by: "chad.simon@cloudwarriors.ai",
+      from_agent: "daniel",
+      dispatched_by: "chad.simon@cloudwarriors.ai",
+      simulated: false,
+    });
+    expect(meta.completed_at).toBeTruthy();
+  });
+
+  it("records a failure completion when the isolated agent errors", async () => {
+    const mocked = vi.mocked(runCronIsolatedAgentTurn);
+    mocked.mockRejectedValueOnce(new Error("isolated boom"));
+    const { handlers } = createApi();
+    const opts = createOptions({
+      task_id: "task-failure-1",
+      from_agent: "daniel",
+      dispatched_by: "chad@test",
+      message: "run it",
+    });
+
+    handlers.get("mesh.send_task")?.(opts);
+
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalled();
+    });
+    const [, init] = fetchMock.mock.calls[0]!;
+    const body = JSON.parse((init as RequestInit).body as string);
+    const meta = JSON.parse((body.text as string).match(/<task-meta>(.*)<\/task-meta>/s)![1]!);
+    expect(meta.status).toBe("failed");
+    expect(meta.task_id).toBe("task-failure-1");
+  });
+
+  it("skips completion-memory POST when completionMemoryEnabled=false", async () => {
+    const { handlers } = createApi({ completionMemoryEnabled: false });
+    const opts = createOptions({
+      task_id: "task-opt-out",
+      from_agent: "daniel",
+      message: "run",
+    });
+
+    handlers.get("mesh.send_task")?.(opts);
+
+    await vi.waitFor(() => {
+      expect(opts.context.broadcastToConnIds).toHaveBeenCalledWith(
+        "mesh.task",
+        expect.objectContaining({ task_id: "task-opt-out", status: "completed" }),
+        new Set(["conn-1"]),
+      );
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("logs and swallows completion-memory save failures", async () => {
+    const { handlers, warn } = createApi();
+    fetchMock.mockResolvedValueOnce(new Response("boom", { status: 500 }));
+    const opts = createOptions({
+      task_id: "task-save-fail",
+      from_agent: "daniel",
+      message: "run",
+    });
+
+    handlers.get("mesh.send_task")?.(opts);
+
+    await vi.waitFor(() => {
+      expect(warn).toHaveBeenCalled();
+    });
+    const warnMessage = String(warn.mock.calls[0]![0]);
+    expect(warnMessage).toContain("task-save-fail");
+    expect(warnMessage).toContain("500");
   });
 });

@@ -15,7 +15,10 @@
       "allowedAgents": {
         "type": "array",
         "items": { "type": "string" }
-      }
+      },
+      "completionMemoryEnabled": { "type": "boolean" },
+      "localOmniMemUrl": { "type": "string" },
+      "completionMemoryWorkspaceId": { "type": "string" }
     }
   }
 }

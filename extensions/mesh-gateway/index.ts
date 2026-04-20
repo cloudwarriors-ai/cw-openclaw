@@ -9,6 +9,18 @@ type MeshGatewayConfig = {
   displayName?: string;
   allowedUsers: string[];
   allowedAgents: string[];
+  /**
+   * If true, after each mesh task finishes the gateway POSTs a
+   * `task-completed:<task_id>` memory to the local omni-mem HTTP API
+   * (at {@link MeshGatewayConfig.localOmniMemUrl}). The memory embeds a
+   * `<task-meta>JSON</task-meta>` block so the manager-side `task_status`
+   * tool can join dispatch records with completion records by task_id.
+   * Best-effort: POST failures are logged and do NOT alter the mesh.task
+   * event stream returned to the caller.
+   */
+  completionMemoryEnabled: boolean;
+  localOmniMemUrl: string;
+  completionMemoryWorkspaceId: string;
 };
 
 type MeshAuthz = { ok: true; identity: string } | { ok: false; identity?: string; reason: string };
@@ -41,12 +53,104 @@ function stringArray(value: unknown): string[] {
 }
 
 function resolveConfig(raw: Record<string, unknown> | undefined): MeshGatewayConfig {
+  const completionMemoryEnabled = raw?.completionMemoryEnabled !== false;
   return {
     enabled: raw?.enabled === true,
     displayName: stringValue(raw?.displayName),
     allowedUsers: stringArray(raw?.allowedUsers),
     allowedAgents: stringArray(raw?.allowedAgents),
+    completionMemoryEnabled,
+    localOmniMemUrl: (stringValue(raw?.localOmniMemUrl) ?? "http://localhost:8765").replace(
+      /\/+$/,
+      "",
+    ),
+    completionMemoryWorkspaceId: stringValue(raw?.completionMemoryWorkspaceId) ?? "default",
   };
+}
+
+// Sentinel markers for the embedded structured metadata block. Matches the
+// convention used by omni-mem's management-mcp/src/tools.ts and
+// scripts/dev-mesh-stub.ts — the body is the only field that survives the
+// save-memory → sync-daemon → cloud progress API round trip, so task
+// correlation metadata lives inside the memory text.
+const TASK_META_OPEN = "<task-meta>";
+const TASK_META_CLOSE = "</task-meta>";
+
+function embedTaskMeta(meta: Record<string, unknown>): string {
+  return `${TASK_META_OPEN}${JSON.stringify(meta)}${TASK_META_CLOSE}`;
+}
+
+interface CompletionMemoryParams {
+  readonly api: OpenClawPluginApi;
+  readonly config: MeshGatewayConfig;
+  readonly taskId: string;
+  readonly status: "completed" | "failed" | "rejected";
+  readonly completedBy?: string;
+  readonly fromAgent?: string;
+  readonly dispatchedBy?: string;
+  readonly originalTitle?: string;
+  readonly summary?: string;
+  readonly details?: string;
+  readonly error?: string;
+}
+
+// Records a task-completion memory in the local omni-mem HTTP API so the
+// manager-side `task_status` MCP tool can close the loop by correlating the
+// dispatch record (on the manager's progress) with this completion record
+// (on the receiving agent's progress) via task_id. Best-effort — any failure
+// is logged and swallowed; the mesh.task event stream is already emitted by
+// the caller before this runs.
+async function writeCompletionMemory(params: CompletionMemoryParams): Promise<void> {
+  if (!params.config.completionMemoryEnabled) {
+    return;
+  }
+  const url = `${params.config.localOmniMemUrl}/api/save-memory`;
+  const meta: Record<string, unknown> = {
+    kind: "task_completion_record",
+    task_id: params.taskId,
+    status: params.status,
+    completed_by: params.completedBy,
+    completed_at: new Date().toISOString(),
+    summary:
+      params.summary ?? (params.status === "completed" ? "mesh task completed" : params.error),
+    original_title: params.originalTitle,
+    from_agent: params.fromAgent,
+    dispatched_by: params.dispatchedBy,
+    simulated: false,
+  };
+  const payload = {
+    title: `task-completed:${params.taskId}`,
+    text: [
+      `Mesh task ${params.taskId} finished with status=${params.status}.`,
+      "",
+      params.originalTitle ? `**Original title:** ${params.originalTitle}` : "",
+      params.summary ? `**Summary:** ${params.summary}` : "",
+      params.details ? `\n${params.details}` : "",
+      params.error ? `\n**Error:** ${params.error}` : "",
+      "",
+      embedTaskMeta(meta),
+    ]
+      .filter((l) => l !== "")
+      .join("\n"),
+    workspaceId: params.config.completionMemoryWorkspaceId,
+  };
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      params.api.logger.warn(
+        `mesh-gateway: completion-memory save-memory ${response.status} for task ${params.taskId}: ${text.slice(0, 200)}`,
+      );
+    }
+  } catch (err) {
+    params.api.logger.warn(
+      `mesh-gateway: completion-memory POST failed for task ${params.taskId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 function authorizeMeshClient(
@@ -113,6 +217,7 @@ function emitToCurrentClient(opts: GatewayRequestHandlerOptions, event: string, 
 
 async function runMeshTask(params: {
   api: OpenClawPluginApi;
+  config: MeshGatewayConfig;
   opts: GatewayRequestHandlerOptions;
   eventParams: Record<string, unknown>;
   taskId: string;
@@ -120,7 +225,7 @@ async function runMeshTask(params: {
   title?: string;
   model?: string;
 }) {
-  const { api, opts, eventParams, taskId, message, title, model } = params;
+  const { api, config, opts, eventParams, taskId, message, title, model } = params;
   emitToCurrentClient(opts, "mesh.task", buildMeshEvent(eventParams, "running"));
   const now = Date.now();
   const job: CronJob = {
@@ -136,6 +241,9 @@ async function runMeshTask(params: {
     payload: { kind: "agentTurn", message, model },
     state: {},
   };
+  const completedBy = stringValue(eventParams.from_identity);
+  const fromAgent = stringValue(eventParams.from_agent);
+  const dispatchedBy = stringValue(eventParams.dispatched_by);
   try {
     const result = await runCronIsolatedAgentTurn({
       cfg: api.config,
@@ -157,6 +265,19 @@ async function runMeshTask(params: {
         artifacts: [],
       }),
     );
+    await writeCompletionMemory({
+      api,
+      config,
+      taskId,
+      status,
+      completedBy,
+      fromAgent,
+      dispatchedBy,
+      originalTitle: title,
+      summary: result.summary,
+      details: result.outputText,
+      error: result.error,
+    });
   } catch (error) {
     const messageText = error instanceof Error ? error.message : String(error);
     emitToCurrentClient(
@@ -169,6 +290,19 @@ async function runMeshTask(params: {
         artifacts: [],
       }),
     );
+    await writeCompletionMemory({
+      api,
+      config,
+      taskId,
+      status: "failed",
+      completedBy,
+      fromAgent,
+      dispatchedBy,
+      originalTitle: title,
+      summary: "Mesh task failed",
+      details: messageText,
+      error: messageText,
+    });
   }
 }
 
@@ -197,6 +331,9 @@ const plugin = {
         displayName: { type: "string" },
         allowedUsers: { type: "array", items: { type: "string" } },
         allowedAgents: { type: "array", items: { type: "string" } },
+        completionMemoryEnabled: { type: "boolean" },
+        localOmniMemUrl: { type: "string" },
+        completionMemoryWorkspaceId: { type: "string" },
       },
     },
   },
@@ -288,6 +425,7 @@ const plugin = {
       opts.respond(true, accepted);
       void runMeshTask({
         api,
+        config,
         opts,
         eventParams: taskParams,
         taskId,
