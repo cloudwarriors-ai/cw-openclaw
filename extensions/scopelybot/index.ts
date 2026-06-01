@@ -101,7 +101,7 @@ const plugin = {
     }
 
     console.log(
-      "[scopelybot] Registered 28 tools (10 observability + 5 admin + 4 monitoring + 6 GH + 1 correlation + 2 passthrough)",
+      "[scopelybot] Registered 37 tools (10 observability + 5 admin + 4 monitoring + 6 GH + 1 correlation + 2 passthrough + 9 user-maintenance)",
     );
   },
 };
