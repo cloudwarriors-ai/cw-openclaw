@@ -1,0 +1,17 @@
+{
+  "id": "scopelybot",
+  "name": "ScopelyBot",
+  "description": "Scopely VIP observability and break/fix agent tools",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "scopelyRepos": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": ["cloudwarriors-ai/scopely"],
+        "description": "GitHub repos scoped for Scopely issue management"
+      }
+    }
+  }
+}
