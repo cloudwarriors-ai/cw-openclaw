@@ -3,6 +3,7 @@ import { registerAdminTools } from "./src/admin-tools.js";
 import { createAuditLogger } from "./src/audit.js";
 import { sendComfortMessage, sendScopelyText } from "./src/comfort.js";
 import { registerCorrelationTools } from "./src/correlation-tools.js";
+import { registerDeploymentConfigTools } from "./src/deployment-config-tools.js";
 import { registerGhTools } from "./src/gh-tools.js";
 import { registerMonitoringTools } from "./src/monitoring-tools.js";
 import { registerOrgTools } from "./src/org-tools.js";
@@ -10,7 +11,9 @@ import { runPassthroughCycle } from "./src/passthrough-runner-cycle.js";
 import { registerPassthroughTools } from "./src/passthrough-tools.js";
 import { registerPricingTools } from "./src/pricing-tools.js";
 import { registerScopelyTools } from "./src/scopely-tools.js";
+import { registerScopingCardTools } from "./src/scoping-card-tools.js";
 import { registerUserMaintenanceTools, tryExecuteConfirm } from "./src/user-maintenance-tools.js";
+import { registerVendorConfigTools } from "./src/vendor-config-tools.js";
 
 type PluginConfig = { scopelyRepos?: string[] };
 
@@ -52,6 +55,9 @@ const plugin = {
     registerUserMaintenanceTools(api, logger);
     registerOrgTools(api, logger);
     registerPricingTools(api, logger);
+    registerVendorConfigTools(api, logger);
+    registerDeploymentConfigTools(api, logger);
+    registerScopingCardTools(api, logger);
 
     // Send comfort message when a message arrives in the scopelybot channel
     api.on("message_received", async (event, ctx) => {
@@ -105,7 +111,7 @@ const plugin = {
     }
 
     console.log(
-      "[scopelybot] Registered 60 tools (10 observability + 5 admin + 4 monitoring + 6 GH + 1 correlation + 2 passthrough + 9 user-maintenance + 8 org + 15 pricing)",
+      "[scopelybot] Registered 86 tools (10 observability + 5 admin + 4 monitoring + 6 GH + 1 correlation + 2 passthrough + 9 user-maintenance + 8 org + 15 pricing + 13 vendor-config + 8 deployment-config + 5 scoping-card)",
     );
   },
 };
