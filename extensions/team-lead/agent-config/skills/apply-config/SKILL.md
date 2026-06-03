@@ -20,12 +20,12 @@ Check for a config profile in this order:
 
 1. **Argument**: If the user provided a bundle name (e.g. `/apply-config personal/chad`), use that.
 2. **current-project.json**: Read `~/.openclaw/workspace/current-project.json`. If it has a `configProfile` field, use that.
-3. **Lead gateway**: If `current-project.json` has a `projectId` and `leadGateway`, call the lead to fetch the project:
+3. **Lead gateway**: If `current-project.json` has a `projectId` and `leadGateway`, call the lead to fetch the project. Use the lead session key from `team-roster.json` (`lead_session_key`, default `agent:main:main`):
    ```bash
    curl -sS -X POST "${LEAD_GATEWAY}/tools/invoke" \
      -H "Authorization: Bearer ${LEAD_TOKEN}" \
      -H "Content-Type: application/json" \
-     -d '{"tool": "team_lead_get_project", "args": {"projectId": "<projectId>"}}'
+     -d '{"sessionKey": "${LEAD_SESSION_KEY}", "tool": "team_lead_get_project", "args": {"projectId": "<projectId>"}}'
    ```
    Read `configProfile` from the response's `project` object.
 4. **No config found**: If none of the above yields a config profile, report: "No config profile found. Provide one as an argument: `/apply-config personal/chad`"
@@ -128,6 +128,7 @@ curl -sS -X POST "${LEAD_GATEWAY}/tools/invoke" \
   -H "Authorization: Bearer ${LEAD_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{
+    "sessionKey": "${LEAD_SESSION_KEY}",
     "tool": "team_lead_update",
     "args": {
       "projectId": "<projectId>",

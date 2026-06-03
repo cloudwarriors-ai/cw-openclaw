@@ -18,7 +18,11 @@ Send a heartbeat signal to the team lead coordinator. Reports that this agent is
 
 ### Step 1: Determine the lead gateway
 
-Read `~/.openclaw/workspace/team-roster.json` and use the `lead_gateway` top-level field. Extract the gateway URL and auth token (`gateway_token` or `hooks_token`).
+Read `~/.openclaw/workspace/team-roster.json` and use the `lead_gateway` top-level field. Extract:
+
+- the gateway URL
+- the gateway auth token (`gateway_token`, or `lead_token` for older files)
+- the lead session key (`lead_session_key`, default `agent:main:main`)
 
 ### Step 2: Gather agent info
 
@@ -37,6 +41,7 @@ curl -sS -X POST "${LEAD_GATEWAY}/tools/invoke" \
   -H "Authorization: Bearer ${LEAD_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{
+    "sessionKey": "${LEAD_SESSION_KEY}",
     "tool": "team_lead_heartbeat",
     "args": {
       "agentName": "<agent name>",
