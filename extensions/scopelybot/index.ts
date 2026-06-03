@@ -46,18 +46,29 @@ const plugin = {
     const logger = createAuditLogger(workspaceDir);
     const pluginConfig: PluginConfig = config ?? { scopelyRepos: ["cloudwarriors-ai/scopely"] };
 
-    registerScopelyTools(api, logger);
-    registerAdminTools(api, logger);
-    registerMonitoringTools(api, logger);
-    registerGhTools(api, logger, pluginConfig);
-    registerCorrelationTools(api, logger, pluginConfig);
-    registerPassthroughTools(api, logger, workspaceDir);
-    registerUserMaintenanceTools(api, logger);
-    registerOrgTools(api, logger);
-    registerPricingTools(api, logger);
-    registerVendorConfigTools(api, logger);
-    registerDeploymentConfigTools(api, logger);
-    registerScopingCardTools(api, logger);
+    // Register every scopelybot tool as `optional: true` so per-agent allowlists
+    // actually scope them: non-optional plugin tools bypass allowlists entirely and
+    // become visible to EVERY agent. With this wrapper, only agents whose
+    // `tools.allow` includes a tool name, the plugin id ("scopelybot"), or
+    // "group:plugins" can see these tools. The scopelybot agent's allow list
+    // carries the "scopelybot" entry; other bots get nothing.
+    const optionalApi: OpenClawPluginApi = {
+      ...api,
+      registerTool: (tool, opts) => api.registerTool(tool, { ...opts, optional: true }),
+    };
+
+    registerScopelyTools(optionalApi, logger);
+    registerAdminTools(optionalApi, logger);
+    registerMonitoringTools(optionalApi, logger);
+    registerGhTools(optionalApi, logger, pluginConfig);
+    registerCorrelationTools(optionalApi, logger, pluginConfig);
+    registerPassthroughTools(optionalApi, logger, workspaceDir);
+    registerUserMaintenanceTools(optionalApi, logger);
+    registerOrgTools(optionalApi, logger);
+    registerPricingTools(optionalApi, logger);
+    registerVendorConfigTools(optionalApi, logger);
+    registerDeploymentConfigTools(optionalApi, logger);
+    registerScopingCardTools(optionalApi, logger);
 
     // Send comfort message when a message arrives in the scopelybot channel
     api.on("message_received", async (event, ctx) => {
