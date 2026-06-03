@@ -8,6 +8,7 @@ import { registerMonitoringTools } from "./src/monitoring-tools.js";
 import { registerOrgTools } from "./src/org-tools.js";
 import { runPassthroughCycle } from "./src/passthrough-runner-cycle.js";
 import { registerPassthroughTools } from "./src/passthrough-tools.js";
+import { registerPricingTools } from "./src/pricing-tools.js";
 import { registerScopelyTools } from "./src/scopely-tools.js";
 import { registerUserMaintenanceTools, tryExecuteConfirm } from "./src/user-maintenance-tools.js";
 
@@ -50,6 +51,7 @@ const plugin = {
     registerPassthroughTools(api, logger, workspaceDir);
     registerUserMaintenanceTools(api, logger);
     registerOrgTools(api, logger);
+    registerPricingTools(api, logger);
 
     // Send comfort message when a message arrives in the scopelybot channel
     api.on("message_received", async (event, ctx) => {
@@ -103,7 +105,7 @@ const plugin = {
     }
 
     console.log(
-      "[scopelybot] Registered 45 tools (10 observability + 5 admin + 4 monitoring + 6 GH + 1 correlation + 2 passthrough + 9 user-maintenance + 8 org)",
+      "[scopelybot] Registered 60 tools (10 observability + 5 admin + 4 monitoring + 6 GH + 1 correlation + 2 passthrough + 9 user-maintenance + 8 org + 15 pricing)",
     );
   },
 };
