@@ -2,43 +2,11 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
-import { makeCode, putPending } from "./pending-confirm.js";
+import { describeChanges, pickBody, stageWrite } from "./gated.js";
 import { buildQuery, errorResult, jsonResult, scopelyFetch } from "./scopely-api.js";
 
-let codeSeed = 1;
-
-// Stage a gated mutation: registers a pending action and returns the confirm
-// prompt. It does NOT execute — execution happens in tryExecuteConfirm() (in
-// user-maintenance-tools.ts) when a human replies `CONFIRM <code>` in the channel.
-function stage(
-  summary: string,
-  seedExtra: number,
-  run: () => Promise<{ ok: boolean; status: number; data: unknown }>,
-) {
-  const code = makeCode(codeSeed++ * 7919 + seedExtra);
-  putPending({ code, summary, run });
-  return jsonResult({
-    staged: true,
-    message:
-      `⚠️ Confirm: ${summary} on PROD.\n` +
-      `Reply \`CONFIRM ${code}\` within 5 minutes to proceed, or ignore to cancel.`,
-  });
-}
-
-// Build a request body from only the fields the caller actually supplied, so we
-// never send undefined keys that would blank out existing values on PATCH.
-function pickBody(params: Record<string, unknown>, keys: string[]): Record<string, unknown> {
-  const body: Record<string, unknown> = {};
-  for (const k of keys) {
-    if (params[k] !== undefined) {
-      body[k] = params[k];
-    }
-  }
-  return body;
-}
-
 // Organization management tools (Scopely VIP admin). Reads run immediately;
-// every write is confirm-gated. Org writes require platform_admin on the backend.
+// every write is confirm-gated via stageWrite(). Org writes require platform_admin.
 export function registerOrgTools(api: OpenClawPluginApi, logger: AuditLogger) {
   // ── Reads ──────────────────────────────────────────────────────────────
   api.registerTool(() =>
@@ -141,7 +109,7 @@ export function registerOrgTools(api: OpenClawPluginApi, logger: AuditLogger) {
               "is_active",
             ]);
             const summary = `create org "${params.name as string}" (slug ${params.slug as string})`;
-            return stage(summary, String(params.slug ?? "").length, () =>
+            return stageWrite(summary, () =>
               scopelyFetch(`/api/auth/orgs/`, { method: "POST", body: JSON.stringify(body) }),
             );
           } catch (err) {
@@ -186,10 +154,7 @@ export function registerOrgTools(api: OpenClawPluginApi, logger: AuditLogger) {
             if (Object.keys(body).length === 0) {
               return jsonResult({ ok: false, error: "No fields to update." });
             }
-            const changes = Object.entries(body)
-              .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
-              .join(", ");
-            return stage(`update org id ${orgId}: ${changes}`, orgId, () =>
+            return stageWrite(`update org id ${orgId}: ${describeChanges(body)}`, () =>
               scopelyFetch(`/api/auth/orgs/${orgId}/`, {
                 method: "PATCH",
                 body: JSON.stringify(body),
@@ -218,7 +183,7 @@ export function registerOrgTools(api: OpenClawPluginApi, logger: AuditLogger) {
         async execute(_id: string, params: Record<string, unknown>) {
           try {
             const orgId = params.org_id as number;
-            return stage(`DEACTIVATE (soft-delete) org id ${orgId}`, orgId, () =>
+            return stageWrite(`DEACTIVATE (soft-delete) org id ${orgId}`, () =>
               scopelyFetch(`/api/auth/orgs/${orgId}/`, { method: "DELETE" }),
             );
           } catch (err) {
@@ -246,7 +211,7 @@ export function registerOrgTools(api: OpenClawPluginApi, logger: AuditLogger) {
           try {
             const orgId = params.org_id as number;
             const domain = (params.domain as string).trim().toLowerCase();
-            return stage(`add domain ${domain} to org id ${orgId}`, orgId + domain.length, () =>
+            return stageWrite(`add domain ${domain} to org id ${orgId}`, () =>
               scopelyFetch(`/api/auth/orgs/${orgId}/domains/`, {
                 method: "POST",
                 body: JSON.stringify({ domain }),
@@ -279,11 +244,8 @@ export function registerOrgTools(api: OpenClawPluginApi, logger: AuditLogger) {
           try {
             const orgId = params.org_id as number;
             const domainId = params.domain_id as number;
-            return stage(
-              `remove domain id ${domainId} from org id ${orgId}`,
-              orgId + domainId,
-              () =>
-                scopelyFetch(`/api/auth/orgs/${orgId}/domains/${domainId}/`, { method: "DELETE" }),
+            return stageWrite(`remove domain id ${domainId} from org id ${orgId}`, () =>
+              scopelyFetch(`/api/auth/orgs/${orgId}/domains/${domainId}/`, { method: "DELETE" }),
             );
           } catch (err) {
             return errorResult(err);
