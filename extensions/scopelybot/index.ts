@@ -5,6 +5,7 @@ import { sendComfortMessage, sendScopelyText } from "./src/comfort.js";
 import { registerCorrelationTools } from "./src/correlation-tools.js";
 import { registerGhTools } from "./src/gh-tools.js";
 import { registerMonitoringTools } from "./src/monitoring-tools.js";
+import { registerOrgTools } from "./src/org-tools.js";
 import { runPassthroughCycle } from "./src/passthrough-runner-cycle.js";
 import { registerPassthroughTools } from "./src/passthrough-tools.js";
 import { registerScopelyTools } from "./src/scopely-tools.js";
@@ -48,6 +49,7 @@ const plugin = {
     registerCorrelationTools(api, logger, pluginConfig);
     registerPassthroughTools(api, logger, workspaceDir);
     registerUserMaintenanceTools(api, logger);
+    registerOrgTools(api, logger);
 
     // Send comfort message when a message arrives in the scopelybot channel
     api.on("message_received", async (event, ctx) => {
@@ -101,7 +103,7 @@ const plugin = {
     }
 
     console.log(
-      "[scopelybot] Registered 37 tools (10 observability + 5 admin + 4 monitoring + 6 GH + 1 correlation + 2 passthrough + 9 user-maintenance)",
+      "[scopelybot] Registered 45 tools (10 observability + 5 admin + 4 monitoring + 6 GH + 1 correlation + 2 passthrough + 9 user-maintenance + 8 org)",
     );
   },
 };
