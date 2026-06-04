@@ -1,9 +1,9 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
-
 import { zoomPlugin } from "./src/channel.js";
 import { shouldBlockTool, formatToolParams } from "./src/observe-tool-gate.js";
 import { setZoomRuntime } from "./src/runtime.js";
+import { registerZoomSubagentHooks } from "./src/subagent-hooks.js";
 import { registerZoomTools } from "./src/tools.js";
 
 export { monitorZoomProvider } from "./src/monitor.js";
@@ -17,6 +17,9 @@ const plugin = {
     setZoomRuntime(api.runtime);
     api.registerChannel({ plugin: zoomPlugin });
     registerZoomTools(api);
+
+    // Route subagent (spoke) completion results back into the originating Zoom thread.
+    registerZoomSubagentHooks(api);
 
     // Gate write/mutation tools in observe-mode sessions.
     // Blocks silently — the monitor handler sends one consolidated approval card after dispatch.
