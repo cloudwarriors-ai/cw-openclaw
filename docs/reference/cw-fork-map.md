@@ -150,3 +150,13 @@ Verified against `upstream/main` @ `fc7f96c826`. Fate of each CW core patch in a
 - Upstream memory-core has **no native channel scoping** (verified: no `channelSlug`/`all-customers`/`MemorySearchScope` anywhere in `extensions/memory-core/`) — scoping remains a CW feature to port
 
 Net permanent core footprint after sync: **~25 lines** (down from ~700).
+
+## 8. Sync execution record (completed 2026-06-04)
+
+The sync shipped on `codex/upstream-merge` @ `bfabae6b3b`:
+
+- Merge commit `5554cf3818` (upstream `fc7f96c826`, 36,767 commits; 21 conflicts resolved per §7).
+- Memory scoping re-homed: `extensions/memory-core/src/memory/scope.ts` + qmd engine filter + `memory_search` scope param (channel slug derived from session-store subject — no core plumbing).
+- Final gate: 26,024 tests passing; sole failing file = `src/docker-build-cache.test.ts` (upstream guardrails for their multi-stage Dockerfile; we keep the CW dev Dockerfile deliberately).
+- Known gaps: zoom `all-customers` training escalation has no input path (downgrades fail-safe); zoom onboarding adapter shimmed pending `ChannelPluginSetupWizard` migration; builtin sqlite memory engine ignores scope opts (parity with pre-sync base).
+- Deploy prerequisites: `PEA_RELAY_TOKEN`/`DEA_ES_PASSWORD`/`DEVTOOLS_LOCAL_KEY` in host `.env` (see `.env-template`); node ≥22.19 digest in Dockerfile.
