@@ -205,25 +205,6 @@ export function setActivePluginRegistry(
   cleanupRetiredPluginHostRegistry(previousRegistry);
 }
 
-// Drain hooks from a registry being discarded. Internal hooks live on a globalThis
-// singleton, so the loader must call this when an entry is evicted from the LRU
-// cache (or when a non-cached snapshot load completes), otherwise the hook handler
-// closures leak forever. Best-effort: never throws.
-export function drainPluginRegistryHooks(registry: PluginRegistry): void {
-  const unregisters = registry.hookUnregisters;
-  if (!unregisters || unregisters.length === 0) {
-    return;
-  }
-  for (const unregister of unregisters) {
-    try {
-      unregister();
-    } catch {
-      // Sibling teardowns must still run.
-    }
-  }
-  unregisters.length = 0;
-}
-
 export function getActivePluginRegistry(): PluginRegistry | null {
   return asPluginRegistry(state.activeRegistry);
 }

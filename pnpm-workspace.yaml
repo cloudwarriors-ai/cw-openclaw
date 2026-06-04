@@ -112,6 +112,8 @@ allowBuilds:
   "@openclaw/proxyline": true
   clawpdf: true
   rastermill: true
+  onnxruntime-node: true
+  sharp: true
 
 packageExtensions:
   baileys:
@@ -121,3 +123,10 @@ packageExtensions:
 
 patchedDependencies:
   "@agentclientprotocol/claude-agent-acp@0.39.0": patches/@agentclientprotocol__claude-agent-acp@0.39.0.patch
+
+onlyBuiltDependencies:
+  - "@lydell/node-pty"
+  - esbuild
+  - onnxruntime-node
+  - protobufjs
+  - sharp
