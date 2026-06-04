@@ -31,12 +31,12 @@ RUN if [ -n "$OPENCLAW_DOCKER_APT_PACKAGES" ]; then \
       rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*; \
     fi
 
-COPY --chown=node:node package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
-COPY --chown=node:node ui/package.json ./ui/package.json
-COPY --chown=node:node patches ./patches
-COPY --chown=node:node scripts ./scripts
-
+# Full source copy must precede install: pnpm 11 + the 171-project workspace
+# needs every workspace package.json at install time and verifies deps before
+# any `pnpm run`. The old partial-manifest install left workspace deps
+# uninstalled and failed `pnpm build` after COPY.
 USER node
+COPY --chown=node:node . .
 # Reduce OOM risk on low-memory hosts during dependency installation.
 # Docker builds on small VMs may otherwise fail with "Killed" (exit 137).
 RUN NODE_OPTIONS=--max-old-space-size=2048 pnpm install --frozen-lockfile
@@ -59,14 +59,15 @@ RUN if [ -n "$OPENCLAW_INSTALL_BROWSER" ]; then \
     fi
 
 USER node
-COPY --chown=node:node . .
-RUN pnpm build
+# verify_deps_before_run=false matches upstream's Dockerfile: deps are already
+# installed above; the pre-run check would re-resolve the whole workspace.
+RUN pnpm_config_verify_deps_before_run=false pnpm build
 USER root
 RUN ln -s /app/dist/index.js /usr/local/bin/openclaw
 USER node
 # Force pnpm for UI build (Bun may fail on ARM/Synology architectures)
 ENV OPENCLAW_PREFER_PNPM=1
-RUN pnpm ui:build
+RUN pnpm_config_verify_deps_before_run=false pnpm ui:build
 
 ENV NODE_ENV=production
 
