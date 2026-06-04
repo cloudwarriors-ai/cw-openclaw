@@ -62,6 +62,11 @@ import {
 import { asRecord } from "../dreaming-shared.js";
 import { resolveQmdCollectionPatternFlags, type QmdCollectionPatternFlag } from "./qmd-compat.js";
 import {
+  filterResultsByScope,
+  resolveSearchPathPrefix,
+  type MemorySearchScope as CwMemorySearchScope,
+} from "./scope.js";
+import {
   countChokidarWatchedEntries,
   type MemoryWatchPressureWarningState,
   warnIfMemoryWatchPressureHigh,
@@ -1143,10 +1148,19 @@ export class QmdMemoryManager implements MemorySearchManager {
       qmdSearchModeOverride?: "query" | "search" | "vsearch";
       onDebug?: (debug: MemorySearchRuntimeDebug) => void;
       sources?: MemorySource[];
+      scope?: CwMemorySearchScope;
+      channelSlug?: string;
+      excludeSlugs?: string[];
     },
   ): Promise<MemorySearchResult[]> {
     if (!this.isScopeAllowed(opts?.sessionKey)) {
       this.logScopeDenied(opts?.sessionKey);
+      return [];
+    }
+    // CW: resolve customer scope to a path prefix for post-filtering
+    // (fail-closed when channel scope arrives without a slug).
+    const cwScopeRes = resolveSearchPathPrefix(opts?.scope, opts?.channelSlug, opts?.excludeSlugs);
+    if (cwScopeRes?.denied) {
       return [];
     }
     const trimmed = query.trim();
@@ -1162,7 +1176,10 @@ export class QmdMemoryManager implements MemorySearchManager {
     );
     const requestedSources = opts?.sources?.length ? uniqueValues(opts.sources) : undefined;
     const collectionNames = this.listManagedCollectionNames(requestedSources);
-    const limit = resultLimit;
+    // CW: over-fetch when scope filtering will discard non-matching hits.
+    const limit = cwScopeRes?.prefix
+      ? Math.min(resultLimit * 5, this.qmd.limits.maxResults)
+      : resultLimit;
     if (collectionNames.length === 0) {
       log.warn("qmd query skipped: no managed collections configured");
       return [];
@@ -1323,6 +1340,12 @@ export class QmdMemoryManager implements MemorySearchManager {
     if (opts?.sources?.length) {
       const allow = new Set(opts.sources);
       ranked = results.filter((r) => allow.has(r.source));
+    }
+    // CW: drop hits outside the resolved customer scope, then clamp back to the
+    // caller's requested limit (search over-fetched 5x to survive this filter).
+    // Unscoped searches keep upstream's behavior untouched.
+    if (cwScopeRes?.prefix) {
+      ranked = filterResultsByScope(ranked, cwScopeRes).slice(0, resultLimit);
     }
     return this.clampResultsByInjectedChars(this.diversifyResultsBySource(ranked, resultLimit));
   }

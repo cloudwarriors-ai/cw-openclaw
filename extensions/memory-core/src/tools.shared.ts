@@ -33,6 +33,10 @@ export const MemorySearchSchema = Type.Object({
   maxResults: Type.Optional(Type.Integer({ minimum: 1 })),
   minScore: optionalFiniteNumberSchema(),
   corpus: Type.Optional(stringEnum(["memory", "wiki", "all", "sessions"])),
+  // CW: customer memory scope. Defaults to "channel" when the session has a
+  // derivable customer slug, else "global". "all-customers" downgrades unless
+  // explicitly allowed (cross-customer training flows).
+  scope: Type.Optional(stringEnum(["channel", "all-customers", "global"])),
 });
 
 export const MemoryGetSchema = Type.Object({

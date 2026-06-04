@@ -1,3 +1,4 @@
+import { normalizeChannelSlug } from "openclaw/plugin-sdk/channel-targets";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import type { MemorySource } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import {
@@ -18,7 +19,9 @@ import {
   resolveMemoryDreamingConfig,
   resolveMemoryDeepDreamingConfig,
 } from "openclaw/plugin-sdk/memory-core-host-status";
+import { loadCombinedSessionStoreForGateway } from "openclaw/plugin-sdk/session-transcript-hit";
 import { asRecord } from "./dreaming-shared.js";
+import { resolveEffectiveScope } from "./memory/scope.js";
 import { filterMemorySearchHitsBySessionVisibility } from "./session-search-visibility.js";
 import { recordShortTermRecalls } from "./short-term-promotion.js";
 import {
@@ -327,6 +330,37 @@ async function executeMemoryReadResult<T>(params: {
   }
 }
 
+/**
+ * CW: derive the customer slug for memory scoping from the active session's
+ * stored subject (set from GroupSubject by deriveGroupSessionPatch). Returns
+ * undefined for sessions without a subject (DMs, main sessions), which keeps
+ * their searches global-scoped.
+ */
+function resolveCwChannelSlug(params: {
+  cfg: OpenClawConfig;
+  agentId?: string;
+  sessionKey?: string;
+}): string | undefined {
+  if (!params.sessionKey) {
+    return undefined;
+  }
+  try {
+    const { store } = loadCombinedSessionStoreForGateway(
+      params.cfg,
+      params.agentId ? { agentId: params.agentId } : {},
+    );
+    const entry = store[params.sessionKey] as { subject?: string } | undefined;
+    const subject = entry?.subject?.trim();
+    if (!subject) {
+      return undefined;
+    }
+    return normalizeChannelSlug(subject) || undefined;
+  } catch {
+    // Session store unavailable (e.g. sandboxed tool run): fall back to global scope.
+    return undefined;
+  }
+}
+
 export function createMemorySearchTool(options: {
   config?: OpenClawConfig;
   getConfig?: () => OpenClawConfig | undefined;
@@ -448,6 +482,19 @@ export function createMemorySearchTool(options: {
                     : requestedCorpus === "memory"
                       ? (["memory"] as MemorySource[])
                       : undefined;
+                // CW: customer memory scoping. The channel slug is derived from
+                // the session store subject (GroupSubject is preserved alongside
+                // opaque channel ids, e.g. Zoom JIDs, by deriveGroupSessionPatch),
+                // so customer-channel sessions default to channel-scoped recall.
+                const cwChannelSlug = resolveCwChannelSlug({
+                  cfg,
+                  agentId,
+                  sessionKey: options.agentSessionKey,
+                });
+                const cwScope = resolveEffectiveScope({
+                  requestedScope: readStringParam(rawParams, "scope"),
+                  channelSlug: cwChannelSlug,
+                });
                 const searchOptions = {
                   maxResults,
                   minScore,
@@ -457,6 +504,7 @@ export function createMemorySearchTool(options: {
                     runtimeDebug.push(debug);
                   },
                   ...(searchSources ? { sources: searchSources } : {}),
+                  ...(cwScope !== "global" ? { scope: cwScope, channelSlug: cwChannelSlug } : {}),
                 };
                 try {
                   rawResults = await activeMemory.manager.search(query, searchOptions);

@@ -90,6 +90,9 @@ export type MemoryProviderStatus = {
   custom?: Record<string, unknown>;
 };
 
+/** CW: scope restriction for customer-channel memory isolation. */
+export type MemorySearchScope = "channel" | "all-customers" | "global";
+
 /** Search/read/sync/status contract implemented by memory managers. */
 export interface MemorySearchManager {
   search(
@@ -101,6 +104,12 @@ export interface MemorySearchManager {
       qmdSearchModeOverride?: "query" | "search" | "vsearch";
       onDebug?: (debug: MemorySearchRuntimeDebug) => void;
       sources?: MemorySource[];
+      /** CW: restrict hits by scope (engines without scope support may ignore). */
+      scope?: MemorySearchScope;
+      /** CW: customer slug backing scope "channel". */
+      channelSlug?: string;
+      /** CW: slugs excluded from scope "all-customers". */
+      excludeSlugs?: string[];
     },
   ): Promise<MemorySearchResult[]>;
   readFile(params: { relPath: string; from?: number; lines?: number }): Promise<MemoryReadResult>;
