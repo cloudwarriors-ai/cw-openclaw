@@ -160,3 +160,23 @@ The sync shipped on `codex/upstream-merge` @ `bfabae6b3b`:
 - Final gate: 26,024 tests passing; sole failing file = `src/docker-build-cache.test.ts` (upstream guardrails for their multi-stage Dockerfile; we keep the CW dev Dockerfile deliberately).
 - Known gaps: zoom `all-customers` training escalation has no input path (downgrades fail-safe); zoom onboarding adapter shimmed pending `ChannelPluginSetupWizard` migration; builtin sqlite memory engine ignores scope opts (parity with pre-sync base).
 - Deploy prerequisites: `PEA_RELAY_TOKEN`/`DEA_ES_PASSWORD`/`DEVTOOLS_LOCAL_KEY` in host `.env` (see `.env-template`); node ≥22.19 digest in Dockerfile.
+
+## 9. Production cutover record (noob-root, completed 2026-06-04)
+
+Deployed `codex/upstream-merge` @ `f99b2ae157` to the live bot at `/root/web/moltbot` (image `openclaw:cutover-20260604`, retagged over `openclaw:v2026.2.26-test` for compose).
+
+**Method:** capability baseline (`.cutover/probe.sh`) → isolated image build → canary boot against a _copy_ of live state → cutover (`.cutover/cutover.sh`) → post-baseline diff → e2e Zoom round-trip. Pre/post probe parity: identical; post-boot error noise 0 (pre: 45, all one devrelay SSE retry loop).
+
+**Build fixes required (committed):**
+
+- `ad5c683b94` — Dockerfile: full source copy before `pnpm install` (pnpm 11 + 171-project workspace; partial-manifest install leaves workspace deps uninstalled and `pnpm build` re-resolves mid-build).
+- `b282760bcd` — `OPENCLAW_PREBUILT=1` build arg: noob-root clamps **every** docker container to 4GiB ~30s after start (quota daemon; verified `memory.max` flips from `max` → 4294967296). tsdown OOMs there regardless of `docker build -m`. Artifacts (`dist/`, UI inside `dist/control-ui/`) are built outside and shipped into the context (`.dockerignore` negations).
+- `f99b2ae157` — June plugin-contract adaptation: zoom `index.ts` → `defineBundledChannelEntry` (+ `register-full-api.ts` barrel for the shape guard); `contracts.tools` declared in all 16 CW extension manifests (June capability runtime hard-rejects undeclared agent tools; bot extensions would fail at first agent activation, invisible to boot-time checks).
+
+**Server-local landmines hit (documented for next time):**
+
+- Stale untracked `extensions/zoom/dist/` (old working tree build artifact) survived the branch switch and **shadowed the fixed entry** via package-local-dist preference → channel skipped. Fix: delete stale `extensions/*/dist` after checkout.
+- 5 server-local WIP extensions were never in git (`claude-cowork-mcp`, `devesalertbot`, `devrelay`, `prodesalertbot`, `zoom-knowledge-expert`); restored from local backup branch `server-backup-pre-cutover-20260604` (DO NOT push — contains secret literals) + `contracts.tools` declared server-side.
+- Channel entries load from generated `dist/extensions/<id>/index.js`, not the live-mounted TS — entry-contract changes require a dist rebuild + image rebuild, not just a mount refresh.
+
+**Rollback:** `git checkout server-backup-pre-cutover-20260604` + `docker tag openclaw:pre-cutover-20260604 openclaw:v2026.2.26-test` + `docker compose up -d --force-recreate`; state backup `/root/web/moltbot-state-backup-20260604.tar.gz` (118M).
