@@ -5,39 +5,63 @@ import type { OutboundDeliveryJson } from "./format.js";
 
 describe("buildOutboundResultEnvelope", () => {
   const delivery: OutboundDeliveryJson = {
-    channel: "telegram",
+    channel: "alpha",
     via: "direct",
     to: "123",
     messageId: "m1",
     mediaUrl: null,
     chatId: "c1",
   };
+  const payloads = [{ text: "hi", mediaUrl: null, mediaUrls: undefined }];
 
-  it("flattens delivery by default when nothing else is present", () => {
-    expect(buildOutboundResultEnvelope({ delivery })).toEqual(delivery);
-  });
-
-  it("keeps pre-normalized payload JSON entries but clones the array", () => {
-    const payloads = [{ text: "hi", mediaUrl: null, mediaUrls: undefined }];
-
-    const envelope = buildOutboundResultEnvelope({
-      payloads,
-      meta: { ok: true },
-    });
-
-    expect(envelope).toEqual({
-      payloads: [{ text: "hi", mediaUrl: null, mediaUrls: undefined }],
-      meta: { ok: true },
-    });
-    expect((envelope as { payloads: unknown[] }).payloads).not.toBe(payloads);
+  it.each([
+    {
+      input: { delivery },
+      expected: delivery,
+    },
+    {
+      input: {
+        payloads,
+        meta: { ok: true },
+      },
+      expected: {
+        payloads: [{ text: "hi", mediaUrl: null, mediaUrls: undefined }],
+        meta: { ok: true },
+      },
+    },
+    {
+      input: {
+        payloads: [],
+        delivery,
+        meta: { delivered: true },
+      },
+      expected: {
+        payloads: [],
+        meta: { delivered: true },
+        delivery,
+      },
+    },
+    {
+      input: {
+        delivery,
+        flattenDelivery: false,
+      },
+      expected: { delivery },
+    },
+  ])("formats outbound envelope for %j", ({ input, expected }) => {
+    const envelope = buildOutboundResultEnvelope(input);
+    expect(envelope).toEqual(expected);
+    if ("payloads" in input) {
+      expect((envelope as { payloads: unknown[] }).payloads).not.toBe(input.payloads);
+    }
   });
 
   it("normalizes reply payloads and keeps wrapped delivery when flattening is disabled", () => {
-    const payloads: ReplyPayload[] = [{ text: "hello" }];
+    const payloadsLocal: ReplyPayload[] = [{ text: "hello" }];
 
     expect(
       buildOutboundResultEnvelope({
-        payloads,
+        payloads: payloadsLocal,
         delivery,
         flattenDelivery: false,
       }),

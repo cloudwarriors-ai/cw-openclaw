@@ -1,42 +1,74 @@
-import type { DiscordGuildEntry } from "openclaw/plugin-sdk/config-runtime";
+import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/account-id";
+import type { DiscordGuildEntry, OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import type { ChannelSetupDmPolicy, ChannelSetupWizard } from "openclaw/plugin-sdk/setup-runtime";
+import {
+  createSetupTranslator,
+  createStandardChannelSetupStatus,
+} from "openclaw/plugin-sdk/setup-runtime";
+import { formatDocsLink } from "openclaw/plugin-sdk/setup-tools";
+import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
+import {
+  inspectDiscordSetupAccount,
+  resolveDiscordSetupAccountConfig,
+} from "./setup-account-state.js";
 import {
   createAccountScopedAllowFromSection,
   createAccountScopedGroupAccessSection,
   createLegacyCompatChannelDmPolicy,
-  DEFAULT_ACCOUNT_ID,
-  createEnvPatchedAccountSetupAdapter,
   parseMentionOrPrefixedId,
   patchChannelConfigForAccount,
   setSetupChannelEnabled,
-  type OpenClawConfig,
-} from "openclaw/plugin-sdk/setup";
-import {
-  createAllowlistSetupWizardProxy,
-  type ChannelSetupAdapter,
-  type ChannelSetupDmPolicy,
-  type ChannelSetupWizard,
-} from "openclaw/plugin-sdk/setup";
-import { formatDocsLink } from "openclaw/plugin-sdk/setup-tools";
-import { inspectDiscordAccount } from "./account-inspect.js";
-import { listDiscordAccountIds, resolveDiscordAccount } from "./accounts.js";
+} from "./setup-runtime-helpers.js";
+
+const t = createSetupTranslator();
 
 const channel = "discord" as const;
-
-export const DISCORD_TOKEN_HELP_LINES = [
-  "1) Discord Developer Portal -> Applications -> New Application",
-  "2) Bot -> Add Bot -> Reset Token -> copy token",
-  "3) OAuth2 -> URL Generator -> scope 'bot' -> invite to your server",
-  "Tip: enable Message Content Intent if you need message text. (Bot -> Privileged Gateway Intents -> Message Content Intent)",
-  `Docs: ${formatDocsLink("/discord", "discord")}`,
+const DISCORD_TOKEN_HELP_LINES = [
+  t("wizard.discord.tokenHelpCreateApplication"),
+  t("wizard.discord.tokenHelpCopyToken"),
+  t("wizard.discord.tokenHelpInviteBot"),
+  t("wizard.discord.tokenHelpMessageContentIntent"),
+  t("wizard.channels.docs", { link: formatDocsLink("/discord", "discord") }),
 ];
 
-export function setDiscordGuildChannelAllowlist(
+type DiscordGuildChannelAllowlistEntry = {
+  guildKey: string;
+  channelKey?: string;
+};
+
+type DiscordSetupAllowlistResolution = {
+  resolved?: boolean;
+  guildId?: string;
+  channelId?: string;
+  guildKey?: string;
+  channelKey?: string;
+};
+
+function mapDiscordSetupAllowlistEntries(resolved: unknown): DiscordGuildChannelAllowlistEntry[] {
+  if (!Array.isArray(resolved)) {
+    return [];
+  }
+  return resolved.flatMap((entry): DiscordGuildChannelAllowlistEntry[] => {
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+    const row = entry as DiscordSetupAllowlistResolution;
+    if (row.resolved === false) {
+      return [];
+    }
+    const guildKey = normalizeOptionalString(row.guildId ?? row.guildKey);
+    if (!guildKey) {
+      return [];
+    }
+    const channelKey = normalizeOptionalString(row.channelId ?? row.channelKey);
+    return channelKey ? [{ guildKey, channelKey }] : [{ guildKey }];
+  });
+}
+
+function setDiscordGuildChannelAllowlist(
   cfg: OpenClawConfig,
   accountId: string,
-  entries: Array<{
-    guildKey: string;
-    channelKey?: string;
-  }>,
+  entries: DiscordGuildChannelAllowlistEntry[],
 ): OpenClawConfig {
   const baseGuilds =
     accountId === DEFAULT_ACCOUNT_ID
@@ -48,7 +80,7 @@ export function setDiscordGuildChannelAllowlist(
     const existing = guilds[guildKey] ?? {};
     if (entry.channelKey) {
       const channels = { ...existing.channels };
-      channels[entry.channelKey] = { allow: true };
+      channels[entry.channelKey] = { enabled: true };
       guilds[guildKey] = { ...existing, channels };
     } else {
       guilds[guildKey] = existing;
@@ -71,14 +103,6 @@ export function parseDiscordAllowFromId(value: string): string | null {
   });
 }
 
-export const discordSetupAdapter: ChannelSetupAdapter = createEnvPatchedAccountSetupAdapter({
-  channelKey: channel,
-  defaultAccountOnlyEnvError: "DISCORD_BOT_TOKEN can only be used for the default account.",
-  missingCredentialError: "Discord requires token (or --use-env).",
-  hasCredentials: (input) => Boolean(input.token),
-  buildPatch: (input) => (input.token ? { token: input.token } : {}),
-});
-
 export function createDiscordSetupWizardBase(handlers: {
   promptAllowFrom: NonNullable<ChannelSetupDmPolicy["promptAllowFrom"]>;
   resolveAllowFromEntries: NonNullable<
@@ -96,40 +120,38 @@ export function createDiscordSetupWizardBase(handlers: {
 
   return {
     channel,
-    status: {
-      configuredLabel: "configured",
-      unconfiguredLabel: "needs token",
-      configuredHint: "configured",
-      unconfiguredHint: "needs token",
+    status: createStandardChannelSetupStatus({
+      channelLabel: "Discord",
+      configuredLabel: t("wizard.channels.statusConfigured"),
+      unconfiguredLabel: t("wizard.channels.statusNeedsToken"),
+      configuredHint: t("wizard.channels.statusConfigured"),
+      unconfiguredHint: t("wizard.channels.statusNeedsToken"),
       configuredScore: 2,
       unconfiguredScore: 1,
-      resolveConfigured: ({ cfg }) =>
-        listDiscordAccountIds(cfg).some((accountId) => {
-          const account = inspectDiscordAccount({ cfg, accountId });
-          return account.configured;
-        }),
-    },
+      resolveConfigured: ({ cfg, accountId }) =>
+        inspectDiscordSetupAccount({ cfg, accountId }).configured,
+    }),
     credentials: [
       {
         inputKey: "token",
         providerHint: channel,
-        credentialLabel: "Discord bot token",
+        credentialLabel: t("wizard.discord.botToken"),
         preferredEnvVar: "DISCORD_BOT_TOKEN",
-        helpTitle: "Discord bot token",
+        helpTitle: t("wizard.discord.botToken"),
         helpLines: DISCORD_TOKEN_HELP_LINES,
-        envPrompt: "DISCORD_BOT_TOKEN detected. Use env var?",
-        keepPrompt: "Discord token already configured. Keep it?",
-        inputPrompt: "Enter Discord bot token",
+        envPrompt: t("wizard.discord.tokenEnvPrompt"),
+        keepPrompt: t("wizard.discord.tokenKeepPrompt"),
+        inputPrompt: t("wizard.discord.tokenInputPrompt"),
         allowEnv: ({ accountId }: { accountId: string }) => accountId === DEFAULT_ACCOUNT_ID,
         inspect: ({ cfg, accountId }: { cfg: OpenClawConfig; accountId: string }) => {
-          const account = inspectDiscordAccount({ cfg, accountId });
+          const account = inspectDiscordSetupAccount({ cfg, accountId });
           return {
             accountConfigured: account.configured,
             hasConfiguredValue: account.tokenStatus !== "missing",
-            resolvedValue: account.token?.trim() || undefined,
+            resolvedValue: normalizeOptionalString(account.token),
             envValue:
               accountId === DEFAULT_ACCOUNT_ID
-                ? process.env.DISCORD_BOT_TOKEN?.trim() || undefined
+                ? normalizeOptionalString(process.env.DISCORD_BOT_TOKEN)
                 : undefined,
           };
         },
@@ -137,24 +159,24 @@ export function createDiscordSetupWizardBase(handlers: {
     ],
     groupAccess: createAccountScopedGroupAccessSection({
       channel,
-      label: "Discord channels",
+      label: t("wizard.discord.channelsLabel"),
       placeholder: "My Server/#general, guildId/channelId, #support",
       currentPolicy: ({ cfg, accountId }: { cfg: OpenClawConfig; accountId: string }) =>
-        resolveDiscordAccount({ cfg, accountId }).config.groupPolicy ?? "allowlist",
+        resolveDiscordSetupAccountConfig({ cfg, accountId }).config.groupPolicy ?? "allowlist",
       currentEntries: ({ cfg, accountId }: { cfg: OpenClawConfig; accountId: string }) =>
-        Object.entries(resolveDiscordAccount({ cfg, accountId }).config.guilds ?? {}).flatMap(
-          ([guildKey, value]) => {
-            const channels = value?.channels ?? {};
-            const channelKeys = Object.keys(channels);
-            if (channelKeys.length === 0) {
-              const input = /^\d+$/.test(guildKey) ? `guild:${guildKey}` : guildKey;
-              return [input];
-            }
-            return channelKeys.map((channelKey) => `${guildKey}/${channelKey}`);
-          },
-        ),
+        Object.entries(
+          resolveDiscordSetupAccountConfig({ cfg, accountId }).config.guilds ?? {},
+        ).flatMap(([guildKey, value]) => {
+          const channels = value?.channels ?? {};
+          const channelKeys = Object.keys(channels);
+          if (channelKeys.length === 0) {
+            const input = /^\d+$/.test(guildKey) ? `guild:${guildKey}` : guildKey;
+            return [input];
+          }
+          return channelKeys.map((channelKey) => `${guildKey}/${channelKey}`);
+        }),
       updatePrompt: ({ cfg, accountId }: { cfg: OpenClawConfig; accountId: string }) =>
-        Boolean(resolveDiscordAccount({ cfg, accountId }).config.guilds),
+        Boolean(resolveDiscordSetupAccountConfig({ cfg, accountId }).config.guilds),
       resolveAllowlist: handlers.resolveGroupAllowlist,
       fallbackResolved: (entries) => entries.map((input) => ({ input, resolved: false })),
       applyAllowlist: ({
@@ -165,37 +187,29 @@ export function createDiscordSetupWizardBase(handlers: {
         cfg: OpenClawConfig;
         accountId: string;
         resolved: unknown;
-      }) => setDiscordGuildChannelAllowlist(cfg, accountId, resolved as never),
+      }) =>
+        setDiscordGuildChannelAllowlist(cfg, accountId, mapDiscordSetupAllowlistEntries(resolved)),
     }),
     allowFrom: createAccountScopedAllowFromSection({
       channel,
       credentialInputKey: "token",
       helpTitle: "Discord allowlist",
       helpLines: [
-        "Allowlist Discord DMs by username (we resolve to user ids).",
-        "Examples:",
+        t("wizard.discord.allowlistIntro"),
+        t("wizard.discord.examples"),
         "- 123456789012345678",
         "- @alice",
         "- alice#1234",
-        "Multiple entries: comma-separated.",
-        `Docs: ${formatDocsLink("/discord", "discord")}`,
+        t("wizard.discord.multipleEntries"),
+        t("wizard.channels.docs", { link: formatDocsLink("/discord", "discord") }),
       ],
-      message: "Discord allowFrom (usernames or ids)",
+      message: t("wizard.discord.allowFromPrompt"),
       placeholder: "@alice, 123456789012345678",
-      invalidWithoutCredentialNote:
-        "Bot token missing; use numeric user ids (or mention form) only.",
+      invalidWithoutCredentialNote: t("wizard.discord.allowFromInvalidWithoutToken"),
       parseId: parseDiscordAllowFromId,
       resolveEntries: handlers.resolveAllowFromEntries,
     }),
     dmPolicy: discordDmPolicy,
     disable: (cfg: OpenClawConfig) => setSetupChannelEnabled(cfg, channel, false),
   } satisfies ChannelSetupWizard;
-}
-export function createDiscordSetupWizardProxy(loadWizard: () => Promise<ChannelSetupWizard>) {
-  return createAllowlistSetupWizardProxy({
-    loadWizard,
-    createBase: createDiscordSetupWizardBase,
-    fallbackResolvedGroupAllowlist: (entries) =>
-      entries.map((input) => ({ input, resolved: false })),
-  });
 }

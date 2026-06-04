@@ -1,18 +1,14 @@
+import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "openclaw/plugin-sdk/account-id";
+import { normalizeSecretInputString } from "openclaw/plugin-sdk/secret-input";
+import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { inspectDiscordConfiguredToken } from "./account-token-inspect.js";
 import {
   mergeDiscordAccountConfig,
   resolveDefaultDiscordAccountId,
   resolveDiscordAccountConfig,
 } from "./accounts.js";
-import {
-  DEFAULT_ACCOUNT_ID,
-  normalizeAccountId,
-  hasConfiguredSecretInput,
-  normalizeSecretInputString,
-  type OpenClawConfig,
-  type DiscordAccountConfig,
-} from "./runtime-api.js";
-
-export type DiscordCredentialStatus = "available" | "configured_unavailable" | "missing";
+import type { DiscordAccountConfig, OpenClawConfig } from "./runtime-api.js";
+import type { DiscordCredentialStatus } from "./token.js";
 
 export type InspectedDiscordAccount = {
   accountId: string;
@@ -24,29 +20,6 @@ export type InspectedDiscordAccount = {
   configured: boolean;
   config: DiscordAccountConfig;
 };
-
-function inspectDiscordTokenValue(value: unknown): {
-  token: string;
-  tokenSource: "config";
-  tokenStatus: Exclude<DiscordCredentialStatus, "missing">;
-} | null {
-  const normalized = normalizeSecretInputString(value);
-  if (normalized) {
-    return {
-      token: normalized.replace(/^Bot\s+/i, ""),
-      tokenSource: "config",
-      tokenStatus: "available",
-    };
-  }
-  if (hasConfiguredSecretInput(value)) {
-    return {
-      token: "",
-      tokenSource: "config",
-      tokenStatus: "configured_unavailable",
-    };
-  }
-  return null;
-}
 
 export function inspectDiscordAccount(params: {
   cfg: OpenClawConfig;
@@ -60,15 +33,14 @@ export function inspectDiscordAccount(params: {
   const enabled = params.cfg.channels?.discord?.enabled !== false && merged.enabled !== false;
   const accountConfig = resolveDiscordAccountConfig(params.cfg, accountId);
   const hasAccountToken = Boolean(
-    accountConfig &&
-    Object.prototype.hasOwnProperty.call(accountConfig as Record<string, unknown>, "token"),
+    accountConfig && Object.hasOwn(accountConfig as Record<string, unknown>, "token"),
   );
-  const accountToken = inspectDiscordTokenValue(accountConfig?.token);
+  const accountToken = inspectDiscordConfiguredToken(accountConfig?.token);
   if (accountToken) {
     return {
       accountId,
       enabled,
-      name: merged.name?.trim() || undefined,
+      name: normalizeOptionalString(merged.name),
       token: accountToken.token,
       tokenSource: accountToken.tokenSource,
       tokenStatus: accountToken.tokenStatus,
@@ -80,7 +52,7 @@ export function inspectDiscordAccount(params: {
     return {
       accountId,
       enabled,
-      name: merged.name?.trim() || undefined,
+      name: normalizeOptionalString(merged.name),
       token: "",
       tokenSource: "none",
       tokenStatus: "missing",
@@ -89,12 +61,12 @@ export function inspectDiscordAccount(params: {
     };
   }
 
-  const channelToken = inspectDiscordTokenValue(params.cfg.channels?.discord?.token);
+  const channelToken = inspectDiscordConfiguredToken(params.cfg.channels?.discord?.token);
   if (channelToken) {
     return {
       accountId,
       enabled,
-      name: merged.name?.trim() || undefined,
+      name: normalizeOptionalString(merged.name),
       token: channelToken.token,
       tokenSource: channelToken.tokenSource,
       tokenStatus: channelToken.tokenStatus,
@@ -111,7 +83,7 @@ export function inspectDiscordAccount(params: {
     return {
       accountId,
       enabled,
-      name: merged.name?.trim() || undefined,
+      name: normalizeOptionalString(merged.name),
       token: envToken.replace(/^Bot\s+/i, ""),
       tokenSource: "env",
       tokenStatus: "available",
@@ -123,7 +95,7 @@ export function inspectDiscordAccount(params: {
   return {
     accountId,
     enabled,
-    name: merged.name?.trim() || undefined,
+    name: normalizeOptionalString(merged.name),
     token: "",
     tokenSource: "none",
     tokenStatus: "missing",

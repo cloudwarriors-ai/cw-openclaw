@@ -1,41 +1,42 @@
-export const optionalBundledClusters = [
-  "2fa-github",
+const optionalBundledClusters = [
   "acpx",
-  "bigheadbot",
-  "claude-mem",
-  "cloudflow-support",
-  "devtools",
   "diagnostics-otel",
   "diffs",
-  "external-org-autopilot",
   "googlechat",
-  "matrix",
   "memory-lancedb",
   "msteams",
   "nostr",
-  "pulsebot",
-  "tesseract",
   "tlon",
   "twitch",
   "ui",
+  "whatsapp",
   "zalouser",
-  "zoomwarriors",
-  "zoomwarriors-write",
-  "zoomwarriorssupportbot",
 ];
 
 export const optionalBundledClusterSet = new Set(optionalBundledClusters);
 
-export const OPTIONAL_BUNDLED_BUILD_ENV = "OPENCLAW_INCLUDE_OPTIONAL_BUNDLED";
+const OPTIONAL_BUNDLED_BUILD_ENV = "OPENCLAW_INCLUDE_OPTIONAL_BUNDLED";
 
-export function isOptionalBundledCluster(cluster) {
+function isOptionalBundledCluster(cluster) {
   return optionalBundledClusterSet.has(cluster);
 }
 
-export function shouldIncludeOptionalBundledClusters(env = process.env) {
-  return env[OPTIONAL_BUNDLED_BUILD_ENV] === "1";
+function shouldIncludeOptionalBundledClusters(env = process.env) {
+  // Release artifacts should preserve the last shipped upgrade surface by
+  // default. Specific size-sensitive lanes can still opt out explicitly.
+  return env[OPTIONAL_BUNDLED_BUILD_ENV] !== "0";
 }
 
-export function shouldBuildBundledCluster(cluster, env = process.env) {
+function hasReleasedBundledInstall(packageJson) {
+  return (
+    typeof packageJson?.openclaw?.install?.npmSpec === "string" &&
+    packageJson.openclaw.install.npmSpec.trim().length > 0
+  );
+}
+
+export function shouldBuildBundledCluster(cluster, env = process.env, options = {}) {
+  if (hasReleasedBundledInstall(options.packageJson)) {
+    return true;
+  }
   return shouldIncludeOptionalBundledClusters(env) || !isOptionalBundledCluster(cluster);
 }

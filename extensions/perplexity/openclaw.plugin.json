@@ -1,5 +1,16 @@
 {
   "id": "perplexity",
+  "activation": {
+    "onStartup": false
+  },
+  "setup": {
+    "providers": [
+      {
+        "id": "perplexity",
+        "envVars": ["PERPLEXITY_API_KEY", "OPENROUTER_API_KEY"]
+      }
+    ]
+  },
   "uiHints": {
     "webSearch.apiKey": {
       "label": "Perplexity API Key",
@@ -15,6 +26,12 @@
       "label": "Perplexity Model",
       "help": "Optional Sonar/OpenRouter model override."
     }
+  },
+  "contracts": {
+    "webSearchProviders": ["perplexity"]
+  },
+  "configContracts": {
+    "compatibilityRuntimePaths": ["tools.web.search.apiKey"]
   },
   "configSchema": {
     "type": "object",

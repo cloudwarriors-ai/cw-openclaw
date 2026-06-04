@@ -1,11 +1,9 @@
+// Tests public package entrypoint exports and load behavior.
 import fs from "node:fs";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { applyTemplate, runLegacyCliEntry } from "./index.js";
 
 describe("legacy root entry", () => {
-  afterEach(() => {
-    vi.resetModules();
-  });
-
   it("routes the package root export to the pure library entry", () => {
     const packageJson = JSON.parse(
       fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"),
@@ -19,8 +17,13 @@ describe("legacy root entry", () => {
   });
 
   it("does not run CLI bootstrap when imported as a library dependency", async () => {
-    const mod = await import("./index.js");
+    const runCli = vi.fn(async () => undefined);
 
-    expect(typeof mod.runLegacyCliEntry).toBe("function");
+    expect(applyTemplate("Hello {{MessageSid}}", { MessageSid: "operator" })).toBe(
+      "Hello operator",
+    );
+
+    await runLegacyCliEntry(["openclaw", "status"], { runCli });
+    expect(runCli).toHaveBeenCalledWith(["openclaw", "status"]);
   });
 });

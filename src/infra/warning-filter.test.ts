@@ -1,3 +1,4 @@
+// Covers process warning filtering and install idempotence.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installProcessWarningFilter, shouldIgnoreWarning } from "./warning-filter.js";
 
@@ -13,12 +14,15 @@ function resetWarningFilterInstallState(): void {
 }
 
 async function flushWarnings(): Promise<void> {
-  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => {
+    setImmediate(resolve);
+  });
 }
 
 describe("warning filter", () => {
   beforeEach(() => {
     resetWarningFilterInstallState();
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
   });
 
   afterEach(() => {
@@ -74,7 +78,6 @@ describe("warning filter", () => {
 
   it("installs once and suppresses known warnings at emit time", async () => {
     const seenWarnings: Array<{ code?: string; name: string; message: string }> = [];
-    const stderrWrites: string[] = [];
     const onWarning = (warning: Error & { code?: string }) => {
       seenWarnings.push({
         code: warning.code,
@@ -82,12 +85,6 @@ describe("warning filter", () => {
         message: warning.message,
       });
     };
-    const stderrWriteSpy = vi.spyOn(process.stderr, "write").mockImplementation(((
-      chunk: string | Uint8Array,
-    ) => {
-      stderrWrites.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
-      return true;
-    }) as typeof process.stderr.write);
 
     process.on("warning", onWarning);
     try {
@@ -135,13 +132,17 @@ describe("warning filter", () => {
       await flushWarnings();
       expect(
         seenWarnings.find((warning) => warning.code === "OPENCLAW_TEST_WARNING"),
-      ).toBeDefined();
-      expect(
-        seenWarnings.find((warning) => warning.message === "The punycode module is deprecated."),
-      ).toBeDefined();
-      expect(stderrWrites.join("")).toContain("Visible warning");
+      ).toStrictEqual({
+        code: "OPENCLAW_TEST_WARNING",
+        name: "Warning",
+        message: "Visible warning",
+      });
+      expect(seenWarnings.find((warning) => warning.code === "DEP0040")).toStrictEqual({
+        code: "DEP0040",
+        name: "DeprecationWarning",
+        message: "The punycode module is deprecated.",
+      });
     } finally {
-      stderrWriteSpy.mockRestore();
       process.off("warning", onWarning);
     }
   });

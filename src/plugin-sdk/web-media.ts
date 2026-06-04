@@ -1,6 +1,13 @@
+/**
+ * Public SDK subpath for loading and optimizing local or remote web media.
+ */
 export {
   getDefaultLocalRoots,
+  LocalMediaAccessError,
   loadWebMedia,
   loadWebMediaRaw,
+  optimizeImageToJpeg,
+  optimizeImageToPng,
   type WebMediaResult,
-} from "../../extensions/whatsapp/runtime-api.js";
+} from "../media/web-media.js";
+export type { LocalMediaAccessErrorCode } from "../media/web-media.js";

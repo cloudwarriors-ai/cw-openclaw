@@ -1,123 +1,128 @@
-import type { OpenClawConfig } from "../../config/config.js";
-import { normalizeResolvedSecretInputString } from "../../config/types.secrets.js";
-import { logVerbose } from "../../globals.js";
-import type { PluginWebSearchProviderEntry } from "../../plugins/types.js";
-import { resolvePluginWebSearchProviders } from "../../plugins/web-search-providers.js";
+/**
+ * web_search built-in tool.
+ *
+ * Runs the configured runtime provider and returns normalized cached search results.
+ */
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { RuntimeWebSearchMetadata } from "../../secrets/runtime-web-tools.types.js";
-import { normalizeSecretInput } from "../../utils/normalize-secret-input.js";
+import { resolveWebSearchProviderId, runWebSearch } from "../../web-search/runtime.js";
 import type { AnyAgentTool } from "./common.js";
-import { jsonResult } from "./common.js";
-import { SEARCH_CACHE } from "./web-search-provider-common.js";
-import {
-  resolveSearchConfig,
-  resolveSearchEnabled,
-  type WebSearchConfig,
-} from "./web-search-provider-config.js";
+import { asToolParamsRecord, jsonResult } from "./common.js";
+import { MAX_SEARCH_COUNT, SEARCH_CACHE } from "./web-search-provider-common.js";
+import { resolveWebSearchToolRuntimeContext } from "./web-tool-runtime-context.js";
 
-function readProviderEnvValue(envVars: string[]): string | undefined {
-  for (const envVar of envVars) {
-    const value = normalizeSecretInput(process.env[envVar]);
-    if (value) {
-      return value;
-    }
-  }
-  return undefined;
+const WebSearchSchema = {
+  type: "object",
+  required: ["query"],
+  properties: {
+    query: { type: "string", description: "Search query." },
+    count: {
+      type: "number",
+      description: "Result count.",
+      minimum: 1,
+      maximum: MAX_SEARCH_COUNT,
+    },
+    country: {
+      type: "string",
+      description: "2-letter country code.",
+    },
+    language: {
+      type: "string",
+      description: "ISO 639-1 language.",
+    },
+    freshness: {
+      type: "string",
+      description: "Time filter: day/week/month/year.",
+    },
+    date_after: {
+      type: "string",
+      description: "Published after YYYY-MM-DD.",
+    },
+    date_before: {
+      type: "string",
+      description: "Published before YYYY-MM-DD.",
+    },
+    search_lang: {
+      type: "string",
+      description: "Brave result language.",
+    },
+    ui_lang: {
+      type: "string",
+      description: "Brave UI locale.",
+    },
+    domain_filter: {
+      type: "array",
+      items: { type: "string" },
+      description: "Perplexity domain filter.",
+    },
+    max_tokens: {
+      type: "number",
+      description: "Perplexity total token budget.",
+      minimum: 1,
+      maximum: 1000000,
+    },
+    max_tokens_per_page: {
+      type: "number",
+      description: "Perplexity tokens per page.",
+      minimum: 1,
+    },
+  },
+} satisfies Record<string, unknown>;
+
+function isWebSearchDisabled(config?: OpenClawConfig): boolean {
+  const search = config?.tools?.web?.search;
+  return Boolean(search && typeof search === "object" && search.enabled === false);
 }
 
-function hasProviderCredential(
-  provider: PluginWebSearchProviderEntry,
-  search: WebSearchConfig | undefined,
-): boolean {
-  const rawValue = provider.getCredentialValue(search as Record<string, unknown> | undefined);
-  const fromConfig = normalizeSecretInput(
-    normalizeResolvedSecretInputString({
-      value: rawValue,
-      path: provider.credentialPath,
-    }),
-  );
-  return Boolean(fromConfig || readProviderEnvValue(provider.envVars));
-}
-
-function resolveSearchProvider(search?: WebSearchConfig): string {
-  const providers = resolvePluginWebSearchProviders({
-    bundledAllowlistCompat: true,
-  });
-  const raw =
-    search && "provider" in search && typeof search.provider === "string"
-      ? search.provider.trim().toLowerCase()
-      : "";
-
-  if (raw) {
-    const explicit = providers.find((provider) => provider.id === raw);
-    if (explicit) {
-      return explicit.id;
-    }
-  }
-
-  if (!raw) {
-    for (const provider of providers) {
-      if (!hasProviderCredential(provider, search)) {
-        continue;
-      }
-      logVerbose(
-        `web_search: no provider configured, auto-detected "${provider.id}" from available API keys`,
-      );
-      return provider.id;
-    }
-  }
-
-  return providers[0]?.id ?? "";
-}
-
+/** Creates the `web_search` tool, or `null` when web search is disabled by config. */
 export function createWebSearchTool(options?: {
   config?: OpenClawConfig;
+  agentDir?: string;
   sandboxed?: boolean;
   runtimeWebSearch?: RuntimeWebSearchMetadata;
+  lateBindRuntimeConfig?: boolean;
 }): AnyAgentTool | null {
-  const search = resolveSearchConfig(options?.config);
-  if (!resolveSearchEnabled({ search, sandboxed: options?.sandboxed })) {
-    return null;
-  }
-
-  const providers = resolvePluginWebSearchProviders({
-    config: options?.config,
-    bundledAllowlistCompat: true,
-  });
-  if (providers.length === 0) {
-    return null;
-  }
-
-  const providerId =
-    options?.runtimeWebSearch?.selectedProvider ??
-    options?.runtimeWebSearch?.providerConfigured ??
-    resolveSearchProvider(search);
-  const provider =
-    providers.find((entry) => entry.id === providerId) ??
-    providers.find((entry) => entry.id === resolveSearchProvider(search)) ??
-    providers[0];
-  if (!provider) {
-    return null;
-  }
-
-  const definition = provider.createTool({
-    config: options?.config,
-    searchConfig: search as Record<string, unknown> | undefined,
-    runtimeMetadata: options?.runtimeWebSearch,
-  });
-  if (!definition) {
+  if (isWebSearchDisabled(options?.config)) {
     return null;
   }
 
   return {
     label: "Web Search",
     name: "web_search",
-    description: definition.description,
-    parameters: definition.parameters,
-    execute: async (_toolCallId, args) => jsonResult(await definition.execute(args)),
+    description: "Search web for current info; returns normalized provider results.",
+    parameters: WebSearchSchema,
+    execute: async (_toolCallId, args, signal) => {
+      // Late binding lets long-lived agents pick up runtime web-search credentials/config without
+      // rebuilding the tool object.
+      const { config, preferRuntimeProviders, runtimeWebSearch } =
+        resolveWebSearchToolRuntimeContext({
+          config: options?.config,
+          lateBindRuntimeConfig: options?.lateBindRuntimeConfig,
+          runtimeWebSearch: options?.runtimeWebSearch,
+        });
+      if (isWebSearchDisabled(config)) {
+        throw new Error("web_search is disabled.");
+      }
+      const result = await runWebSearch({
+        config,
+        agentDir: options?.agentDir,
+        sandboxed: options?.sandboxed,
+        runtimeWebSearch,
+        preferRuntimeProviders,
+        args: asToolParamsRecord(args),
+        signal,
+      });
+      return jsonResult({
+        ...result.result,
+        provider: result.provider,
+      });
+    },
   };
 }
 
-export const __testing = {
+export const testing = {
   SEARCH_CACHE,
-  resolveSearchProvider,
+  resolveSearchProvider: (search?: Parameters<typeof resolveWebSearchProviderId>[0]["search"]) =>
+    resolveWebSearchProviderId({ search }),
 };
+export { testing as __testing };
