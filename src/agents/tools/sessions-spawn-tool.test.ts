@@ -224,7 +224,9 @@ describe("sessions_spawn tool", () => {
     expect(hoisted.spawnSubagentDirectMock).not.toHaveBeenCalled();
   });
 
-  it('rejects streamTo when runtime is not "acp"', async () => {
+  it('ignores streamTo for runtime="subagent" and proceeds with the spawn', async () => {
+    // streamTo is an ACP-only live-relay param; for subagent it is meaningless (results return
+    // via the announce-back flow). A model passing it must not block the spawn — it is dropped.
     const tool = createSessionsSpawnTool({
       agentSessionKey: "agent:main:main",
     });
@@ -235,13 +237,15 @@ describe("sessions_spawn tool", () => {
       streamTo: "parent",
     });
 
-    expect(result.details).toMatchObject({
-      status: "error",
-    });
-    const details = result.details as { error?: string };
-    expect(details.error).toContain("streamTo is only supported for runtime=acp");
+    expect(result.details).not.toMatchObject({ status: "error" });
+    // Spawn went down the subagent path, not the acp path.
+    expect(hoisted.spawnSubagentDirectMock).toHaveBeenCalledTimes(1);
     expect(hoisted.spawnAcpDirectMock).not.toHaveBeenCalled();
-    expect(hoisted.spawnSubagentDirectMock).not.toHaveBeenCalled();
+    // streamTo must not be forwarded to the subagent spawn (it has no meaning there).
+    const subagentArgs = hoisted.spawnSubagentDirectMock.mock.calls[0]?.[0] as {
+      streamTo?: unknown;
+    };
+    expect(subagentArgs?.streamTo).toBeUndefined();
   });
 
   it("keeps attachment content schema unconstrained for llama.cpp grammar safety", () => {

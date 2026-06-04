@@ -41,7 +41,10 @@ const SessionsSpawnToolSchema = Type.Object({
   mode: optionalStringEnum(SUBAGENT_SPAWN_MODES),
   cleanup: optionalStringEnum(["delete", "keep"] as const),
   sandbox: optionalStringEnum(SESSIONS_SPAWN_SANDBOX_MODES),
-  streamTo: optionalStringEnum(ACP_SPAWN_STREAM_TARGETS),
+  streamTo: optionalStringEnum(ACP_SPAWN_STREAM_TARGETS, {
+    description:
+      'ACP-only: relay the spawned session\'s output into the parent session in real time. Valid only with runtime="acp"; ignored for runtime="subagent", which returns its result on completion via the announce-back flow.',
+  }),
 
   // Inline attachments (snapshot-by-value).
   // NOTE: Attachment contents are redacted from transcript persistence by sanitizeToolCallInputs.
@@ -105,7 +108,13 @@ export function createSessionsSpawnTool(
       const cleanup =
         params.cleanup === "keep" || params.cleanup === "delete" ? params.cleanup : "keep";
       const sandbox = params.sandbox === "require" ? "require" : "inherit";
-      const streamTo = params.streamTo === "parent" ? "parent" : undefined;
+      // `streamTo` is an ACP-only live-relay control (introduced with its guard in PR #34310): it
+      // streams the spawned session's output into the parent session in real time and is only
+      // wired for runtime=acp. For runtime=subagent it is meaningless — the subagent returns its
+      // result via the announce-back flow, not a live stream — so a model passing it here is
+      // harmless. Scope it to acp and ignore it otherwise rather than failing the spawn over an
+      // inapplicable param (gpt-5.4-mini reliably emits streamTo="parent" for subagent spawns).
+      const streamTo = params.streamTo === "parent" && runtime === "acp" ? "parent" : undefined;
       // Back-compat: older callers used timeoutSeconds for this tool.
       const timeoutSecondsCandidate =
         typeof params.runTimeoutSeconds === "number"
@@ -126,13 +135,6 @@ export function createSessionsSpawnTool(
             mimeType?: string;
           }>)
         : undefined;
-
-      if (streamTo && runtime !== "acp") {
-        return jsonResult({
-          status: "error",
-          error: `streamTo is only supported for runtime=acp; got runtime=${runtime}`,
-        });
-      }
 
       if (resumeSessionId && runtime !== "acp") {
         return jsonResult({
