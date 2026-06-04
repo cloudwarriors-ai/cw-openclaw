@@ -7,7 +7,7 @@ Fork point: upstream commit `67da67b61a` (~v2026.2.26). `development` is **66 co
 
 - Fork point date: **2026-03-18**. Upstream `main` (`fc7f96c826`, 2026-06-04) is **36,767 commits ahead** (~480 commits/day).
 - Upstream has deleted/renamed ~70 extensions that existed at our fork point — including its `zoom` plugin (ours is an independent 11.4K-LOC implementation, unaffected).
-- **Memory engine relocation** (`cad83db8b2`, 2026-03-26 — 8 days after our fork point): the 103-file `src/memory/` subsystem moved wholesale into `extensions/memory-core/src/memory/`; `src/memory/` now holds one file. Memory is now a plugin *kind* (`"kind": "memory"`) with a declared contract (`tools: memory_get, memory_search`; pluggable embedding providers). Engines on the slot: memory-core (default, + dreaming/concept-vocabulary/budgets), memory-lancedb, memory-wiki, active-memory; provider extensions ship `memory-embedding-adapter.ts`.
+- **Memory engine relocation** (`cad83db8b2`, 2026-03-26 — 8 days after our fork point): the 103-file `src/memory/` subsystem moved wholesale into `extensions/memory-core/src/memory/`; `src/memory/` now holds one file. Memory is now a plugin _kind_ (`"kind": "memory"`) with a declared contract (`tools: memory_get, memory_search`; pluggable embedding providers). Engines on the slot: memory-core (default, + dreaming/concept-vocabulary/budgets), memory-lancedb, memory-wiki, active-memory; provider extensions ship `memory-embedding-adapter.ts`.
 - Port implications: our 4 patched memory files exist upstream at the new path — re-apply ~120 diff lines to moved files. Our `memory-pgvector` already implements the exact contract tool pair (`memory_get`/`memory_search`) and would slot in as a memory-kind plugin.
 - Re-sync cost assessment: the only true merge surface is the **19 CW-modified core files (+719 LOC)**; all other CW work is additive directories upstream never touches. A re-sync would be a port (core patches + extension tree onto a fresh snapshot, then fix against the current plugin SDK API), not a rebase. Staying pinned at the 2026-03-18 base is the cheaper position unless a specific upstream capability is needed.
 
@@ -52,42 +52,42 @@ Naming convention: each "bot" extension is a tool-pack for one customer/platform
 
 ### Channel / messaging
 
-| Extension | LOC | Tools | Purpose |
-|---|---|---|---|
-| **zoom** | 11,462 | 13 | The flagship: Zoom Team Chat channel plugin. Webhook intake, LLM prefilter gate (`ZOOM_PREFILTER_*`), agent routing, threading/thread-state, conversation store, channel memory, monitor mode, trained answers, answer scrubbing, file upload handler + upload pages, docx tools, send-as-user, action cards, user directory, subagent completion hooks. Tools: `zoom_send_dm/_to_channel/_at_message/_as_user`, `zoom_send_action_card`, `zoom_lookup_user`, `zoom_request_file_upload`, `zoom_get/set_prefilter_config`, `docx_read/_replace/_get_download` |
-| **catfish** | 2,229 | 1 | Privileged Zoom impersonation sender for admin workflows (`catfish_send`) |
-| **2fa-github** | 1,929 | 2 | GitHub Mobile 2FA gate for sensitive tool calls; OAuth callback flow (`manage_2fa_trust`) |
+| Extension      | LOC    | Tools | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| -------------- | ------ | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **zoom**       | 11,462 | 13    | The flagship: Zoom Team Chat channel plugin. Webhook intake, LLM prefilter gate (`ZOOM_PREFILTER_*`), agent routing, threading/thread-state, conversation store, channel memory, monitor mode, trained answers, answer scrubbing, file upload handler + upload pages, docx tools, send-as-user, action cards, user directory, subagent completion hooks. Tools: `zoom_send_dm/_to_channel/_at_message/_as_user`, `zoom_send_action_card`, `zoom_lookup_user`, `zoom_request_file_upload`, `zoom_get/set_prefilter_config`, `docx_read/_replace/_get_download` |
+| **catfish**    | 2,229  | 1     | Privileged Zoom impersonation sender for admin workflows (`catfish_send`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **2fa-github** | 1,929  | 2     | GitHub Mobile 2FA gate for sensitive tool calls; OAuth callback flow (`manage_2fa_trust`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 ### Customer / platform bots (hub-and-spoke pattern — see docs/reference/hub-spoke-pattern-playbook.md)
 
-| Extension | LOC | Tools | Purpose |
-|---|---|---|---|
-| **scopelybot** | 5,839 | 86 | Scopely VIP observability + break/fix + full admin CRUD (orgs, pricing, vendors, deployment types, scoping cards, users), passthrough alert runner, audit logs, error correlation. Router-only hub per as-built doc |
-| **tesseract** | 1,996 | 26 | Tesseract ETL platform: company onboarding, Zoom Phone provisioning (sites, users, call queues, AR/IVR), ETL channel bindings, credential flows, platform API passthrough |
-| **bigheadbot** | 1,770 | 25 | Bighead break/fix: project/task/ticket CRUD + GitHub issues + devtools + log correlation (`bh_*`) |
-| **pulsebot** | 1,900 | 18 | Project Pulse break/fix, same shape (`pp_*`, `gh_*`) |
-| **zoomwarriorssupportbot** | 1,554 | 25 | ZoomWarriors2 break/fix, same shape (`zws_*`) |
-| **external-org-autopilot** | 1,464 | 23 | External org onboarding/sync/execution/reporting with locks, evidence, smoke tests (`eoa_*`) |
-| **cloudflow-support** | 1,165 | 15 | CloudFlow support + ops API discovery/execution + deployments + GitHub issues (`cf_*`) |
-| **zoomwarriors** | 387 | 5 | ZW2 presales quoting, read side (`zw2_get_order/_pricing/_sow_link`, search) |
-| **zoomwarriors-write** | 380 | 6 | ZW2 write side: create orders, extractions, refresh pricing |
-| **bighead** | 271 | 4 | Bighead AI avatar: join/leave meetings, analyze transcript, control Rebecca |
+| Extension                  | LOC   | Tools | Purpose                                                                                                                                                                                                             |
+| -------------------------- | ----- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **scopelybot**             | 5,839 | 86    | Scopely VIP observability + break/fix + full admin CRUD (orgs, pricing, vendors, deployment types, scoping cards, users), passthrough alert runner, audit logs, error correlation. Router-only hub per as-built doc |
+| **tesseract**              | 1,996 | 26    | Tesseract ETL platform: company onboarding, Zoom Phone provisioning (sites, users, call queues, AR/IVR), ETL channel bindings, credential flows, platform API passthrough                                           |
+| **bigheadbot**             | 1,770 | 25    | Bighead break/fix: project/task/ticket CRUD + GitHub issues + devtools + log correlation (`bh_*`)                                                                                                                   |
+| **pulsebot**               | 1,900 | 18    | Project Pulse break/fix, same shape (`pp_*`, `gh_*`)                                                                                                                                                                |
+| **zoomwarriorssupportbot** | 1,554 | 25    | ZoomWarriors2 break/fix, same shape (`zws_*`)                                                                                                                                                                       |
+| **external-org-autopilot** | 1,464 | 23    | External org onboarding/sync/execution/reporting with locks, evidence, smoke tests (`eoa_*`)                                                                                                                        |
+| **cloudflow-support**      | 1,165 | 15    | CloudFlow support + ops API discovery/execution + deployments + GitHub issues (`cf_*`)                                                                                                                              |
+| **zoomwarriors**           | 387   | 5     | ZW2 presales quoting, read side (`zw2_get_order/_pricing/_sow_link`, search)                                                                                                                                        |
+| **zoomwarriors-write**     | 380   | 6     | ZW2 write side: create orders, extractions, refresh pricing                                                                                                                                                         |
+| **bighead**                | 271   | 4     | Bighead AI avatar: join/leave meetings, analyze transcript, control Rebecca                                                                                                                                         |
 
 ### Memory / infra
 
-| Extension | LOC | Tools | Purpose |
-|---|---|---|---|
-| **claude-mem** | 7,176 | — | Bundled claude-mem integration (modes, ui, worker; entry at committed source) |
-| **memory-pgvector** | 347 | 2 | Memory slot plugin backed by `packages/memory-server` (`memory_get`, `memory_search`); pairs with the `moltbot-pgvector` container |
-| **devtools** | 250 | 7 | Docker container mgmt + codebase file browsing + db query against devtools-api (`devtools_*`) — base layer the break/fix bots wrap with prefixed variants |
-| **shared** | 211 | — | Cross-extension helpers: channel-status-summary, config-schema-helpers, deferred, passive-monitor, runtime, status-issues |
+| Extension           | LOC   | Tools | Purpose                                                                                                                                                   |
+| ------------------- | ----- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **claude-mem**      | 7,176 | —     | Bundled claude-mem integration (modes, ui, worker; entry at committed source)                                                                             |
+| **memory-pgvector** | 347   | 2     | Memory slot plugin backed by `packages/memory-server` (`memory_get`, `memory_search`); pairs with the `moltbot-pgvector` container                        |
+| **devtools**        | 250   | 7     | Docker container mgmt + codebase file browsing + db query against devtools-api (`devtools_*`) — base layer the break/fix bots wrap with prefixed variants |
+| **shared**          | 211   | —     | Cross-extension helpers: channel-status-summary, config-schema-helpers, deferred, passive-monitor, runtime, status-issues                                 |
 
 ### SLM training stack
 
-| Extension | LOC | Tools | Purpose |
-|---|---|---|---|
-| **slm-pipeline** | 7,187 | (gateway methods + HTTP routes, not chat tools) | SLM training pipeline: QA ingest/extract/categorize, dataset builder, feedback merge, human eval, review events, training orchestrator, state store |
-| **slm-supervisor** | 2,476 | (gateway methods + HTTP routes) | SLM-first answer orchestration: primary-answer, scoring, policy, command mode, trace store/exporter, training studio |
+| Extension          | LOC   | Tools                                           | Purpose                                                                                                                                             |
+| ------------------ | ----- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **slm-pipeline**   | 7,187 | (gateway methods + HTTP routes, not chat tools) | SLM training pipeline: QA ingest/extract/categorize, dataset builder, feedback merge, human eval, review events, training orchestrator, state store |
+| **slm-supervisor** | 2,476 | (gateway methods + HTTP routes)                 | SLM-first answer orchestration: primary-answer, scoring, policy, command mode, trace store/exporter, training studio                                |
 
 Supporting surfaces: `apps/slm-dashboard` (auth'd web dashboard over the gateway), `docker-compose.slm-local.yml`, `test/slm/` e2e + playwright suites, `vitest.slm*.config.ts`, `.github/workflows/slm-gates.yml`, contracts in `docs/experiments/contracts/` (openapi + definition-of-done).
 
@@ -100,14 +100,14 @@ Supporting surfaces: `apps/slm-dashboard` (auth'd web dashboard over the gateway
 
 Deliberately small footprint — fork keeps core close to upstream, bulk of CW logic lives in extensions.
 
-| Area | Files | What changed |
-|---|---|---|
-| Plugin SDK/runtime | `plugin-sdk/index.ts` (+13), `plugins/types.ts` (+5) | New SDK surface for extensions (small type/export additions) |
-| Agents | `agents/pi-embedded-runner/run/tool-hook-wrapper.ts` (new, 78), `agents/tools/sessions-spawn-tool.ts` (+20/−x), `memory-tool.scope.test.ts` (new, 245) | Tool-call hook wrapper (the 2FA/gating hook point); subagent spawn changes (thread-delivery of subagent results) |
-| Auto-reply | `auto-reply/reply/get-reply-run.ts` (+23), `queue/types.ts` (+5), `templating.ts` (+10), media-only test | Media-only reply handling, template additions |
-| Memory | `memory/types.ts` (+47), `manager-search.ts` (+43), `qmd-manager.ts` (+27), `scope-resolution.test.ts` (new, 127), `search-manager.ts` | Memory scope resolution (per-channel/agent scoping) |
-| Config | `config/sessions/metadata.ts` (+11) | Session metadata extension |
-| Gateway | `openresponses-http.ts` (+4), `ws-connection/message-handler.ts` (+8) | Small hooks |
+| Area               | Files                                                                                                                                                  | What changed                                                                                                     |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| Plugin SDK/runtime | `plugin-sdk/index.ts` (+13), `plugins/types.ts` (+5)                                                                                                   | New SDK surface for extensions (small type/export additions)                                                     |
+| Agents             | `agents/pi-embedded-runner/run/tool-hook-wrapper.ts` (new, 78), `agents/tools/sessions-spawn-tool.ts` (+20/−x), `memory-tool.scope.test.ts` (new, 245) | Tool-call hook wrapper (the 2FA/gating hook point); subagent spawn changes (thread-delivery of subagent results) |
+| Auto-reply         | `auto-reply/reply/get-reply-run.ts` (+23), `queue/types.ts` (+5), `templating.ts` (+10), media-only test                                               | Media-only reply handling, template additions                                                                    |
+| Memory             | `memory/types.ts` (+47), `manager-search.ts` (+43), `qmd-manager.ts` (+27), `scope-resolution.test.ts` (new, 127), `search-manager.ts`                 | Memory scope resolution (per-channel/agent scoping)                                                              |
+| Config             | `config/sessions/metadata.ts` (+11)                                                                                                                    | Session metadata extension                                                                                       |
+| Gateway            | `openresponses-http.ts` (+4), `ws-connection/message-handler.ts` (+8)                                                                                  | Small hooks                                                                                                      |
 
 ## 5. Other CW additions
 
@@ -120,4 +120,33 @@ Deliberately small footprint — fork keeps core close to upstream, bulk of CW l
 
 ## 6. Known deltas not in git
 
-The deployed checkout on noob-root carries ~18 uncommitted modified files (plugin loader/registry/runtime, channel-resolution, several extensions, compose + env) — in-flight devrelay integration dated 2026-06-04. Not present in this clone.
+~~The deployed checkout on noob-root carries ~18 uncommitted modified files~~ **Resolved 2026-06-04:** server WIP captured as commit `77f66b11` (secrets parameterized to env refs; see `.env-template`).
+
+## 7. Upstream sync — core patch classification (audited 2026-06-04)
+
+Verified against `upstream/main` @ `fc7f96c826`. Fate of each CW core patch in a sync:
+
+**Retire (upstream has equivalent):**
+
+- `sessions-spawn-tool.ts` streamTo guard — upstream fixed identically (`sessions-spawn-tool.ts:325`)
+- Plugin hook leak guards (`loader/registry/registry-empty/runtime.ts`) — upstream registry rearchitected with `unregisterInternalHook` teardown (verify semantics at port)
+- `plugin-sdk/index.ts` channel-helper re-exports — upstream exports via `plugin-sdk/channel-targets.ts`
+
+**Delete now (dead code on our own base):**
+
+- `src/agents/pi-embedded-runner/run/tool-hook-wrapper.ts` — zero importers; live `before_tool_call` path is `pi-tools.before-tool-call.ts` (used by `pi-tool-definition-adapter.ts`, `gateway/tools-invoke-http.ts`)
+
+**Keep carrying (~25 lines, no upstream equivalent):**
+
+- `openresponses-http.ts` `functionCall.name.trim()` (2 lines)
+- `ws-connection/message-handler.ts` webchat shared-secret → write+admin scopes (8 lines)
+- `config/sessions/metadata.ts` preserve GroupSubject alongside opaque GroupChannel/Zoom JIDs (~10 lines)
+- `infra/outbound/channel-resolution.ts` bootstrap dedup key fix (verify against upstream's rewritten body)
+
+**Port into memory plugin layer (step 3):**
+
+- Memory scoping (`types.ts` resolveSearchPathPrefix, `manager-search.ts` buildPathFilter, `qmd-manager.ts` filter+overfetch, `search-manager.ts` opts) ~120 lines → lands in `extensions/memory-core/src/memory/*` (files exist there verbatim-moved) or inside our memory plugin
+- Reply-pipeline scope plumbing (`get-reply-run.ts`, `queue/types.ts`, `templating.ts`, `plugins/types.ts` context fields) ~50 lines → **retires on new base**: upstream tool context natively carries `channel`/`channelId`/`sessionKey`/thread ids, so the memory plugin can resolve scope from native context + config without core plumbing
+- Upstream memory-core has **no native channel scoping** (verified: no `channelSlug`/`all-customers`/`MemorySearchScope` anywhere in `extensions/memory-core/`) — scoping remains a CW feature to port
+
+Net permanent core footprint after sync: **~25 lines** (down from ~700).
