@@ -3,10 +3,14 @@ services:
     image: chromadb/chroma:1.0.0
     container_name: claude-mem-chroma
     volumes:
-      - ./.data/claude-mem/vector-db:/data
+    - ./.data/claude-mem/vector-db:/data
     restart: unless-stopped
     mem_limit: 512m
-
+    labels:
+    - noobbox.tier=app
+    - noobbox.owner=moltbot
+    - noobbox.criticality=medium
+    - noobbox.dataset=app.moltbot
   openclaw:
     build:
       context: .
@@ -16,89 +20,127 @@ services:
     container_name: openclaw
     user: root
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      - ZOOM_PREFILTER_MODEL=${ZOOM_PREFILTER_MODEL}
-      - ZOOM_PREFILTER_ENABLED=${ZOOM_PREFILTER_ENABLED}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - GITHUB_2FA_CLIENT_ID=${GITHUB_2FA_CLIENT_ID}
-      - GITHUB_2FA_CLIENT_SECRET=${GITHUB_2FA_CLIENT_SECRET}
-      - GITHUB_2FA_BASE_URL=https://${NGROK_DOMAIN}
-      - NGROK_AUTH_TOKEN=${NGROK_AUTH_TOKEN}
-      - NGROK_DOMAIN=${NGROK_DOMAIN}
-      - PROJECT_PULSE_URL=${PROJECT_PULSE_URL}
-      - PROJECT_PULSE_EMAIL=${PROJECT_PULSE_EMAIL}
-      - PROJECT_PULSE_PASSWORD=${PROJECT_PULSE_PASSWORD}
-      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-dev-token}
-      - CLAWDBOT_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-dev-token}
-      - BIGHEAD_API_URL=http://bighead:8000
-      - ZW2_USERNAME=${ZW2_USERNAME}
-      - ZW2_PASSWORD=${ZW2_PASSWORD}
-      - ZW2_URL=${ZW2_URL}
-      - ZOOM_CLIENT_ID=${ZOOM_CLIENT_ID}
-      - ZOOM_CLIENT_SECRET=${ZOOM_CLIENT_SECRET}
-      - ZOOM_ACCOUNT_ID=${ZOOM_ACCOUNT_ID}
-      - ZOOM_BOT_JID=${ZOOM_BOT_JID}
-      - ZOOM_WEBHOOK_SECRET_TOKEN=${ZOOM_WEBHOOK_SECRET_TOKEN}
-      - ZOOM_REPORT_ACCOUNT_ID=${ZOOM_REPORT_ACCOUNT_ID}
-      - ZOOM_REPORT_CLIENT_ID=${ZOOM_REPORT_CLIENT_ID}
-      - ZOOM_REPORT_CLIENT_SECRET=${ZOOM_REPORT_CLIENT_SECRET}
-      - ZOOM_REPORT_USER=${ZOOM_REPORT_USER}
-      - MENTION_PROXY=${MENTION_PROXY}
-      - TESSERACT_URL=${TESSERACT_URL:-https://api.tesseract.pscx.ai}
-      - TESSERACT_EXTERNAL_URL=${TESSERACT_EXTERNAL_URL:-https://api.tesseract.pscx.ai}
-      - TESSERACT_USERNAME=${TESSERACT_USERNAME}
-      - TESSERACT_PASSWORD=${TESSERACT_PASSWORD}
-      - ADMIN_DOMAIN=${ADMIN_DOMAIN:-cloudwarriors.ai}
-      - GH_TOKEN=${GITHUB_READ_ACCESS}
-      - BIGHEAD_DEVTOOLS_API_URL=http://bighead-devtools-api:9100
-      - BIGHEAD_DEV_TOOLS_API=bighead-dev-key-2026
-      - NODE_OPTIONS=--max-old-space-size=3072
-      - OPENCLAW_BUNDLED_PLUGINS_DIR=/app/extensions
+    - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+    - ZOOM_PREFILTER_MODEL=${ZOOM_PREFILTER_MODEL}
+    - ZOOM_PREFILTER_ENABLED=${ZOOM_PREFILTER_ENABLED}
+    - OPENAI_API_KEY=${OPENAI_API_KEY}
+    - GITHUB_2FA_CLIENT_ID=${GITHUB_2FA_CLIENT_ID}
+    - GITHUB_2FA_CLIENT_SECRET=${GITHUB_2FA_CLIENT_SECRET}
+    - GITHUB_2FA_BASE_URL=https://${NGROK_DOMAIN}
+    - NGROK_AUTH_TOKEN=${NGROK_AUTH_TOKEN}
+    - NGROK_DOMAIN=${NGROK_DOMAIN}
+    - PROJECT_PULSE_URL=${PROJECT_PULSE_URL}
+    - PROJECT_PULSE_EMAIL=${PROJECT_PULSE_EMAIL}
+    - PROJECT_PULSE_PASSWORD=${PROJECT_PULSE_PASSWORD}
+    - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-dev-token}
+    - CLAWDBOT_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-dev-token}
+    - BIGHEAD_API_URL=http://bighead:8000
+    - ZW2_USERNAME=${ZW2_USERNAME}
+    - ZW2_PASSWORD=${ZW2_PASSWORD}
+    - ZW2_URL=${ZW2_URL}
+    - ZOOM_CLIENT_ID=${ZOOM_CLIENT_ID}
+    - ZOOM_CLIENT_SECRET=${ZOOM_CLIENT_SECRET}
+    - ZOOM_ACCOUNT_ID=${ZOOM_ACCOUNT_ID}
+    - ZOOM_BOT_JID=${ZOOM_BOT_JID}
+    - ZOOM_WEBHOOK_SECRET_TOKEN=${ZOOM_WEBHOOK_SECRET_TOKEN}
+    - ZOOM_REPORT_ACCOUNT_ID=${ZOOM_REPORT_ACCOUNT_ID}
+    - ZOOM_REPORT_CLIENT_ID=${ZOOM_REPORT_CLIENT_ID}
+    - ZOOM_REPORT_CLIENT_SECRET=${ZOOM_REPORT_CLIENT_SECRET}
+    - ZOOM_REPORT_USER=${ZOOM_REPORT_USER}
+    - MENTION_PROXY=${MENTION_PROXY}
+    - TESSERACT_URL=${TESSERACT_URL:-https://api.tesseract.pscx.ai}
+    - TESSERACT_EXTERNAL_URL=${TESSERACT_EXTERNAL_URL:-https://api.tesseract.pscx.ai}
+    - TESSERACT_USERNAME=${TESSERACT_USERNAME}
+    - TESSERACT_PASSWORD=${TESSERACT_PASSWORD}
+    - ADMIN_DOMAIN=${ADMIN_DOMAIN:-cloudwarriors.ai}
+    - GH_TOKEN=${GITHUB_READ_ACCESS}
+    - DEVTOOLS_API_URL=http://devtools-api:9100
+    - DEV_TOOLS_API=${DEVTOOLS_LOCAL_KEY:-devtools-local-key-2026}
+    - CCMCP_DEVTOOLS_API_URL=http://devtools-api:9100
+    - CCMCP_DEV_TOOLS_API=${DEVTOOLS_LOCAL_KEY:-devtools-local-key-2026}
+    - NODE_OPTIONS=--max-old-space-size=3072
+    - CW_CHAT_RESPONDER_URL=http://zoom_knowledge_expert:8007
+    - CW_CHAT_RESPONDER_TOKEN=
+    - DEA_ES_URL=http://172.18.0.1:9200
+    - DEA_ES_USER=elastic
+    - DEA_ES_PASSWORD=${DEA_ES_PASSWORD:-tesseract_elastic_dev}
+    - DEA_ES_INDEX=logs-noobbox.docker-events-default
+    - DEA_ZOOM_CHANNEL=14cb8d88bcf648a1b37fca3269bb26a9@conference.xmpp.zoom.us${CW_CHAT_RESPONDER_TOKEN}
+    - PEA_ZOOM_CHANNEL=1846224734124413b325518f16272cf8@conference.xmpp.zoom.us
+    - PEA_RELAY_TOKEN=${PEA_RELAY_TOKEN}
+    - PEA_RELAY_URL=http://172.18.0.1:19201
+    - ZKE_DEVTOOLS_API_URL=http://devtools-api:9100
+    - ZKE_DEV_TOOLS_API=${DEVTOOLS_LOCAL_KEY:-devtools-local-key-2026}
+    - SCOPELY_BASE_URL=${SCOPELY_BASE_URL:-https://vip.pscx.ai}
+    - SCOPELY_URL=${SCOPELY_URL:-${SCOPELY_BASE_URL:-https://vip.pscx.ai}}
+    - SCOPELY_EMAIL=${SCOPELY_EMAIL}
+    - SCOPELY_PASSWORD=${SCOPELY_PASSWORD}
+    - SCOPELY_CONTAINER=${SCOPELY_CONTAINER:-scopely-scopely-backend-1}
+    - SCOPELY_DEVTOOLS_API_URL=${SCOPELY_DEVTOOLS_API_URL}
+    - SCOPELY_DEV_TOOLS_API=${SCOPELY_DEV_TOOLS_API}
+    - SCOPELY_REPO_PATH=${SCOPELY_REPO_PATH:-/app/code/scopely}
+    - SCOPELYBOT_ZOOM_CHANNEL=${SCOPELYBOT_ZOOM_CHANNEL}
+    - PASSTHROUGH_RUNNER_ENABLED=${PASSTHROUGH_RUNNER_ENABLED:-0}
+    - PASSTHROUGH_ALERT_THRESHOLD=${PASSTHROUGH_ALERT_THRESHOLD:-2}
+    - PASSTHROUGH_INTERVAL_MS=${PASSTHROUGH_INTERVAL_MS:-}
+    - PASSTHROUGH_TEST_TIMEOUT_MS=${PASSTHROUGH_TEST_TIMEOUT_MS:-}
+    - OPENCLAW_BUNDLED_PLUGINS_DIR=/app/extensions
+    - DEVRELAY_URL=${DEVRELAY_URL}
+    - DEVRELAY_INSECURE_TLS=${DEVRELAY_INSECURE_TLS}
+    - DEVRELAY_TOKEN=${DEVRELAY_TOKEN}
+    - DEVRELAY_ACTIVITY_ZOOM_CHANNEL=${DEVRELAY_ACTIVITY_ZOOM_CHANNEL}
     volumes:
-      # Mount extensions + config + code for bot access
-      - ./extensions:/app/extensions
-      - ./src:/app/src
-      - ./.data/openclaw:/root/.openclaw
-      - ./.data/claude-mem:/root/.claude-mem
-      - ./code:/app/code
-      - ./scripts/tests:/app/tests
+    - ./extensions:/app/extensions
+    - ./src:/app/src
+    - ./.data/openclaw:/root/.openclaw
+    - ./.data/claude-mem:/root/.claude-mem
+    - ./code:/app/code
+    - ./scripts/tests:/app/tests
     ports:
-      - "18789:18789"
-      - "18790:18790"
-      - "4000:4000"
-      - "37777:37777"
-      - "1455:1455"
+    - 18789:18789
+    - 18790:18790
+    - 4000:4000
+    - 37777:37777
+    - 1455:1455
     command:
-      [
-        "node",
-        "--max-old-space-size=3072",
-        "dist/entry.js",
-        "gateway",
-        "--bind",
-        "lan",
-        "--port",
-        "18789",
-        "--allow-unconfigured",
-      ]
+    - node
+    - --max-old-space-size=3072
+    - dist/entry.js
+    - gateway
+    - --bind
+    - lan
+    - --port
+    - '18789'
+    - --allow-unconfigured
     mem_limit: 4g
     memswap_limit: 4g
+    cpus: '4.0'
+    logging:
+      driver: json-file
+      options:
+        max-size: 25m
+        max-file: '3'
     restart: unless-stopped
+    extra_hosts:
+    - "noob-root.tailcc6c5f.ts.net:100.114.142.100"
     labels:
-      - "traefik.enable=true"
-      # Main UI/API
-      - "traefik.http.routers.openclaw.rule=Host(`molty-dev.cloudwarriors.ai`)"
-      - "traefik.http.routers.openclaw.entrypoints=websecure"
-      - "traefik.http.routers.openclaw.tls.certresolver=letsencrypt"
-      - "traefik.http.services.openclaw.loadbalancer.server.port=18789"
-      # Zoom webhook (port 4000) - higher priority to match before main router
-      - "traefik.http.routers.openclaw-zoom.rule=Host(`molty-dev.cloudwarriors.ai`) && PathPrefix(`/zoom/`)"
-      - "traefik.http.routers.openclaw-zoom.priority=100"
-      - "traefik.http.routers.openclaw-zoom.entrypoints=websecure"
-      - "traefik.http.routers.openclaw-zoom.tls.certresolver=letsencrypt"
-      - "traefik.http.routers.openclaw-zoom.service=openclaw-zoom"
-      - "traefik.http.services.openclaw-zoom.loadbalancer.server.port=4000"
-
+    - traefik.enable=true
+    - traefik.http.routers.openclaw.rule=Host(`molty-dev.cloudwarriors.ai`)
+    - traefik.http.routers.openclaw.entrypoints=websecure
+    - traefik.http.routers.openclaw.tls.certresolver=letsencrypt
+    - traefik.http.services.openclaw.loadbalancer.server.port=18789
+    - traefik.http.routers.openclaw-zoom.rule=Host(`molty-dev.cloudwarriors.ai`) &&
+      PathPrefix(`/zoom/`)
+    - traefik.http.routers.openclaw-zoom.priority=100
+    - traefik.http.routers.openclaw-zoom.entrypoints=websecure
+    - traefik.http.routers.openclaw-zoom.tls.certresolver=letsencrypt
+    - traefik.http.routers.openclaw-zoom.service=openclaw-zoom
+    - traefik.http.services.openclaw-zoom.loadbalancer.server.port=4000
+    - noobbox.tier=app
+    - noobbox.owner=moltbot
+    - noobbox.criticality=medium
+    - noobbox.dataset=app.moltbot
 networks:
   default:
     name: proxy

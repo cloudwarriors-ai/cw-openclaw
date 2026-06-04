@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createEmptyPluginRegistry } from "./registry.js";
 import {
+  drainPluginRegistryHooks,
   pinActivePluginHttpRouteRegistry,
   releasePinnedPluginHttpRouteRegistry,
   resolveActivePluginHttpRouteRegistry,
@@ -40,6 +41,46 @@ describe("plugin runtime route registry", () => {
     pinActivePluginHttpRouteRegistry(startupRegistry);
 
     expect(resolveActivePluginHttpRouteRegistry(explicitRegistry)).toBe(explicitRegistry);
+  });
+
+  it("drainPluginRegistryHooks runs every unregister callback and clears the array", () => {
+    const registry = createEmptyPluginRegistry();
+    const unregisters = (registry.hookUnregisters ??= []);
+    let firstCalled = 0;
+    let secondCalled = 0;
+    unregisters.push(() => {
+      firstCalled += 1;
+    });
+    unregisters.push(() => {
+      secondCalled += 1;
+    });
+
+    drainPluginRegistryHooks(registry);
+
+    expect(firstCalled).toBe(1);
+    expect(secondCalled).toBe(1);
+    expect(unregisters.length).toBe(0);
+
+    // Idempotent: a second drain is a no-op.
+    drainPluginRegistryHooks(registry);
+    expect(firstCalled).toBe(1);
+    expect(secondCalled).toBe(1);
+  });
+
+  it("drainPluginRegistryHooks continues past unregisters that throw", () => {
+    const registry = createEmptyPluginRegistry();
+    const unregisters = (registry.hookUnregisters ??= []);
+    let secondCalled = 0;
+    unregisters.push(() => {
+      throw new Error("boom");
+    });
+    unregisters.push(() => {
+      secondCalled += 1;
+    });
+
+    expect(() => drainPluginRegistryHooks(registry)).not.toThrow();
+    expect(secondCalled).toBe(1);
+    expect(unregisters.length).toBe(0);
   });
 
   it("prefers the pinned route registry when it already owns routes", () => {

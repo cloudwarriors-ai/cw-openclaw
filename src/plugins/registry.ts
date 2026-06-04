@@ -6,7 +6,7 @@ import type {
   GatewayRequestHandler,
   GatewayRequestHandlers,
 } from "../gateway/server-methods/types.js";
-import { registerInternalHook } from "../hooks/internal-hooks.js";
+import { registerInternalHook, unregisterInternalHook } from "../hooks/internal-hooks.js";
 import type { HookEntry } from "../hooks/types.js";
 import { resolveUserPath } from "../utils.js";
 import { registerPluginCommand, validatePluginCommandDefinition } from "./commands.js";
@@ -212,6 +212,12 @@ export type PluginRegistry = {
   commands: PluginCommandRegistration[];
   conversationBindingResolvedHandlers: PluginConversationBindingResolvedHandlerRegistration[];
   diagnostics: PluginDiagnostic[];
+  // Per-registry teardown callbacks. Internal hooks live on a globalThis singleton
+  // (`__openclaw_internal_hook_handlers__`), so `registerInternalHook(...)` calls leak
+  // across registry rebuilds unless we track and unregister each handler when this
+  // registry is swapped out / evicted from the LRU cache. Optional so the many inline
+  // test fixtures that construct partial registries do not need to opt in.
+  hookUnregisters?: Array<() => void>;
 };
 
 export type PluginRegistryParams = {
@@ -357,6 +363,7 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
 
     for (const event of normalizedEvents) {
       registerInternalHook(event, handler);
+      (registry.hookUnregisters ??= []).push(() => unregisterInternalHook(event, handler));
     }
   };
 

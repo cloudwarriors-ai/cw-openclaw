@@ -3441,3 +3441,104 @@ export const runtimeValue = helperValue;`,
     expect(resolved).toBe(expected === "dist" ? fixture.distFile : fixture.srcFile);
   });
 });
+
+describe("plugin hook leak guards", () => {
+  function readGlobalHookHandlers(): Map<string, unknown[]> {
+    const g = globalThis as typeof globalThis & {
+      __openclaw_internal_hook_handlers__?: Map<string, unknown[]>;
+    };
+    return g.__openclaw_internal_hook_handlers__ ?? new Map();
+  }
+
+  function countGlobalHandlers(eventKey: string): number {
+    return readGlobalHookHandlers().get(eventKey)?.length ?? 0;
+  }
+
+  it("rolls back hooks/tools/diagnostics when a plugin throws inside register()", () => {
+    useNoBundledPlugins();
+    const plugin = writePlugin({
+      id: "throwing-plugin",
+      filename: "throwing-plugin.cjs",
+      // Plugin calls api.on() to add an internal-hook handler, then throws. The
+      // loader must roll back the hookUnregister it just pushed AND the global
+      // hook handler so a 46h soak with cache churn does not leak listeners.
+      body: `module.exports = {
+        id: "throwing-plugin",
+        register(api) {
+          api.on("message_received", () => {});
+          throw new Error("boom-during-register");
+        },
+      };`,
+    });
+
+    const beforeGlobalHandlers = countGlobalHandlers("message_received");
+
+    const registry = loadOpenClawPlugins({
+      cache: false,
+      workspaceDir: plugin.dir,
+      config: {
+        plugins: {
+          load: { paths: [plugin.file] },
+          allow: ["throwing-plugin"],
+        },
+        hooks: { internal: { enabled: true } },
+      },
+    });
+
+    const record = registry.plugins.find((entry) => entry.id === "throwing-plugin");
+    expect(record?.status).toBe("error");
+
+    // No leftover hook entries from the failed plugin in the registry.
+    expect(registry.hooks.some((entry) => entry.pluginId === "throwing-plugin")).toBe(false);
+    // No leftover hookUnregister callbacks for the failed plugin.
+    expect(registry.hookUnregisters?.length ?? 0).toBe(0);
+    // Most importantly: the globalThis hook bus is unchanged.
+    expect(countGlobalHandlers("message_received")).toBe(beforeGlobalHandlers);
+  });
+
+  it("drains evicted registry's hooks when the LRU cache is full", () => {
+    useNoBundledPlugins();
+    const plugin = writePlugin({
+      id: "leak-guard",
+      filename: "leak-guard.cjs",
+      body: `module.exports = {
+        id: "leak-guard",
+        register(api) {
+          api.on("message_received", () => {});
+        },
+      };`,
+    });
+
+    const beforeGlobalHandlers = countGlobalHandlers("message_received");
+
+    // Each load uses a unique workspaceDir → distinct cache key → a fresh registry.
+    // Without the LRU drain, every eviction leaks a handler on the globalThis hook
+    // bus. With the drain, the count rises only as long as registries stay in cache.
+    const stateDirs = Array.from({ length: __testing.maxPluginRegistryCacheEntries + 5 }, () =>
+      makeTempDir(),
+    );
+    for (const stateDir of stateDirs) {
+      loadOpenClawPlugins({
+        env: {
+          ...process.env,
+          OPENCLAW_STATE_DIR: stateDir,
+          OPENCLAW_BUNDLED_PLUGINS_DIR: "/nonexistent/bundled/plugins",
+        },
+        config: {
+          plugins: {
+            allow: ["leak-guard"],
+            load: { paths: [plugin.file] },
+          },
+          hooks: { internal: { enabled: true } },
+        },
+      });
+    }
+
+    // Cap is `maxPluginRegistryCacheEntries`. Anything over that must have been
+    // evicted and drained, so the global handler count should be bounded by the
+    // cache cap (plus whatever was already there before this test ran).
+    const afterGlobalHandlers = countGlobalHandlers("message_received");
+    const grown = afterGlobalHandlers - beforeGlobalHandlers;
+    expect(grown).toBeLessThanOrEqual(__testing.maxPluginRegistryCacheEntries);
+  });
+});

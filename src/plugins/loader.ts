@@ -27,7 +27,7 @@ import { loadPluginManifestRegistry } from "./manifest-registry.js";
 import { isPathInside, safeStatSync } from "./path-safety.js";
 import { createPluginRegistry, type PluginRecord, type PluginRegistry } from "./registry.js";
 import { resolvePluginCacheInputs } from "./roots.js";
-import { setActivePluginRegistry } from "./runtime.js";
+import { drainPluginRegistryHooks, setActivePluginRegistry } from "./runtime.js";
 import type { CreatePluginRuntimeOptions } from "./runtime/index.js";
 import type { PluginRuntime } from "./runtime/types.js";
 import { validateJsonSchemaValue } from "./schema-validator.js";
@@ -332,7 +332,14 @@ function setCachedPluginRegistry(cacheKey: string, registry: PluginRegistry): vo
     if (!oldestKey) {
       break;
     }
+    const evicted = registryCache.get(oldestKey);
     registryCache.delete(oldestKey);
+    // Plugin hook handlers live on a globalThis singleton; without this drain,
+    // every evicted registry's listeners leak forever and exhaust the V8 heap
+    // after extended uptime under cache-key churn.
+    if (evicted) {
+      drainPluginRegistryHooks(evicted);
+    }
   }
 }
 
@@ -1360,6 +1367,30 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
       registrationMode,
     });
 
+    // Snapshot every registry collection length before register(api). If register()
+    // throws after partial side effects (the slm-pipeline / slm-supervisor / catfish
+    // failure mode), we splice each array back to its pre-call length and drain any
+    // hook unregisters added by this plugin so no stale handlers leak into the global
+    // hook bus or registry caches.
+    const preRegisterCounts = {
+      tools: registry.tools.length,
+      hooks: registry.hooks.length,
+      typedHooks: registry.typedHooks.length,
+      channels: registry.channels.length,
+      channelSetups: registry.channelSetups.length,
+      providers: registry.providers.length,
+      speechProviders: registry.speechProviders.length,
+      mediaUnderstandingProviders: registry.mediaUnderstandingProviders.length,
+      imageGenerationProviders: registry.imageGenerationProviders.length,
+      webSearchProviders: registry.webSearchProviders.length,
+      httpRoutes: registry.httpRoutes.length,
+      cliRegistrars: registry.cliRegistrars.length,
+      services: registry.services.length,
+      commands: registry.commands.length,
+      conversationBindingResolvedHandlers: registry.conversationBindingResolvedHandlers.length,
+      hookUnregisters: registry.hookUnregisters?.length ?? 0,
+    };
+
     try {
       const result = register(api);
       if (result && typeof result.then === "function") {
@@ -1373,6 +1404,35 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
       registry.plugins.push(record);
       seenIds.set(pluginId, candidate.origin);
     } catch (err) {
+      // Roll back partial registrations from this plugin before recording the error.
+      // This contains the blast radius of plugins that throw mid-register and prevents
+      // cumulative leakage across reload cycles.
+      const newHookUnregisters =
+        registry.hookUnregisters?.splice(preRegisterCounts.hookUnregisters) ?? [];
+      for (const unregister of newHookUnregisters) {
+        try {
+          unregister();
+        } catch {
+          // Best-effort rollback; do not let one failed teardown skip the rest.
+        }
+      }
+      registry.tools.length = preRegisterCounts.tools;
+      registry.hooks.length = preRegisterCounts.hooks;
+      registry.typedHooks.length = preRegisterCounts.typedHooks;
+      registry.channels.length = preRegisterCounts.channels;
+      registry.channelSetups.length = preRegisterCounts.channelSetups;
+      registry.providers.length = preRegisterCounts.providers;
+      registry.speechProviders.length = preRegisterCounts.speechProviders;
+      registry.mediaUnderstandingProviders.length = preRegisterCounts.mediaUnderstandingProviders;
+      registry.imageGenerationProviders.length = preRegisterCounts.imageGenerationProviders;
+      registry.webSearchProviders.length = preRegisterCounts.webSearchProviders;
+      registry.httpRoutes.length = preRegisterCounts.httpRoutes;
+      registry.cliRegistrars.length = preRegisterCounts.cliRegistrars;
+      registry.services.length = preRegisterCounts.services;
+      registry.commands.length = preRegisterCounts.commands;
+      registry.conversationBindingResolvedHandlers.length =
+        preRegisterCounts.conversationBindingResolvedHandlers;
+
       recordPluginError({
         logger,
         registry,

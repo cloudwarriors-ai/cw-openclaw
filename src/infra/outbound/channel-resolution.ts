@@ -4,7 +4,7 @@ import type { ChannelPlugin } from "../../channels/plugins/types.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { applyPluginAutoEnable } from "../../config/plugin-auto-enable.js";
 import { loadOpenClawPlugins } from "../../plugins/loader.js";
-import { getActivePluginRegistry, getActivePluginRegistryKey } from "../../plugins/runtime.js";
+import { getActivePluginRegistry } from "../../plugins/runtime.js";
 import {
   isDeliverableMessageChannel,
   normalizeMessageChannel,
@@ -40,8 +40,11 @@ function maybeBootstrapChannelPlugin(params: {
     return;
   }
 
-  const registryKey = getActivePluginRegistryKey() ?? "<none>";
-  const attemptKey = `${registryKey}:${params.channel}`;
+  // Use channel as the sole dedup key. Including the registry key caused every
+  // successful bootstrap to rotate the key (via setActivePluginRegistry inside
+  // loadOpenClawPlugins), which invalidated the dedup and triggered a full
+  // plugin re-registration on every subsequent heartbeat cycle.
+  const attemptKey = params.channel;
   if (bootstrapAttempts.has(attemptKey)) {
     return;
   }

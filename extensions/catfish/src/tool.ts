@@ -1,6 +1,6 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { Type } from "@sinclair/typebox";
-import { stringEnum } from "openclaw/plugin-sdk";
+import { stringEnum } from "openclaw/plugin-sdk/core";
 import type { CatfishClient, CatfishSendTargetType } from "./client.js";
 import { isCatfishError, toErrorMessage } from "./errors.js";
 

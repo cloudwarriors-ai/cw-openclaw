@@ -20,5 +20,6 @@ export function createEmptyPluginRegistry(): PluginRegistry {
     commands: [],
     conversationBindingResolvedHandlers: [],
     diagnostics: [],
+    hookUnregisters: [],
   };
 }
