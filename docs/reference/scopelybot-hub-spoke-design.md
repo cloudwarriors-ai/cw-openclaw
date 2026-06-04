@@ -97,6 +97,8 @@ should treat each as a test to run, not a settled decision:
 
 ## Pointers
 
+- Agreed plan of attack (resolves open question #2; reorders the levers):
+  `docs/reference/scopelybot-hub-spoke-recommendation.md`
 - Tool catalog / admin surface: `docs/reference/scopely-admin-config-roadmap.md`,
   `docs/reference/scopely-user-maintenance-roadmap.md`
 - ScopelyBot extension: `extensions/scopelybot/`
