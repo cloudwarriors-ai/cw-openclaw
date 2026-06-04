@@ -76,3 +76,9 @@ vendor/
 !vendor/a2ui/renderers/
 !vendor/a2ui/renderers/lit/
 !vendor/a2ui/renderers/lit/**
+
+# CW deploy: allow prebuilt artifacts into the context (host with broken
+# docker-build memory limits builds dist outside the image; see Dockerfile
+# OPENCLAW_PREBUILT arg).
+!dist
+!ui/dist

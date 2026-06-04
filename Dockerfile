@@ -59,15 +59,20 @@ RUN if [ -n "$OPENCLAW_INSTALL_BROWSER" ]; then \
     fi
 
 USER node
+# OPENCLAW_PREBUILT=1 skips in-image builds and trusts dist/ + ui/dist from
+# the context (built in an unconstrained `docker run` container). Needed on
+# hosts whose docker-build step containers get broken memory limits
+# (noob-root: docker 20.10 + cgroup v2 forces 4GiB; tsdown OOMs).
+ARG OPENCLAW_PREBUILT=""
 # verify_deps_before_run=false matches upstream's Dockerfile: deps are already
 # installed above; the pre-run check would re-resolve the whole workspace.
-RUN pnpm_config_verify_deps_before_run=false pnpm build
+RUN if [ -z "$OPENCLAW_PREBUILT" ]; then pnpm_config_verify_deps_before_run=false pnpm build; fi
 USER root
 RUN ln -s /app/dist/index.js /usr/local/bin/openclaw
 USER node
 # Force pnpm for UI build (Bun may fail on ARM/Synology architectures)
 ENV OPENCLAW_PREFER_PNPM=1
-RUN pnpm_config_verify_deps_before_run=false pnpm ui:build
+RUN if [ -z "$OPENCLAW_PREBUILT" ]; then pnpm_config_verify_deps_before_run=false pnpm ui:build; fi
 
 ENV NODE_ENV=production
 
