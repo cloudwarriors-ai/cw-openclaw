@@ -12,7 +12,7 @@
   },
   "openclaw": {
     "extensions": [
-      "./dist/index.js"
+      "./src/index.ts"
     ]
   },
   "dependencies": {
