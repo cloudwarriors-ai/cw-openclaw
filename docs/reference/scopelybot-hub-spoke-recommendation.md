@@ -13,8 +13,9 @@ status: built
 
 ## Implementation status (BUILT — 2026-06-04)
 
-The hub-and-spoke is **implemented and validated** (config-only; no core code change beyond the
-streamTo fix below). Summary:
+The hub-and-spoke is **implemented and validated**. The spoke split is config-only; two small code
+changes were needed (the `streamTo` subagent fix and the Zoom thread-delivery hook — see the threading
+cluster below). Summary:
 
 - **streamTo fix** (committed `563f81dab8`): `sessions_spawn` ignores the acp-only `streamTo` param for
   `runtime=subagent` instead of erroring — this unblocked subagent spawns. The only code change required.
@@ -22,10 +23,15 @@ streamTo fix below). Summary:
   `scopely-observe` (15), `scopely-admin` (7), `scopely-users` (9), `scopely-orgs` (8), `scopely-pricing`
   (15), `scopely-vendors` (13), `scopely-deploy` (13), `scopely-github` (6). Each owns its full CRUD so
   routing is unambiguous (observe/admin = cross-cutting reads).
-- **Coordinator** (`scopelybot`): `tools.allow` shrunk **111 → 17** (dropped all 86 domain tools + the
-  `scopelybot` plugin-id entry that re-granted them; kept core + `sessions_spawn`/`subagents` +
-  `scopely_health_check`/`auth_status` for trivial liveness). `subagents.allowAgents` → the 8 spokes. Its
-  `workspace-scopelybot/IDENTITY.md` is now a router prompt with the routing table.
+- **Coordinator** (`scopelybot`): `tools.allow` shrunk **111 → 4** — **router-only**:
+  `sessions_spawn`, `subagents`, and `scopely_health_check`/`scopely_auth_status` (trivial liveness only).
+  `subagents.allowAgents` → the 8 spokes. Its `workspace-scopelybot/IDENTITY.md` is a router prompt with the
+  routing table.
+  - **Key lesson (cost 4 failed live tests):** an intermediate shrink to 17 tools (kept `read`,
+    `memory_search`, `memory_get`, `web_*`, `exec`) **did not work** — the coordinator used those escape
+    hatches to answer domain questions from its own memory/history (and even asked permission) instead of
+    routing. A router must have **no general/memory/read tools** — `sessions_spawn` should be its only path to
+    domain data. Prompt hardening alone was insufficient; removing the tools was the structural fix.
 - **Isolation** is guaranteed by `isOptionalToolAllowed` (src/plugins/tools.ts): scopely tools are
   `optional:true`, so a spoke sees only the tool names in its allowlist; other domains' tools are excluded.
 - **Confirm-gate works cross-agent, unchanged**: `putPending`/`takePending` is a process-wide store and
@@ -41,10 +47,24 @@ not a repo artifact) — `openclaw.json` (`agents.list[]` + coordinator allow/al
 `workspace-scopely-<spoke>/IDENTITY.md`. To add/move a tool between spokes, edit the spoke's `tools.allow`
 and restart the gateway. Backups: `/root/backups/moltbot/openclaw.json.bak-{pre,post}spokes-*`.
 
-**Known follow-ups (deferred):** (1) spoke results announce to the Zoom **channel root, not the originating
-thread** — Zoom lacks the `subagent_delivery_target` hook discord/feishu have; pairs with the (2) known
-routing bug where threaded replies route to `main`. (3) cold-start `memory_search readStringParam` warning
-in `extensions/memory-core` (vendored SDK, tangential).
+**Threading cluster — FIXED 2026-06-04** (both validated live in one threaded conversation):
+
+- **Inbound (was: threaded replies hijacked by `main`)** — set `channels.zoom.threading.inheritParent: true`
+  (config; default is `true`, had been explicitly `false`). This re-enables core routing's `binding.peer.parent`
+  fallback (resolve-route.ts) so a threaded reply matches the channel's bound agent (scopelybot) instead of
+  falling through to `main`, **and** lets the thread session inherit parent context (so follow-ups like "who?"
+  are answerable). Global to all Zoom channels (no per-channel threading override exists) — restores the default
+  and is more correct for every bot.
+- **Outbound (was: spoke results delivered to channel root, not the thread)** — added a Zoom
+  `subagent_delivery_target` hook (committed `873b731e18`, parity with discord/feishu) that resolves the
+  requester session's reply-root (`getRememberedZoomSessionReplyRoot`) and returns it as the delivery origin's
+  `threadId`; the Zoom outbound adapter now honors `threadId` as a `replyToMessageId` fallback. Spoke results
+  land in the originating thread.
+
+**Still deferred:** cold-start `memory_search readStringParam` warning in `extensions/memory-core` (vendored
+SDK, tangential).
+
+See [Hub-and-Spoke Pattern Playbook](/reference/hub-spoke-pattern-playbook) to apply this to other agents.
 
 ## Headline
 
