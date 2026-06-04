@@ -6,5 +6,13 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {}
+  },
+  "contracts": {
+    "tools": [
+      "bighead_analyze_transcript",
+      "bighead_followup",
+      "bighead_join_meeting",
+      "bighead_leave_meeting"
+    ]
   }
 }

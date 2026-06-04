@@ -65,5 +65,10 @@
         "type": "string"
       }
     }
+  },
+  "contracts": {
+    "tools": [
+      "catfish_send"
+    ]
   }
 }

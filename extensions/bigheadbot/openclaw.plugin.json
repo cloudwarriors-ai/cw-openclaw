@@ -8,10 +8,44 @@
     "properties": {
       "bhRepos": {
         "type": "array",
-        "items": { "type": "string" },
-        "default": ["cloudwarriors-ai/bighead"],
+        "items": {
+          "type": "string"
+        },
+        "default": [
+          "cloudwarriors-ai/bighead"
+        ],
         "description": "GitHub repos scoped for Bighead issue management"
       }
     }
+  },
+  "contracts": {
+    "tools": [
+      "bh_auth_status",
+      "bh_correlate_logs",
+      "bh_create_ticket",
+      "bh_devtools_db_query",
+      "bh_devtools_db_table_schema",
+      "bh_devtools_db_tables",
+      "bh_devtools_get_logs",
+      "bh_devtools_list_containers",
+      "bh_devtools_list_databases",
+      "bh_devtools_list_files",
+      "bh_devtools_read_file",
+      "bh_get_project",
+      "bh_get_task",
+      "bh_get_timesheets",
+      "bh_gh_add_comment",
+      "bh_gh_close_issue",
+      "bh_gh_create_issue",
+      "bh_gh_get_issue",
+      "bh_gh_list_issues",
+      "bh_gh_search_issues",
+      "bh_list_projects",
+      "bh_list_tasks",
+      "bh_list_tickets",
+      "bh_list_users",
+      "bh_search",
+      "bh_update_ticket"
+    ]
   }
 }

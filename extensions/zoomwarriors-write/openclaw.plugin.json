@@ -6,5 +6,25 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {}
+  },
+  "contracts": {
+    "tools": [
+      "zw2_complete_extraction",
+      "zw2_create_order",
+      "zw2_get_extraction",
+      "zw2_list_extractions",
+      "zw2_refresh_pricing",
+      "zw2_save_extraction",
+      "zw2_submit_additions",
+      "zw2_submit_customer_info",
+      "zw2_submit_wfo",
+      "zw2_submit_wrapup",
+      "zw2_submit_zcc",
+      "zw2_submit_zp_features",
+      "zw2_submit_zp_hardware",
+      "zw2_submit_zp_license",
+      "zw2_submit_zp_location",
+      "zw2_submit_zp_sbc_pbx"
+    ]
   }
 }

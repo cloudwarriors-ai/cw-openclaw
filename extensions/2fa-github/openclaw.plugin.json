@@ -74,7 +74,11 @@
     "properties": {
       "authMode": {
         "type": "string",
-        "enum": ["device", "browser", "oauth"],
+        "enum": [
+          "device",
+          "browser",
+          "oauth"
+        ],
         "description": "Auth mode: device (code entry), browser (Playwright), oauth (tap link)"
       },
       "clientId": {
@@ -142,5 +146,10 @@
         "description": "Paths whitelisted for read without 2FA. Supports * wildcards. If set, reads outside require approval."
       }
     }
+  },
+  "contracts": {
+    "tools": [
+      "manage_2fa_trust"
+    ]
   }
 }
