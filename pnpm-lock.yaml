@@ -1123,6 +1123,12 @@ importers:
         specifier: 2026.5.28
         version: 2026.5.28
 
+  extensions/mesh-gateway:
+    devDependencies:
+      openclaw:
+        specifier: workspace:*
+        version: link:../..
+
   extensions/microsoft:
     dependencies:
       node-edge-tts:
@@ -1590,6 +1596,12 @@ importers:
       '@openclaw/plugin-sdk':
         specifier: workspace:*
         version: link:../../packages/plugin-sdk
+
+  extensions/team-lead:
+    devDependencies:
+      openclaw:
+        specifier: workspace:*
+        version: link:../..
 
   extensions/telegram:
     dependencies:

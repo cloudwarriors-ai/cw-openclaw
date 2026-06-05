@@ -1,7 +1,7 @@
-import { writeFile } from "fs/promises";
-import { join, dirname } from "path";
 import { spawn, ChildProcess } from "child_process";
 import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { writeFile } from "fs/promises";
+import { join, dirname } from "path";
 
 // Minimal type declarations for the OpenClaw Plugin SDK.
 // See: https://docs.openclaw.ai/plugin
@@ -31,7 +31,9 @@ interface PluginCommandContext {
 
 type PluginCommandResult = string | { text: string } | { text: string; format?: string };
 
-interface BeforeAgentStartEvent { prompt?: string; }
+interface BeforeAgentStartEvent {
+  prompt?: string;
+}
 interface ToolResultPersistEvent {
   toolName?: string;
   params?: Record<string, unknown>;
@@ -40,12 +42,36 @@ interface ToolResultPersistEvent {
 interface AgentEndEvent {
   messages?: Array<{ role: string; content: string | Array<{ type: string; text?: string }> }>;
 }
-interface SessionStartEvent { sessionId: string; resumedFrom?: string; }
-interface AfterCompactionEvent { messageCount: number; tokenCount?: number; compactedCount: number; }
-interface SessionEndEvent { sessionId: string; messageCount: number; durationMs?: number; }
-interface MessageReceivedEvent { from: string; content: string; timestamp?: number; metadata?: Record<string, unknown>; }
-interface EventContext { sessionKey?: string; workspaceDir?: string; agentId?: string; }
-interface MessageContext { channelId: string; accountId?: string; conversationId?: string; }
+interface SessionStartEvent {
+  sessionId: string;
+  resumedFrom?: string;
+}
+interface AfterCompactionEvent {
+  messageCount: number;
+  tokenCount?: number;
+  compactedCount: number;
+}
+interface SessionEndEvent {
+  sessionId: string;
+  messageCount: number;
+  durationMs?: number;
+}
+interface MessageReceivedEvent {
+  from: string;
+  content: string;
+  timestamp?: number;
+  metadata?: Record<string, unknown>;
+}
+interface EventContext {
+  sessionKey?: string;
+  workspaceDir?: string;
+  agentId?: string;
+}
+interface MessageContext {
+  channelId: string;
+  accountId?: string;
+  conversationId?: string;
+}
 
 type EventCallback<T> = (event: T, ctx: EventContext) => void | Promise<void>;
 type MessageEventCallback<T> = (event: T, ctx: MessageContext) => void | Promise<void>;
@@ -88,7 +114,10 @@ interface OpenClawPluginApi {
   config: Record<string, unknown>;
   pluginConfig?: Record<string, unknown>;
   logger: PluginLogger;
-  registerTool: (tool: AgentTool | PluginToolFactory, opts?: { optional?: boolean; names?: string[] }) => void;
+  registerTool: (
+    tool: AgentTool | PluginToolFactory,
+    opts?: { optional?: boolean; names?: string[] },
+  ) => void;
   registerService: (service: {
     id: string;
     start: (ctx: PluginServiceContext) => void | Promise<void>;
@@ -102,13 +131,13 @@ interface OpenClawPluginApi {
     handler: (ctx: PluginCommandContext) => PluginCommandResult | Promise<PluginCommandResult>;
   }) => void;
   on: ((event: "before_agent_start", callback: EventCallback<BeforeAgentStartEvent>) => void) &
-      ((event: "tool_result_persist", callback: EventCallback<ToolResultPersistEvent>) => void) &
-      ((event: "agent_end", callback: EventCallback<AgentEndEvent>) => void) &
-      ((event: "session_start", callback: EventCallback<SessionStartEvent>) => void) &
-      ((event: "session_end", callback: EventCallback<SessionEndEvent>) => void) &
-      ((event: "message_received", callback: MessageEventCallback<MessageReceivedEvent>) => void) &
-      ((event: "after_compaction", callback: EventCallback<AfterCompactionEvent>) => void) &
-      ((event: "gateway_start", callback: EventCallback<Record<string, never>>) => void);
+    ((event: "tool_result_persist", callback: EventCallback<ToolResultPersistEvent>) => void) &
+    ((event: "agent_end", callback: EventCallback<AgentEndEvent>) => void) &
+    ((event: "session_start", callback: EventCallback<SessionStartEvent>) => void) &
+    ((event: "session_end", callback: EventCallback<SessionEndEvent>) => void) &
+    ((event: "message_received", callback: MessageEventCallback<MessageReceivedEvent>) => void) &
+    ((event: "after_compaction", callback: EventCallback<AfterCompactionEvent>) => void) &
+    ((event: "gateway_start", callback: EventCallback<Record<string, never>>) => void);
   runtime: {
     channel: Record<string, Record<string, (...args: unknown[]) => Promise<unknown>>>;
     tools?: {
@@ -131,6 +160,33 @@ interface ClaudeMemPluginConfig {
 const DEFAULT_WORKER_PORT = 37777;
 const CLAUDE_MEM_DATA_DIR = "/root/.claude-mem";
 
+function optionalStringParam(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return undefined;
+}
+
+function stringParam(value: unknown, fallback = ""): string {
+  return optionalStringParam(value) ?? fallback;
+}
+
+function numberParam(value: unknown, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return fallback;
+}
+
 // ============================================================================
 // Worker HTTP Client
 // ============================================================================
@@ -143,7 +199,7 @@ async function workerPost(
   port: number,
   path: string,
   body: Record<string, unknown>,
-  logger: PluginLogger
+  logger: PluginLogger,
 ): Promise<Record<string, unknown> | null> {
   try {
     const response = await fetch(`${workerBaseUrl(port)}${path}`, {
@@ -167,7 +223,7 @@ function workerPostFireAndForget(
   port: number,
   path: string,
   body: Record<string, unknown>,
-  logger: PluginLogger
+  logger: PluginLogger,
 ): void {
   fetch(`${workerBaseUrl(port)}${path}`, {
     method: "POST",
@@ -182,7 +238,7 @@ function workerPostFireAndForget(
 async function workerGetText(
   port: number,
   path: string,
-  logger: PluginLogger
+  logger: PluginLogger,
 ): Promise<string | null> {
   try {
     const response = await fetch(`${workerBaseUrl(port)}${path}`);
@@ -228,7 +284,12 @@ function ensureSettings(port: number): void {
 
 async function startWorker(port: number, logger: PluginLogger): Promise<boolean> {
   // Find the worker binary relative to this extension
-  const workerPath = join(dirname(new URL(import.meta.url).pathname), "..", "worker", "worker-service.cjs");
+  const workerPath = join(
+    dirname(new URL(import.meta.url).pathname),
+    "..",
+    "worker",
+    "worker-service.cjs",
+  );
 
   if (!existsSync(workerPath)) {
     logger.error(`[claude-mem] Worker binary not found at ${workerPath}`);
@@ -265,15 +326,19 @@ async function startWorker(port: number, logger: PluginLogger): Promise<boolean>
 
   workerProcess.stdout?.on("data", (data: Buffer) => {
     const line = data.toString().trim();
-    if (line) logger.info(`[claude-mem:worker] ${line}`);
+    if (line) {
+      logger.info(`[claude-mem:worker] ${line}`);
+    }
   });
 
   workerProcess.stderr?.on("data", (data: Buffer) => {
     const line = data.toString().trim();
-    if (line) logger.warn(`[claude-mem:worker] ${line}`);
+    if (line) {
+      logger.warn(`[claude-mem:worker] ${line}`);
+    }
   });
 
-  workerProcess.on("exit", (code) => {
+  workerProcess.on("exit", (code: number | null) => {
     logger.warn(`[claude-mem] Worker process exited with code ${code}`);
     workerProcess = null;
   });
@@ -339,7 +404,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     const contextText = await workerGetText(
       workerPort,
       `/api/context/inject?projects=${encodeURIComponent(projects.join(","))}`,
-      api.logger
+      api.logger,
     );
     if (contextText && contextText.trim().length > 0) {
       try {
@@ -360,7 +425,9 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     start: async () => {
       const started = await startWorker(workerPort, api.logger);
       if (!started) {
-        api.logger.error("[claude-mem] Worker failed to start — plugin will operate in degraded mode");
+        api.logger.error(
+          "[claude-mem] Worker failed to start — plugin will operate in degraded mode",
+        );
       }
     },
     stop: async () => {
@@ -373,11 +440,16 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   // ------------------------------------------------------------------
   api.on("session_start", async (_event, ctx) => {
     const contentSessionId = getContentSessionId(ctx.sessionKey);
-    await workerPost(workerPort, "/api/sessions/init", {
-      contentSessionId,
-      project: getProjectName(ctx),
-      prompt: "",
-    }, api.logger);
+    await workerPost(
+      workerPort,
+      "/api/sessions/init",
+      {
+        contentSessionId,
+        project: getProjectName(ctx),
+        prompt: "",
+      },
+      api.logger,
+    );
     api.logger.info(`[claude-mem] Session initialized: ${contentSessionId}`);
   });
 
@@ -387,11 +459,16 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   api.on("message_received", async (event, ctx) => {
     const sessionKey = ctx.conversationId || ctx.channelId || "default";
     const contentSessionId = getContentSessionId(sessionKey);
-    await workerPost(workerPort, "/api/sessions/init", {
-      contentSessionId,
-      project: baseProjectName,
-      prompt: event.content || "[media prompt]",
-    }, api.logger);
+    await workerPost(
+      workerPort,
+      "/api/sessions/init",
+      {
+        contentSessionId,
+        project: baseProjectName,
+        prompt: event.content || "[media prompt]",
+      },
+      api.logger,
+    );
   });
 
   // ------------------------------------------------------------------
@@ -399,11 +476,16 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   // ------------------------------------------------------------------
   api.on("after_compaction", async (_event, ctx) => {
     const contentSessionId = getContentSessionId(ctx.sessionKey);
-    await workerPost(workerPort, "/api/sessions/init", {
-      contentSessionId,
-      project: getProjectName(ctx),
-      prompt: "",
-    }, api.logger);
+    await workerPost(
+      workerPort,
+      "/api/sessions/init",
+      {
+        contentSessionId,
+        project: getProjectName(ctx),
+        prompt: "",
+      },
+      api.logger,
+    );
     api.logger.info(`[claude-mem] Session re-initialized after compaction: ${contentSessionId}`);
   });
 
@@ -415,12 +497,20 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       workspaceDirsBySessionKey.set(ctx.sessionKey || "default", ctx.workspaceDir);
     }
     const contentSessionId = getContentSessionId(ctx.sessionKey);
-    await workerPost(workerPort, "/api/sessions/init", {
-      contentSessionId,
-      project: getProjectName(ctx),
-      prompt: event.prompt || "agent run",
-    }, api.logger);
-    const isPulsebot = ctx.agentId === "pulsebot" || (ctx.sessionKey || "").includes("pulsebot") || (ctx.workspaceDir || "").includes("pulsebot");
+    await workerPost(
+      workerPort,
+      "/api/sessions/init",
+      {
+        contentSessionId,
+        project: getProjectName(ctx),
+        prompt: event.prompt || "agent run",
+      },
+      api.logger,
+    );
+    const isPulsebot =
+      ctx.agentId === "pulsebot" ||
+      (ctx.sessionKey || "").includes("pulsebot") ||
+      (ctx.workspaceDir || "").includes("pulsebot");
     if (syncMemoryFile && ctx.workspaceDir && !isPulsebot) {
       await syncMemoryToWorkspace(ctx.workspaceDir, ctx);
     }
@@ -431,27 +521,40 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   // ------------------------------------------------------------------
   api.on("tool_result_persist", (event, ctx) => {
     const toolName = event.toolName;
-    if (!toolName) return;
+    if (!toolName) {
+      return;
+    }
     const contentSessionId = getContentSessionId(ctx.sessionKey);
     let toolResponseText = "";
     const content = event.message?.content;
     if (Array.isArray(content)) {
       toolResponseText = content
-        .filter((block) => (block.type === "tool_result" || block.type === "text") && "text" in block)
+        .filter(
+          (block) => (block.type === "tool_result" || block.type === "text") && "text" in block,
+        )
         .map((block) => String(block.text))
         .join("\n");
     }
-    workerPostFireAndForget(workerPort, "/api/sessions/observations", {
-      contentSessionId,
-      tool_name: toolName,
-      tool_input: event.params || {},
-      tool_response: toolResponseText,
-      cwd: "",
-    }, api.logger);
-    const workspaceDir = ctx.workspaceDir || workspaceDirsBySessionKey.get(ctx.sessionKey || "default");
-    const isPulsebotTrp = ctx.agentId === "pulsebot" || (ctx.sessionKey || "").includes("pulsebot") || (workspaceDir || "").includes("pulsebot");
+    workerPostFireAndForget(
+      workerPort,
+      "/api/sessions/observations",
+      {
+        contentSessionId,
+        tool_name: toolName,
+        tool_input: event.params || {},
+        tool_response: toolResponseText,
+        cwd: "",
+      },
+      api.logger,
+    );
+    const workspaceDir =
+      ctx.workspaceDir || workspaceDirsBySessionKey.get(ctx.sessionKey || "default");
+    const isPulsebotTrp =
+      ctx.agentId === "pulsebot" ||
+      (ctx.sessionKey || "").includes("pulsebot") ||
+      (workspaceDir || "").includes("pulsebot");
     if (syncMemoryFile && workspaceDir && !isPulsebotTrp) {
-      syncMemoryToWorkspace(workspaceDir, ctx);
+      void syncMemoryToWorkspace(workspaceDir, ctx);
     }
   });
 
@@ -477,13 +580,23 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
         }
       }
     }
-    await workerPost(workerPort, "/api/sessions/summarize", {
-      contentSessionId,
-      last_assistant_message: lastAssistantMessage,
-    }, api.logger);
-    workerPostFireAndForget(workerPort, "/api/sessions/complete", {
-      contentSessionId,
-    }, api.logger);
+    await workerPost(
+      workerPort,
+      "/api/sessions/summarize",
+      {
+        contentSessionId,
+        last_assistant_message: lastAssistantMessage,
+      },
+      api.logger,
+    );
+    workerPostFireAndForget(
+      workerPort,
+      "/api/sessions/complete",
+      {
+        contentSessionId,
+      },
+      api.logger,
+    );
   });
 
   // ------------------------------------------------------------------
@@ -534,136 +647,203 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   // Debug/telemetry tools: obs_search, obs_save (observation layer)
   // ------------------------------------------------------------------
 
-  api.registerTool({
-    name: "obs_search",
-    label: "Observation Search",
-    description:
-      "Search debug/telemetry observations from past tool calls, decisions, and session history. " +
-      "Use this for episodic debugging exploration, NOT for support/document retrieval (use memory_search for that). " +
-      "Returns matching observations with IDs, titles, and summaries.",
-    parameters: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "Natural language search query" },
-        type: { type: "string", description: "Filter by observation type: bugfix, feature, refactor, discovery, decision, change" },
-        limit: { type: "number", description: "Max results to return (default 10)" },
-        project: { type: "string", description: "Filter by project name (default: all)" },
-      },
-      required: ["query"],
-    },
-    execute: async (_toolCallId, params) => {
-      const query = String(params.query || "");
-      const limit = Number(params.limit) || 10;
-      const type = params.type ? String(params.type) : undefined;
-      const project = params.project ? String(params.project) : undefined;
-
-      const qs = new URLSearchParams({ query, limit: String(limit) });
-      if (type) qs.set("type", type);
-      if (project) qs.set("project", project);
-
-      const result = await workerGetText(workerPort, `/api/search/observations?${qs}`, api.logger);
-      if (result) {
-        return { content: [{ type: "text", text: result }] };
-      }
-
-      const context = await workerGetText(workerPort, `/api/context/inject?projects=${project || baseProjectName}`, api.logger);
-      if (context) {
-        return { content: [{ type: "text", text: `[Observation context — search unavailable, showing recent context]\n\n${context}` }] };
-      }
-
-      return { content: [{ type: "text", text: "Observation search unavailable — worker may still be initializing." }] };
-    },
-  }, { optional: true });
-
-  api.registerTool({
-    name: "obs_save",
-    label: "Save Observation",
-    description:
-      "Manually save a debug observation, decision, or fact to the telemetry layer. " +
-      "Use this when you learn something important that should be remembered across sessions.",
-    parameters: {
-      type: "object",
-      properties: {
-        text: { type: "string", description: "The information to save" },
-        title: { type: "string", description: "Short title for the observation" },
-        type: { type: "string", description: "Type: bugfix, feature, refactor, discovery, decision, change" },
-      },
-      required: ["text"],
-    },
-    execute: async (_toolCallId, params) => {
-      const text = String(params.text || "");
-      const title = params.title ? String(params.title) : undefined;
-      const type = params.type ? String(params.type) : "discovery";
-
-      const result = await workerPost(workerPort, "/api/memory/save", {
-        text,
-        title,
-        type,
-        project: baseProjectName,
-      }, api.logger);
-
-      if (result) {
-        return { content: [{ type: "text", text: `Observation saved: ${title || "(untitled)"}` }] };
-      }
-      return { content: [{ type: "text", text: "Failed to save observation — worker may be unavailable." }] };
-    },
-  }, { optional: true });
-
-  api.registerTool({
-    name: "obs_get",
-    label: "Get Observations",
-    description:
-      "Fetch full observation details by IDs. Use after obs_search to get complete details " +
-      "for specific observations. Always batch multiple IDs in a single call.",
-    parameters: {
-      type: "object",
-      properties: {
-        ids: {
-          type: "array",
-          items: { type: "number" },
-          description: "Array of observation IDs to fetch (from obs_search results)",
+  api.registerTool(
+    {
+      name: "obs_search",
+      label: "Observation Search",
+      description:
+        "Search debug/telemetry observations from past tool calls, decisions, and session history. " +
+        "Use this for episodic debugging exploration, NOT for support/document retrieval (use memory_search for that). " +
+        "Returns matching observations with IDs, titles, and summaries.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Natural language search query" },
+          type: {
+            type: "string",
+            description:
+              "Filter by observation type: bugfix, feature, refactor, discovery, decision, change",
+          },
+          limit: { type: "number", description: "Max results to return (default 10)" },
+          project: { type: "string", description: "Filter by project name (default: all)" },
         },
+        required: ["query"],
       },
-      required: ["ids"],
-    },
-    execute: async (_toolCallId, params) => {
-      const ids = Array.isArray(params.ids) ? params.ids.map(Number) : [];
-      if (ids.length === 0) {
-        return { content: [{ type: "text", text: "No observation IDs provided." }] };
-      }
-      const result = await workerPost(workerPort, "/api/observations/batch", { ids }, api.logger);
-      if (result) {
-        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-      }
-      return { content: [{ type: "text", text: "Failed to fetch observations — worker may be unavailable." }] };
-    },
-  }, { optional: true });
+      execute: async (_toolCallId, params) => {
+        const query = stringParam(params.query);
+        const limit = numberParam(params.limit, 10);
+        const type = optionalStringParam(params.type);
+        const project = optionalStringParam(params.project);
 
-  api.registerTool({
-    name: "obs_timeline",
-    label: "Observation Timeline",
-    description:
-      "Get chronological context around a specific observation or time period. " +
-      "Use this to understand what was happening around a specific event or date.",
-    parameters: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "Search query or observation ID to get context around" },
-        limit: { type: "number", description: "Number of observations to return (default 10)" },
+        const qs = new URLSearchParams({ query, limit: String(limit) });
+        if (type) {
+          qs.set("type", type);
+        }
+        if (project) {
+          qs.set("project", project);
+        }
+
+        const result = await workerGetText(
+          workerPort,
+          `/api/search/observations?${qs}`,
+          api.logger,
+        );
+        if (result) {
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        const context = await workerGetText(
+          workerPort,
+          `/api/context/inject?projects=${project || baseProjectName}`,
+          api.logger,
+        );
+        if (context) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `[Observation context — search unavailable, showing recent context]\n\n${context}`,
+              },
+            ],
+          };
+        }
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: "Observation search unavailable — worker may still be initializing.",
+            },
+          ],
+        };
       },
-      required: ["query"],
     },
-    execute: async (_toolCallId, params) => {
-      const query = String(params.query || "");
-      const limit = Number(params.limit) || 10;
-      const qs = new URLSearchParams({ query, limit: String(limit) });
-      const result = await workerGetText(workerPort, `/api/timeline?${qs}`, api.logger);
-      if (result) {
-        return { content: [{ type: "text", text: result }] };
-      }
-      return { content: [{ type: "text", text: "Timeline unavailable — worker may still be initializing." }] };
+    { optional: true },
+  );
+
+  api.registerTool(
+    {
+      name: "obs_save",
+      label: "Save Observation",
+      description:
+        "Manually save a debug observation, decision, or fact to the telemetry layer. " +
+        "Use this when you learn something important that should be remembered across sessions.",
+      parameters: {
+        type: "object",
+        properties: {
+          text: { type: "string", description: "The information to save" },
+          title: { type: "string", description: "Short title for the observation" },
+          type: {
+            type: "string",
+            description: "Type: bugfix, feature, refactor, discovery, decision, change",
+          },
+        },
+        required: ["text"],
+      },
+      execute: async (_toolCallId, params) => {
+        const text = stringParam(params.text);
+        const title = optionalStringParam(params.title);
+        const type = optionalStringParam(params.type) ?? "discovery";
+
+        const result = await workerPost(
+          workerPort,
+          "/api/memory/save",
+          {
+            text,
+            title,
+            type,
+            project: baseProjectName,
+          },
+          api.logger,
+        );
+
+        if (result) {
+          return {
+            content: [{ type: "text", text: `Observation saved: ${title || "(untitled)"}` }],
+          };
+        }
+        return {
+          content: [
+            { type: "text", text: "Failed to save observation — worker may be unavailable." },
+          ],
+        };
+      },
     },
-  }, { optional: true });
+    { optional: true },
+  );
+
+  api.registerTool(
+    {
+      name: "obs_get",
+      label: "Get Observations",
+      description:
+        "Fetch full observation details by IDs. Use after obs_search to get complete details " +
+        "for specific observations. Always batch multiple IDs in a single call.",
+      parameters: {
+        type: "object",
+        properties: {
+          ids: {
+            type: "array",
+            items: { type: "number" },
+            description: "Array of observation IDs to fetch (from obs_search results)",
+          },
+        },
+        required: ["ids"],
+      },
+      execute: async (_toolCallId, params) => {
+        const ids = Array.isArray(params.ids) ? params.ids.map(Number) : [];
+        if (ids.length === 0) {
+          return { content: [{ type: "text", text: "No observation IDs provided." }] };
+        }
+        const result = await workerPost(workerPort, "/api/observations/batch", { ids }, api.logger);
+        if (result) {
+          return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+        }
+        return {
+          content: [
+            { type: "text", text: "Failed to fetch observations — worker may be unavailable." },
+          ],
+        };
+      },
+    },
+    { optional: true },
+  );
+
+  api.registerTool(
+    {
+      name: "obs_timeline",
+      label: "Observation Timeline",
+      description:
+        "Get chronological context around a specific observation or time period. " +
+        "Use this to understand what was happening around a specific event or date.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "Search query or observation ID to get context around",
+          },
+          limit: { type: "number", description: "Number of observations to return (default 10)" },
+        },
+        required: ["query"],
+      },
+      execute: async (_toolCallId, params) => {
+        const query = stringParam(params.query);
+        const limit = numberParam(params.limit, 10);
+        const qs = new URLSearchParams({ query, limit: String(limit) });
+        const result = await workerGetText(workerPort, `/api/timeline?${qs}`, api.logger);
+        if (result) {
+          return { content: [{ type: "text", text: result }] };
+        }
+        return {
+          content: [
+            { type: "text", text: "Timeline unavailable — worker may still be initializing." },
+          ],
+        };
+      },
+    },
+    { optional: true },
+  );
 
   api.logger.info(`[claude-mem] OpenClaw plugin loaded — v1.1.0 (worker: 127.0.0.1:${workerPort})`);
 }

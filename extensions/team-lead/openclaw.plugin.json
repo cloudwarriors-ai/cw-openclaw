@@ -1,0 +1,25 @@
+{
+  "id": "team-lead",
+  "name": "Team Lead",
+  "description": "Project tracking for team lead \u2014 receives status updates from remote agents, assigns project IDs, and provides a dashboard view",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "contracts": {
+    "tools": [
+      "team_lead_agent_status",
+      "team_lead_assign_task",
+      "team_lead_delete_project",
+      "team_lead_get_docs",
+      "team_lead_get_project",
+      "team_lead_heartbeat",
+      "team_lead_list_projects",
+      "team_lead_list_queue",
+      "team_lead_start_task",
+      "team_lead_update",
+      "team_lead_upload_doc"
+    ]
+  }
+}

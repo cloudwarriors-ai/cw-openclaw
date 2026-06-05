@@ -48,10 +48,7 @@ export function resolveCopilotForwardCompatModel(
   // to inherit the correct reasoning and capability flags.
   if (CODEX_FORWARD_COMPAT_TARGET_IDS.has(lowerModelId)) {
     for (const templateId of CODEX_TEMPLATE_MODEL_IDS) {
-      const template = ctx.modelRegistry.find(
-        PROVIDER_ID,
-        templateId,
-      ) as ProviderRuntimeModel | null;
+      const template = ctx.modelRegistry.find(PROVIDER_ID, templateId);
       if (!template) {
         continue;
       }

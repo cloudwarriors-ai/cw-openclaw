@@ -1,0 +1,14 @@
+{
+  "name": "@openclaw/team-lead",
+  "version": "2026.4.5",
+  "description": "Team lead project tracking — receives structured status updates from remote agents",
+  "type": "module",
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
