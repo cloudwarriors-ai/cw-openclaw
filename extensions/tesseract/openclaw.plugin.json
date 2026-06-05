@@ -6,5 +6,35 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {}
+  },
+  "contracts": {
+    "tools": [
+      "tesseract_add_user_to_zoom_queue",
+      "tesseract_bind_etl_channel",
+      "tesseract_call_platform_api",
+      "tesseract_check_credential_link",
+      "tesseract_check_health",
+      "tesseract_check_signin",
+      "tesseract_configure_zoom_ar_ivr",
+      "tesseract_connect_as",
+      "tesseract_create_zoom_call_queue",
+      "tesseract_create_zoom_site",
+      "tesseract_create_zoom_user",
+      "tesseract_enable_zoom_phone",
+      "tesseract_get_migration_guide",
+      "tesseract_get_platform_requirements",
+      "tesseract_get_platform_users",
+      "tesseract_list_bot_channels",
+      "tesseract_list_etl_bindings",
+      "tesseract_list_sessions",
+      "tesseract_onboard_company",
+      "tesseract_query_etl",
+      "tesseract_request_credentials",
+      "tesseract_request_signin",
+      "tesseract_search_endpoints",
+      "tesseract_setup_platform",
+      "tesseract_unbind_etl_channel",
+      "tesseract_who_am_i"
+    ]
   }
 }

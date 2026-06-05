@@ -1,17 +1,14 @@
-import type {
-  ChannelOnboardingAdapter,
-  ChannelOnboardingDmPolicy,
-  OpenClawConfig,
-  DmPolicy,
-  WizardPrompter,
-} from "openclaw/plugin-sdk";
-import {
-  addWildcardAllowFrom,
-  DEFAULT_ACCOUNT_ID,
-  formatDocsLink,
-  promptChannelAccessConfig,
-} from "openclaw/plugin-sdk";
-
+import type { OpenClawConfig, WizardPrompter } from "openclaw/plugin-sdk";
+// TODO(upstream-sync): ChannelOnboardingAdapter/ChannelOnboardingDmPolicy were removed upstream
+// (onboarding became ChannelPluginSetupWizard in src/channels/plugins/setup-wizard-types.ts).
+// Local structural shims keep the zoom adapter shape until the wizard migration; the adapter is
+// inert at runtime unless interactive channel setup is invoked.
+type ChannelOnboardingDmPolicy = Record<string, unknown>;
+type ChannelOnboardingAdapter = Record<string, unknown>;
+import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/account-core";
+import { formatDocsLink } from "openclaw/plugin-sdk/channel-setup";
+import type { DmPolicy } from "openclaw/plugin-sdk/config-contracts";
+import { addWildcardAllowFrom, promptChannelAccessConfig } from "openclaw/plugin-sdk/setup";
 import { resolveZoomCredentials } from "./token.js";
 import type { ZoomConfig } from "./types.js";
 
@@ -189,16 +186,16 @@ export const zoomOnboardingAdapter: ChannelOnboardingAdapter = {
     const resolved = resolveZoomCredentials(zoomCfg);
     const hasConfigCreds = Boolean(
       zoomCfg?.clientId?.trim() &&
-        zoomCfg?.clientSecret?.trim() &&
-        zoomCfg?.accountId?.trim() &&
-        zoomCfg?.botJid?.trim(),
+      zoomCfg?.clientSecret?.trim() &&
+      zoomCfg?.accountId?.trim() &&
+      zoomCfg?.botJid?.trim(),
     );
     const canUseEnv = Boolean(
       !hasConfigCreds &&
-        process.env.ZOOM_CLIENT_ID?.trim() &&
-        process.env.ZOOM_CLIENT_SECRET?.trim() &&
-        process.env.ZOOM_ACCOUNT_ID?.trim() &&
-        process.env.ZOOM_BOT_JID?.trim(),
+      process.env.ZOOM_CLIENT_ID?.trim() &&
+      process.env.ZOOM_CLIENT_SECRET?.trim() &&
+      process.env.ZOOM_ACCOUNT_ID?.trim() &&
+      process.env.ZOOM_BOT_JID?.trim(),
     );
 
     let next = cfg;

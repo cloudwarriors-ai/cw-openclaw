@@ -3,12 +3,27 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import ts from "typescript";
+import {
+  BUNDLED_PLUGIN_PATH_PREFIX,
+  BUNDLED_PLUGIN_ROOT_DIR,
+} from "./lib/bundled-plugin-paths.mjs";
+import { classifyBundledExtensionSourcePath } from "./lib/extension-source-classifier.mjs";
+import {
+  collectModuleReferencesFromSource,
+  diffInventoryEntries,
+  normalizeRepoPath,
+  resolveRepoSpecifier,
+  writeLine,
+} from "./lib/guard-inventory-utils.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const extensionsRoot = path.join(repoRoot, "extensions");
+const extensionsRoot = path.join(repoRoot, BUNDLED_PLUGIN_ROOT_DIR);
 
-const MODES = new Set(["src-outside-plugin-sdk", "plugin-sdk-internal"]);
+const MODES = new Set([
+  "src-outside-plugin-sdk",
+  "plugin-sdk-internal",
+  "relative-outside-package",
+]);
 
 const baselinePathByMode = {
   "src-outside-plugin-sdk": path.join(
@@ -25,27 +40,24 @@ const baselinePathByMode = {
   ),
 };
 
+let allInventoryByModePromise;
+let extensionModuleReferencesPromise;
+
 const ruleTextByMode = {
   "src-outside-plugin-sdk":
-    "Rule: production extensions/** must not import src/** outside src/plugin-sdk/**",
+    "Rule: production bundled plugins must not import src/** outside src/plugin-sdk/**",
   "plugin-sdk-internal":
-    "Rule: production extensions/** must not import src/plugin-sdk-internal/**",
+    "Rule: production bundled plugins must not import src/plugin-sdk-internal/**",
+  "relative-outside-package":
+    "Rule: production bundled plugins must not use relative imports that escape their own package root",
 };
-
-function normalizePath(filePath) {
-  return path.relative(repoRoot, filePath).split(path.sep).join("/");
-}
 
 function isCodeFile(fileName) {
   return /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(fileName);
 }
 
-function isTestLikeFile(relativePath) {
-  return (
-    /(^|\/)(__tests__|fixtures)\//.test(relativePath) ||
-    /(^|\/)[^/]*test-support\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(relativePath) ||
-    /\.(test|spec)\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(relativePath)
-  );
+function isBoundaryCanaryFile(fileName) {
+  return fileName.includes("__rootdir_boundary_canary__");
 }
 
 async function collectExtensionSourceFiles(rootDir) {
@@ -61,41 +73,80 @@ async function collectExtensionSourceFiles(rootDir) {
         await walk(fullPath);
         continue;
       }
-      if (!entry.isFile() || !isCodeFile(entry.name)) {
+      if (!entry.isFile() || !isCodeFile(entry.name) || isBoundaryCanaryFile(entry.name)) {
         continue;
       }
-      const relativePath = normalizePath(fullPath);
-      if (isTestLikeFile(relativePath)) {
+      const relativePath = normalizeRepoPath(repoRoot, fullPath);
+      if (classifyBundledExtensionSourcePath(relativePath).isTestLike) {
         continue;
       }
       out.push(fullPath);
     }
   }
   await walk(rootDir);
-  return out.toSorted((left, right) => normalizePath(left).localeCompare(normalizePath(right)));
+  return out.toSorted((left, right) =>
+    normalizeRepoPath(repoRoot, left).localeCompare(normalizeRepoPath(repoRoot, right)),
+  );
 }
 
-function toLine(sourceFile, node) {
-  return sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
-}
-
-function resolveSpecifier(specifier, importerFile) {
-  if (specifier.startsWith(".")) {
-    return normalizePath(path.resolve(path.dirname(importerFile), specifier));
+async function collectExtensionModuleReferences() {
+  if (!extensionModuleReferencesPromise) {
+    extensionModuleReferencesPromise = (async () => {
+      const files = await collectExtensionSourceFiles(extensionsRoot);
+      const referenced = await Promise.all(
+        files.map(async (filePath) => {
+          const source = await fs.readFile(filePath, "utf8");
+          if (!mayContainModuleSpecifier(source)) {
+            return null;
+          }
+          return {
+            filePath,
+            references: collectModuleReferencesFromSource(source),
+          };
+        }),
+      );
+      return referenced.filter((entry) => entry && entry.references.length > 0);
+    })();
   }
-  if (specifier.startsWith("/")) {
-    return normalizePath(specifier);
-  }
-  return null;
+  return await extensionModuleReferencesPromise;
 }
 
-function classifyReason(mode, kind, resolvedPath) {
+function mayContainModuleSpecifier(source) {
+  return (
+    /\bfrom\s*["']/.test(source) ||
+    /\bimport\s*(?:\(|["']|type\b|[\w*{])/.test(source) ||
+    /\bexport\s*(?:type\s+)?(?:\*|{)[^;\n]*\bfrom\s*["']/.test(source)
+  );
+}
+
+function resolveExtensionRoot(filePath) {
+  const relativePath = normalizeRepoPath(repoRoot, filePath);
+  const segments = relativePath.split("/");
+  if (segments[0] !== BUNDLED_PLUGIN_ROOT_DIR || !segments[1]) {
+    return null;
+  }
+  return `${segments[0]}/${segments[1]}`;
+}
+
+function classifyReason(mode, kind, resolvedPath, specifier) {
   const verb =
     kind === "export"
       ? "re-exports"
       : kind === "dynamic-import"
         ? "dynamically imports"
         : "imports";
+  if (mode === "relative-outside-package") {
+    if (resolvedPath?.startsWith("src/plugin-sdk/")) {
+      return `${verb} plugin-sdk via relative path; use openclaw/plugin-sdk/<subpath>`;
+    }
+    if (resolvedPath?.startsWith("src/")) {
+      return `${verb} core src path via relative path outside the extension package`;
+    }
+    if (resolvedPath?.startsWith(BUNDLED_PLUGIN_PATH_PREFIX)) {
+      return `${verb} another bundled plugin via relative path outside the extension package`;
+    }
+    return `${verb} relative path ${specifier} outside the extension package`;
+  }
   if (mode === "plugin-sdk-internal") {
     return `${verb} src/plugin-sdk-internal from an extension`;
   }
@@ -117,6 +168,9 @@ function compareEntries(left, right) {
 }
 
 function shouldReport(mode, resolvedPath) {
+  if (mode === "relative-outside-package") {
+    return false;
+  }
   if (!resolvedPath?.startsWith("src/")) {
     return false;
   }
@@ -126,68 +180,77 @@ function shouldReport(mode, resolvedPath) {
   return !resolvedPath.startsWith("src/plugin-sdk/");
 }
 
-function collectFromSourceFile(mode, sourceFile, filePath) {
-  const entries = [];
+function collectEntriesByModeFromModuleReferences(filePath, references) {
+  const entriesByMode = {
+    "src-outside-plugin-sdk": [],
+    "plugin-sdk-internal": [],
+    "relative-outside-package": [],
+  };
+  const extensionRoot = resolveExtensionRoot(filePath);
+  const relativeFile = normalizeRepoPath(repoRoot, filePath);
 
-  function push(kind, specifierNode, specifier) {
-    const resolvedPath = resolveSpecifier(specifier, filePath);
-    if (!shouldReport(mode, resolvedPath)) {
-      return;
-    }
-    entries.push({
-      file: normalizePath(filePath),
-      line: toLine(sourceFile, specifierNode),
+  function push(kind, line, specifier) {
+    const resolvedPath = resolveRepoSpecifier(repoRoot, specifier, filePath);
+    const baseEntry = {
+      file: relativeFile,
+      line,
       kind,
       specifier,
       resolvedPath,
-      reason: classifyReason(mode, kind, resolvedPath),
-    });
-  }
+    };
 
-  function visit(node) {
-    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
-      push("import", node.moduleSpecifier, node.moduleSpecifier.text);
-    } else if (
-      ts.isExportDeclaration(node) &&
-      node.moduleSpecifier &&
-      ts.isStringLiteral(node.moduleSpecifier)
-    ) {
-      push("export", node.moduleSpecifier, node.moduleSpecifier.text);
-    } else if (
-      ts.isCallExpression(node) &&
-      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-      node.arguments.length === 1 &&
-      ts.isStringLiteral(node.arguments[0])
-    ) {
-      push("dynamic-import", node.arguments[0], node.arguments[0].text);
+    if (specifier.startsWith(".") && resolvedPath && extensionRoot) {
+      if (!(resolvedPath === extensionRoot || resolvedPath.startsWith(`${extensionRoot}/`))) {
+        entriesByMode["relative-outside-package"].push({
+          ...baseEntry,
+          reason: classifyReason("relative-outside-package", kind, resolvedPath, specifier),
+        });
+      }
     }
-    ts.forEachChild(node, visit);
+
+    for (const mode of ["src-outside-plugin-sdk", "plugin-sdk-internal"]) {
+      if (!shouldReport(mode, resolvedPath)) {
+        continue;
+      }
+      entriesByMode[mode].push({
+        ...baseEntry,
+        reason: classifyReason(mode, kind, resolvedPath, specifier),
+      });
+    }
   }
 
-  visit(sourceFile);
-  return entries;
+  for (const { kind, line, specifier } of references) {
+    push(kind, line, specifier);
+  }
+  return entriesByMode;
 }
 
 export async function collectExtensionPluginSdkBoundaryInventory(mode) {
   if (!MODES.has(mode)) {
     throw new Error(`Unknown mode: ${mode}`);
   }
-  const files = await collectExtensionSourceFiles(extensionsRoot);
-  const inventory = [];
-  for (const filePath of files) {
-    const source = await fs.readFile(filePath, "utf8");
-    const scriptKind =
-      filePath.endsWith(".tsx") || filePath.endsWith(".jsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
-    const sourceFile = ts.createSourceFile(
-      filePath,
-      source,
-      ts.ScriptTarget.Latest,
-      true,
-      scriptKind,
-    );
-    inventory.push(...collectFromSourceFile(mode, sourceFile, filePath));
+  if (!allInventoryByModePromise) {
+    allInventoryByModePromise = (async () => {
+      const files = await collectExtensionModuleReferences();
+      const inventoryByMode = {
+        "src-outside-plugin-sdk": [],
+        "plugin-sdk-internal": [],
+        "relative-outside-package": [],
+      };
+      for (const { filePath, references } of files) {
+        const entriesByMode = collectEntriesByModeFromModuleReferences(filePath, references);
+        for (const inventoryMode of MODES) {
+          inventoryByMode[inventoryMode].push(...entriesByMode[inventoryMode]);
+        }
+      }
+      for (const inventoryMode of MODES) {
+        inventoryByMode[inventoryMode] = inventoryByMode[inventoryMode].toSorted(compareEntries);
+      }
+      return inventoryByMode;
+    })();
   }
-  return inventory.toSorted(compareEntries);
+  const inventoryByMode = await allInventoryByModePromise;
+  return inventoryByMode[mode];
 }
 
 export async function readExpectedInventory(mode) {
@@ -208,16 +271,7 @@ export async function readExpectedInventory(mode) {
 }
 
 export function diffInventory(expected, actual) {
-  const expectedKeys = new Set(expected.map((entry) => JSON.stringify(entry)));
-  const actualKeys = new Set(actual.map((entry) => JSON.stringify(entry)));
-  return {
-    missing: expected
-      .filter((entry) => !actualKeys.has(JSON.stringify(entry)))
-      .toSorted(compareEntries),
-    unexpected: actual
-      .filter((entry) => !expectedKeys.has(JSON.stringify(entry)))
-      .toSorted(compareEntries),
-  };
+  return diffInventoryEntries(expected, actual, compareEntries);
 }
 
 function formatInventoryHuman(mode, inventory) {
@@ -240,9 +294,11 @@ function formatInventoryHuman(mode, inventory) {
   return lines.join("\n");
 }
 
-export async function main(argv = process.argv.slice(2)) {
-  const json = argv.includes("--json");
-  const modeArg = argv.find((arg) => arg.startsWith("--mode="));
+export async function runExtensionPluginSdkBoundaryCheck(argv, io) {
+  const args = argv ?? process.argv.slice(2);
+  const streams = io ?? { stdout: process.stdout, stderr: process.stderr };
+  const json = args.includes("--json");
+  const modeArg = args.find((arg) => arg.startsWith("--mode="));
   const mode = modeArg?.slice("--mode=".length) ?? "src-outside-plugin-sdk";
   if (!MODES.has(mode)) {
     throw new Error(`Unknown mode: ${mode}`);
@@ -250,30 +306,49 @@ export async function main(argv = process.argv.slice(2)) {
 
   const actual = await collectExtensionPluginSdkBoundaryInventory(mode);
   if (json) {
-    process.stdout.write(`${JSON.stringify(actual, null, 2)}\n`);
-    return;
+    writeLine(streams.stdout, JSON.stringify(actual, null, 2));
+    return 0;
+  }
+
+  writeLine(streams.stdout, formatInventoryHuman(mode, actual));
+  if (mode === "relative-outside-package") {
+    if (actual.length === 0) {
+      return 0;
+    }
+    writeLine(
+      streams.stderr,
+      `Relative outside-package violations found (${actual.length}); this mode no longer uses a baseline.`,
+    );
+    return 1;
   }
 
   const expected = await readExpectedInventory(mode);
   const diff = diffInventory(expected, actual);
-  console.log(formatInventoryHuman(mode, actual));
   if (diff.missing.length === 0 && diff.unexpected.length === 0) {
-    console.log(`Baseline matches (${actual.length} entries).`);
-    return;
+    writeLine(streams.stdout, `Baseline matches (${actual.length} entries).`);
+    return 0;
   }
   if (diff.missing.length > 0) {
-    console.error(`Missing baseline entries (${diff.missing.length}):`);
+    writeLine(streams.stderr, `Missing baseline entries (${diff.missing.length}):`);
     for (const entry of diff.missing) {
-      console.error(`  - ${entry.file}:${entry.line} ${entry.reason}`);
+      writeLine(streams.stderr, `  - ${entry.file}:${entry.line} ${entry.reason}`);
     }
   }
   if (diff.unexpected.length > 0) {
-    console.error(`Unexpected inventory entries (${diff.unexpected.length}):`);
+    writeLine(streams.stderr, `Unexpected inventory entries (${diff.unexpected.length}):`);
     for (const entry of diff.unexpected) {
-      console.error(`  - ${entry.file}:${entry.line} ${entry.reason}`);
+      writeLine(streams.stderr, `  - ${entry.file}:${entry.line} ${entry.reason}`);
     }
   }
-  process.exitCode = 1;
+  return 1;
+}
+
+export async function main(argv, io) {
+  const exitCode = await runExtensionPluginSdkBoundaryCheck(argv, io);
+  if (!io) {
+    process.exitCode = exitCode;
+  }
+  return exitCode;
 }
 
 if (path.resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url)) {

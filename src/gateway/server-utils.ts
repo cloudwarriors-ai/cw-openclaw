@@ -1,15 +1,17 @@
+import { normalizeTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import { defaultVoiceWakeTriggers } from "../infra/voicewake.js";
 
+// Generic server helpers for user-facing trigger normalization and compact
+// error formatting in gateway logs/responses.
+/** Normalizes voice-wake trigger config with bounded count/length and defaults. */
 export function normalizeVoiceWakeTriggers(input: unknown): string[] {
-  const raw = Array.isArray(input) ? input : [];
-  const cleaned = raw
-    .map((v) => (typeof v === "string" ? v.trim() : ""))
-    .filter((v) => v.length > 0)
+  const cleaned = normalizeTrimmedStringList(input)
     .slice(0, 32)
-    .map((v) => v.slice(0, 64));
+    .map((value) => value.slice(0, 64));
   return cleaned.length > 0 ? cleaned : defaultVoiceWakeTriggers();
 }
 
+/** Formats unknown gateway errors without throwing on unusual status/code shapes. */
 export function formatError(err: unknown): string {
   if (err instanceof Error) {
     return err.message;

@@ -6,5 +6,16 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {}
+  },
+  "contracts": {
+    "tools": [
+      "devtools_db_query",
+      "devtools_db_table_schema",
+      "devtools_db_tables",
+      "devtools_get_logs",
+      "devtools_list_containers",
+      "devtools_list_files",
+      "devtools_read_file"
+    ]
   }
 }

@@ -50,9 +50,12 @@ export function createOAuthRoutes(
    */
   api.registerHttpRoute({
     path: "/webhook/2fa-github/start",
+    auth: "plugin",
     handler: async (req, res) => {
       const url = new URL(req.url ?? "/", "http://localhost");
-      const sessionKey = url.searchParams.get("session");
+      // Strip trailing markdown/URL artifacts that leak in when bots wrap the link
+      const rawSession = url.searchParams.get("session");
+      const sessionKey = rawSession?.replace(/[)\]*\s]+$/, "").trim() ?? null;
 
       if (!sessionKey) {
         res.statusCode = 400;
@@ -88,6 +91,7 @@ export function createOAuthRoutes(
    */
   api.registerHttpRoute({
     path: "/webhook/2fa-github/callback",
+    auth: "plugin",
     handler: async (req, res) => {
       const url = new URL(req.url ?? "/", "http://localhost");
       const code = url.searchParams.get("code");
@@ -196,6 +200,7 @@ export function createOAuthRoutes(
    */
   api.registerHttpRoute({
     path: "/webhook/2fa-github/check",
+    auth: "plugin",
     handler: async (req, res) => {
       const url = new URL(req.url ?? "/", "http://localhost");
       const sessionKey = url.searchParams.get("session");

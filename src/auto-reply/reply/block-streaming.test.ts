@@ -1,3 +1,4 @@
+// Tests block streaming policy and buffered reply pipeline behavior.
 import { describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import {
@@ -42,6 +43,34 @@ describe("resolveEffectiveBlockStreamingConfig", () => {
     });
     expect(resolved.coalescing.maxChars).toBe(20);
     expect(resolved.coalescing.idleMs).toBe(0);
+  });
+
+  it("honors newline chunkMode for plugin channels even before the plugin registry is loaded", () => {
+    const cfg = {
+      channels: {
+        imessage: {
+          chunkMode: "newline",
+        },
+      },
+      agents: {
+        defaults: {
+          blockStreamingChunk: {
+            minChars: 1,
+            maxChars: 4000,
+            breakPreference: "paragraph",
+          },
+        },
+      },
+    } as OpenClawConfig;
+
+    const resolved = resolveEffectiveBlockStreamingConfig({
+      cfg,
+      provider: "imessage",
+    });
+
+    expect(resolved.chunking.flushOnParagraph).toBe(true);
+    expect(resolved.coalescing.flushOnEnqueue).toBeUndefined();
+    expect(resolved.coalescing.joiner).toBe("\n\n");
   });
 
   it("allows ACP maxChunkChars overrides above base defaults up to provider text limits", () => {

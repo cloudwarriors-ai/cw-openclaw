@@ -3,8 +3,8 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
 
-const DEVTOOLS_BASE = () => process.env.ZWS_DEVTOOLS_API_URL ?? process.env.BIGHEAD_DEVTOOLS_API_URL ?? "http://bighead-devtools-api:9100";
-const DEVTOOLS_TOKEN = () => process.env.ZWS_DEV_TOOLS_API ?? process.env.BIGHEAD_DEV_TOOLS_API ?? process.env.DEV_TOOLS_API ?? "";
+const DEVTOOLS_BASE = () => process.env.ZWS_DEVTOOLS_API_URL ?? process.env.DEVTOOLS_API_URL ?? process.env.BIGHEAD_DEVTOOLS_API_URL ?? "http://bighead-devtools-api:9100";
+const DEVTOOLS_TOKEN = () => process.env.ZWS_DEV_TOOLS_API ?? process.env.DEV_TOOLS_API ?? process.env.BIGHEAD_DEV_TOOLS_API ?? "";
 
 function jsonResult(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
@@ -143,18 +143,43 @@ export function registerDevtoolsTools(api: OpenClawPluginApi, logger: AuditLogge
     ),
   );
 
+  // zws_devtools_list_databases
+  api.registerTool(() =>
+    wrapToolWithAudit(
+      {
+        name: "zws_devtools_list_databases",
+        description: "List all available databases that can be queried via devtools. Returns database names to use with the database parameter on other DB tools.",
+        parameters: Type.Object({}),
+        async execute() {
+          try {
+            const result = await zwsDevtoolsFetch("/api/v1/databases");
+            if (!result.ok) return jsonResult({ ok: false, error: `HTTP ${result.status}`, details: result.data });
+            return jsonResult({ ok: true, databases: result.data });
+          } catch (err) {
+            return errorResult(err);
+          }
+        },
+      },
+      logger,
+    ),
+  );
+
   // zws_devtools_db_tables
   api.registerTool(() =>
     wrapToolWithAudit(
       {
         name: "zws_devtools_db_tables",
-        description: "List all tables in the public schema of the ZoomWarriors database.",
-        parameters: Type.Object({}),
-        async execute() {
+        description: "List all tables in the public schema of a ZoomWarriors database. Use zws_devtools_list_databases to see available databases.",
+        parameters: Type.Object({
+          database: Type.Optional(Type.String({ description: "Database name (e.g. 'zoomwarriors2', 'zoomwarriors2_studio'). Defaults to zoomwarriors2 if omitted." })),
+        }),
+        async execute(_id: string, params: Record<string, unknown>) {
           try {
-            const result = await zwsDevtoolsFetch("/api/v1/db/tables");
+            const db = params.database as string | undefined;
+            const qs = db ? `?database=${encodeURIComponent(db)}` : "";
+            const result = await zwsDevtoolsFetch(`/api/v1/db/tables${qs}`);
             if (!result.ok) return jsonResult({ ok: false, error: `HTTP ${result.status}`, details: result.data });
-            return jsonResult({ ok: true, tables: result.data });
+            return jsonResult({ ok: true, ...result.data as object });
           } catch (err) {
             return errorResult(err);
           }
@@ -169,16 +194,19 @@ export function registerDevtoolsTools(api: OpenClawPluginApi, logger: AuditLogge
     wrapToolWithAudit(
       {
         name: "zws_devtools_db_table_schema",
-        description: "Get the column definitions for a ZoomWarriors database table.",
+        description: "Get the column definitions for a database table. Use zws_devtools_list_databases to see available databases.",
         parameters: Type.Object({
           table_name: Type.String({ description: "The table name to get schema for" }),
+          database: Type.Optional(Type.String({ description: "Database name (e.g. 'zoomwarriors2', 'zoomwarriors2_studio'). Defaults to zoomwarriors2 if omitted." })),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
             const tableName = params.table_name as string;
-            const result = await zwsDevtoolsFetch(`/api/v1/db/tables/${encodeURIComponent(tableName)}/schema`);
+            const db = params.database as string | undefined;
+            const qs = db ? `?database=${encodeURIComponent(db)}` : "";
+            const result = await zwsDevtoolsFetch(`/api/v1/db/tables/${encodeURIComponent(tableName)}/schema${qs}`);
             if (!result.ok) return jsonResult({ ok: false, error: `HTTP ${result.status}`, details: result.data });
-            return jsonResult({ ok: true, columns: result.data });
+            return jsonResult({ ok: true, ...result.data as object });
           } catch (err) {
             return errorResult(err);
           }
@@ -193,15 +221,17 @@ export function registerDevtoolsTools(api: OpenClawPluginApi, logger: AuditLogge
     wrapToolWithAudit(
       {
         name: "zws_devtools_db_query",
-        description: "Execute a read-only SQL query (SELECT or WITH only) against the ZoomWarriors database. Returns up to 1000 rows.",
+        description: "Execute a read-only SQL query (SELECT or WITH only) against a ZoomWarriors database. Returns up to 1000 rows. Use zws_devtools_list_databases to see available databases.",
         parameters: Type.Object({
           sql: Type.String({ description: "The SQL query to execute (SELECT or WITH only)" }),
           params: Type.Optional(Type.Array(Type.Unknown(), { description: "Parameterized query values ($1, $2, etc.)" })),
+          database: Type.Optional(Type.String({ description: "Database name (e.g. 'zoomwarriors2', 'zoomwarriors2_studio'). Defaults to zoomwarriors2 if omitted." })),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
             const body: Record<string, unknown> = { sql: params.sql };
             if (params.params) body.params = params.params;
+            if (params.database) body.database = params.database;
             const result = await zwsDevtoolsFetch("/api/v1/db/query", {
               method: "POST",
               headers: { "Content-Type": "application/json" },

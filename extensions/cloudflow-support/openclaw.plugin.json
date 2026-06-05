@@ -8,10 +8,33 @@
     "properties": {
       "cfRepos": {
         "type": "array",
-        "items": { "type": "string" },
-        "default": ["cloudwarriors-ai/cloudflow"],
+        "items": {
+          "type": "string"
+        },
+        "default": [
+          "cloudwarriors-ai/cloudflow"
+        ],
         "description": "GitHub repos scoped for CloudFlow issue management"
       }
     }
+  },
+  "contracts": {
+    "tools": [
+      "cf_discover_ops",
+      "cf_execute_op",
+      "cf_get_deploy_status",
+      "cf_get_deployment",
+      "cf_get_ticket",
+      "cf_gh_add_comment",
+      "cf_gh_close_issue",
+      "cf_gh_create_issue",
+      "cf_gh_get_issue",
+      "cf_gh_list_issues",
+      "cf_gh_search_issues",
+      "cf_list_deployments",
+      "cf_list_tenants",
+      "cf_list_tickets",
+      "cf_list_users"
+    ]
   }
 }

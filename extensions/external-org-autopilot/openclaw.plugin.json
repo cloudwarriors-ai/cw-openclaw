@@ -8,10 +8,41 @@
     "properties": {
       "eoaRepos": {
         "type": "array",
-        "items": { "type": "string" },
-        "default": ["cloudwarriors-ai/external-org-autopilot"],
+        "items": {
+          "type": "string"
+        },
+        "default": [
+          "cloudwarriors-ai/external-org-autopilot"
+        ],
         "description": "GitHub repos scoped for EOA issue management"
       }
     }
+  },
+  "contracts": {
+    "tools": [
+      "eoa_doctor",
+      "eoa_get_commit_diff",
+      "eoa_get_evidence",
+      "eoa_get_run",
+      "eoa_get_workflow_logs",
+      "eoa_get_workflow_status",
+      "eoa_gh_add_comment",
+      "eoa_gh_close_issue",
+      "eoa_gh_create_issue",
+      "eoa_gh_get_issue",
+      "eoa_gh_list_issues",
+      "eoa_gh_search_issues",
+      "eoa_ingest_batch",
+      "eoa_ingest_issue",
+      "eoa_list_runs",
+      "eoa_onboard_project",
+      "eoa_release_lock",
+      "eoa_release_validate",
+      "eoa_report",
+      "eoa_run_execute",
+      "eoa_run_resume",
+      "eoa_smoke_test",
+      "eoa_sync"
+    ]
   }
 }

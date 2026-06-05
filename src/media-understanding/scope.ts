@@ -1,10 +1,11 @@
+import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import { normalizeChatType } from "../channels/chat-type.js";
 import type { MediaUnderstandingScopeConfig } from "../config/types.tools.js";
 
-export type MediaUnderstandingScopeDecision = "allow" | "deny";
+type MediaUnderstandingScopeDecision = "allow" | "deny";
 
 function normalizeDecision(value?: string | null): MediaUnderstandingScopeDecision | undefined {
-  const normalized = value?.trim().toLowerCase();
+  const normalized = normalizeOptionalLowercaseString(value);
   if (normalized === "allow") {
     return "allow";
   }
@@ -14,15 +15,12 @@ function normalizeDecision(value?: string | null): MediaUnderstandingScopeDecisi
   return undefined;
 }
 
-function normalizeMatch(value?: string | null): string | undefined {
-  const normalized = value?.trim().toLowerCase();
-  return normalized || undefined;
-}
-
+/** Normalizes channel/direct chat type aliases used by media-understanding scope rules. */
 export function normalizeMediaUnderstandingChatType(raw?: string | null): string | undefined {
   return normalizeChatType(raw ?? undefined);
 }
 
+/** Evaluates ordered media-understanding scope rules against channel, chat type, and session key. */
 export function resolveMediaUnderstandingScope(params: {
   scope?: MediaUnderstandingScopeConfig;
   sessionKey?: string;
@@ -34,9 +32,9 @@ export function resolveMediaUnderstandingScope(params: {
     return "allow";
   }
 
-  const channel = normalizeMatch(params.channel);
+  const channel = normalizeOptionalLowercaseString(params.channel);
   const chatType = normalizeMediaUnderstandingChatType(params.chatType);
-  const sessionKey = normalizeMatch(params.sessionKey) ?? "";
+  const sessionKey = normalizeOptionalLowercaseString(params.sessionKey) ?? "";
 
   for (const rule of scope.rules ?? []) {
     if (!rule) {
@@ -44,9 +42,9 @@ export function resolveMediaUnderstandingScope(params: {
     }
     const action = normalizeDecision(rule.action) ?? "allow";
     const match = rule.match ?? {};
-    const matchChannel = normalizeMatch(match.channel);
+    const matchChannel = normalizeOptionalLowercaseString(match.channel);
     const matchChatType = normalizeMediaUnderstandingChatType(match.chatType);
-    const matchPrefix = normalizeMatch(match.keyPrefix);
+    const matchPrefix = normalizeOptionalLowercaseString(match.keyPrefix);
 
     if (matchChannel && matchChannel !== channel) {
       continue;

@@ -1,4 +1,4 @@
-import type { ChannelOutboundAdapter } from "openclaw/plugin-sdk";
+import type { ChannelOutboundAdapter } from "openclaw/plugin-sdk/channel-contract";
 import { getZoomRuntime } from "./runtime.js";
 import { sendZoomTextMessage } from "./send.js";
 

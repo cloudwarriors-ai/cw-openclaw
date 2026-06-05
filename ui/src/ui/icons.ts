@@ -17,6 +17,11 @@ export const icons = {
       <line x1="6" x2="6" y1="20" y2="16" />
     </svg>
   `,
+  activity: html`
+    <svg viewBox="0 0 24 24">
+      <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+    </svg>
+  `,
   link: html`
     <svg viewBox="0 0 24 24">
       <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
@@ -121,13 +126,55 @@ export const icons = {
       <path d="m6 6 12 12" />
     </svg>
   `,
-  check: html`
-    <svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" /></svg>
+  check: html` <svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" /></svg> `,
+  play: html` <svg viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3" /></svg> `,
+  archive: html`
+    <svg viewBox="0 0 24 24">
+      <rect width="20" height="5" x="2" y="3" rx="1" />
+      <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
+      <path d="M10 12h4" />
+    </svg>
+  `,
+  archiveRestore: html`
+    <svg viewBox="0 0 24 24">
+      <rect width="20" height="5" x="2" y="3" rx="1" />
+      <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
+      <path d="m9 15 3-3 3 3" />
+      <path d="M12 12v6" />
+    </svg>
+  `,
+  alertTriangle: html`
+    <svg viewBox="0 0 24 24">
+      <path d="m21.73 18-8-14a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" />
+      <path d="M12 9v4" />
+      <path d="M12 17h.01" />
+    </svg>
+  `,
+  layoutComfortable: html`
+    <svg viewBox="0 0 24 24">
+      <rect width="7" height="7" x="3" y="3" rx="1" />
+      <rect width="7" height="7" x="14" y="3" rx="1" />
+      <rect width="7" height="7" x="3" y="14" rx="1" />
+      <rect width="7" height="7" x="14" y="14" rx="1" />
+    </svg>
+  `,
+  layoutCompact: html`
+    <svg viewBox="0 0 24 24">
+      <rect width="18" height="3" x="3" y="5" rx="1" />
+      <rect width="18" height="3" x="3" y="11" rx="1" />
+      <rect width="18" height="3" x="3" y="17" rx="1" />
+    </svg>
   `,
   arrowDown: html`
     <svg viewBox="0 0 24 24">
       <path d="M12 5v14" />
       <path d="m19 12-7 7-7-7" />
+    </svg>
+  `,
+  cornerDownRight: html`
+    <svg viewBox="0 0 24 24">
+      <polyline points="15 10 20 15 15 20" />
+      <path d="M4 4v7a4 4 0 0 0 4 4h12" />
     </svg>
   `,
   copy: html`
@@ -144,8 +191,12 @@ export const icons = {
   `,
   brain: html`
     <svg viewBox="0 0 24 24">
-      <path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z" />
-      <path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z" />
+      <path
+        d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"
+      />
+      <path
+        d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"
+      />
       <path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4" />
       <path d="M17.599 6.5a3 3 0 0 0 .399-1.375" />
       <path d="M6.003 5.125A3 3 0 0 0 6.401 6.5" />
@@ -236,9 +287,7 @@ export const icons = {
       <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z" />
     </svg>
   `,
-  circle: html`
-    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /></svg>
-  `,
+  circle: html` <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /></svg> `,
   puzzle: html`
     <svg viewBox="0 0 24 24">
       <path
@@ -286,9 +335,7 @@ export const icons = {
       <path d="M22 2 11 13" />
     </svg>
   `,
-  stop: html`
-    <svg viewBox="0 0 24 24"><rect width="14" height="14" x="5" y="5" rx="1" /></svg>
-  `,
+  stop: html` <svg viewBox="0 0 24 24"><rect width="14" height="14" x="5" y="5" rx="1" /></svg> `,
   pin: html`
     <svg viewBox="0 0 24 24">
       <line x1="12" x2="12" y1="17" y2="22" />
@@ -448,6 +495,22 @@ export const icons = {
       <path d="M10 10l-3 2 3 2" stroke-linecap="round" stroke-linejoin="round" />
     </svg>
   `,
+  maximize: html`
+    <svg viewBox="0 0 24 24">
+      <polyline points="15 3 21 3 21 9" />
+      <polyline points="9 21 3 21 3 15" />
+      <line x1="21" x2="14" y1="3" y2="10" />
+      <line x1="3" x2="10" y1="21" y2="14" />
+    </svg>
+  `,
+  minimize: html`
+    <svg viewBox="0 0 24 24">
+      <polyline points="4 14 10 14 10 20" />
+      <polyline points="20 10 14 10 14 4" />
+      <line x1="14" x2="21" y1="10" y2="3" />
+      <line x1="3" x2="10" y1="21" y2="14" />
+    </svg>
+  `,
 } as const;
 
 export type IconName = keyof typeof icons;
@@ -468,9 +531,9 @@ export function renderEmojiIcon(
   return html`<span class=${className} aria-hidden="true">${iconContent}</span>`;
 }
 
-export function setEmojiIcon(target: HTMLElement | null, icon: string): void {
+export function setEmojiIcon(target: HTMLElement | null, iconLocal: string): void {
   if (!target) {
     return;
   }
-  target.textContent = icon;
+  target.textContent = iconLocal;
 }

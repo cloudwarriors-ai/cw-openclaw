@@ -8,10 +8,44 @@
     "properties": {
       "zwsRepos": {
         "type": "array",
-        "items": { "type": "string" },
-        "default": ["cloudwarriors-ai/zoomwarriors2"],
+        "items": {
+          "type": "string"
+        },
+        "default": [
+          "cloudwarriors-ai/zoomwarriors2"
+        ],
         "description": "GitHub repos scoped for ZoomWarriors2 issue management"
       }
     }
+  },
+  "contracts": {
+    "tools": [
+      "zws_auth_status",
+      "zws_correlate_logs",
+      "zws_create_ticket",
+      "zws_devtools_db_query",
+      "zws_devtools_db_table_schema",
+      "zws_devtools_db_tables",
+      "zws_devtools_get_logs",
+      "zws_devtools_list_containers",
+      "zws_devtools_list_databases",
+      "zws_devtools_list_files",
+      "zws_devtools_read_file",
+      "zws_get_project",
+      "zws_get_task",
+      "zws_get_timesheets",
+      "zws_gh_add_comment",
+      "zws_gh_close_issue",
+      "zws_gh_create_issue",
+      "zws_gh_get_issue",
+      "zws_gh_list_issues",
+      "zws_gh_search_issues",
+      "zws_list_projects",
+      "zws_list_tasks",
+      "zws_list_tickets",
+      "zws_list_users",
+      "zws_search",
+      "zws_update_ticket"
+    ]
   }
 }

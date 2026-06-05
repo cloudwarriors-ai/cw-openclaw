@@ -1,121 +1,31 @@
+/** Session update helpers for skill snapshots, compaction, and lifecycle hooks. */
 import crypto from "node:crypto";
-import { resolveUserTimezone } from "../../agents/date-time.js";
-import { buildWorkspaceSkillSnapshot } from "../../agents/skills.js";
-import { ensureSkillsWatcher, getSkillsSnapshotVersion } from "../../agents/skills/refresh.js";
-import type { OpenClawConfig } from "../../config/config.js";
-import { type SessionEntry, updateSessionStore } from "../../config/sessions.js";
-import { buildChannelSummary } from "../../infra/channel-summary.js";
+import path from "node:path";
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { resolveSessionAgentId } from "../../agents/agent-scope.js";
+import { canExecRequestNode } from "../../agents/exec-defaults.js";
 import {
-  resolveTimezone,
-  formatUtcTimestamp,
-  formatZonedTimestamp,
-} from "../../infra/format-time/format-datetime.ts";
-import { getRemoteSkillEligibility } from "../../infra/skills-remote.js";
-import { drainSystemEventEntries } from "../../infra/system-events.js";
-
-/** Drain queued system events, format as `System:` lines, return the block (or undefined). */
-export async function drainFormattedSystemEvents(params: {
-  cfg: OpenClawConfig;
-  sessionKey: string;
-  isMainSession: boolean;
-  isNewSession: boolean;
-}): Promise<string | undefined> {
-  const compactSystemEvent = (line: string): string | null => {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      return null;
-    }
-    const lower = trimmed.toLowerCase();
-    if (lower.includes("reason periodic")) {
-      return null;
-    }
-    // Filter out the actual heartbeat prompt, but not cron jobs that mention "heartbeat"
-    // The heartbeat prompt starts with "Read HEARTBEAT.md" - cron payloads won't match this
-    if (lower.startsWith("read heartbeat.md")) {
-      return null;
-    }
-    // Also filter heartbeat poll/wake noise
-    if (lower.includes("heartbeat poll") || lower.includes("heartbeat wake")) {
-      return null;
-    }
-    if (trimmed.startsWith("Node:")) {
-      return trimmed.replace(/ · last input [^·]+/i, "").trim();
-    }
-    return trimmed;
-  };
-
-  const resolveSystemEventTimezone = (cfg: OpenClawConfig) => {
-    const raw = cfg.agents?.defaults?.envelopeTimezone?.trim();
-    if (!raw) {
-      return { mode: "local" as const };
-    }
-    const lowered = raw.toLowerCase();
-    if (lowered === "utc" || lowered === "gmt") {
-      return { mode: "utc" as const };
-    }
-    if (lowered === "local" || lowered === "host") {
-      return { mode: "local" as const };
-    }
-    if (lowered === "user") {
-      return {
-        mode: "iana" as const,
-        timeZone: resolveUserTimezone(cfg.agents?.defaults?.userTimezone),
-      };
-    }
-    const explicit = resolveTimezone(raw);
-    return explicit ? { mode: "iana" as const, timeZone: explicit } : { mode: "local" as const };
-  };
-
-  const formatSystemEventTimestamp = (ts: number, cfg: OpenClawConfig) => {
-    const date = new Date(ts);
-    if (Number.isNaN(date.getTime())) {
-      return "unknown-time";
-    }
-    const zone = resolveSystemEventTimezone(cfg);
-    if (zone.mode === "utc") {
-      return formatUtcTimestamp(date, { displaySeconds: true });
-    }
-    if (zone.mode === "local") {
-      return formatZonedTimestamp(date, { displaySeconds: true }) ?? "unknown-time";
-    }
-    return (
-      formatZonedTimestamp(date, { timeZone: zone.timeZone, displaySeconds: true }) ??
-      "unknown-time"
-    );
-  };
-
-  const systemLines: string[] = [];
-  const queued = drainSystemEventEntries(params.sessionKey);
-  systemLines.push(
-    ...queued
-      .map((event) => {
-        const compacted = compactSystemEvent(event.text);
-        if (!compacted) {
-          return null;
-        }
-        return `[${formatSystemEventTimestamp(event.ts, params.cfg)}] ${compacted}`;
-      })
-      .filter((v): v is string => Boolean(v)),
-  );
-  if (params.isMainSession && params.isNewSession) {
-    const summary = await buildChannelSummary(params.cfg);
-    if (summary.length > 0) {
-      systemLines.unshift(...summary);
-    }
-  }
-  if (systemLines.length === 0) {
-    return undefined;
-  }
-
-  // Format events as trusted System: lines for the message timeline.
-  // Inbound sanitization rewrites any user-supplied "System:" to "System (untrusted):",
-  // so these gateway-originated lines are distinguishable by the model.
-  // Each sub-line of a multi-line event gets its own System: prefix so continuation
-  // lines can't be mistaken for user content.
-  return systemLines
-    .flatMap((line) => line.split("\n").map((subline) => `System: ${subline}`))
-    .join("\n");
-}
+  canonicalizeAbsoluteSessionFilePath,
+  resolveSessionFilePath,
+  resolveSessionFilePathOptions,
+  rewriteSessionFileForNewSessionId,
+  type SessionEntry,
+  updateSessionStore,
+} from "../../config/sessions.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import {
+  forgetActiveSessionForShutdown,
+  noteActiveSessionForShutdown,
+} from "../../gateway/active-sessions-shutdown-tracker.js";
+import { resolveStableSessionEndTranscript } from "../../gateway/session-transcript-files.fs.js";
+import { logVerbose } from "../../globals.js";
+import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
+import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
+import { getRemoteSkillEligibility } from "../../skills/runtime/remote.js";
+import { resolveReusableWorkspaceSkillSnapshot } from "../../skills/runtime/session-snapshot.js";
+import { buildSessionEndHookPayload, buildSessionStartHookPayload } from "./session-hooks.js";
+export { drainFormattedSystemEvents } from "./session-system-events.js";
+export { resetResolvedSkillsCacheForTests } from "../../skills/runtime/session-snapshot.js";
 
 async function persistSessionEntryUpdate(params: {
   sessionStore?: Record<string, SessionEntry>;
@@ -133,11 +43,86 @@ async function persistSessionEntryUpdate(params: {
   if (!params.storePath) {
     return;
   }
-  await updateSessionStore(params.storePath, (store) => {
-    store[params.sessionKey!] = { ...store[params.sessionKey!], ...params.nextEntry };
-  });
+  await updateSessionStore(
+    params.storePath,
+    (store) => {
+      const next = { ...store[params.sessionKey!], ...params.nextEntry };
+      store[params.sessionKey!] = next;
+      return next;
+    },
+    {
+      resolveSingleEntryPersistence: (entry) =>
+        entry && params.sessionKey ? { sessionKey: params.sessionKey, entry } : null,
+    },
+  );
 }
 
+function emitCompactionSessionLifecycleHooks(params: {
+  cfg: OpenClawConfig;
+  sessionKey: string;
+  storePath?: string;
+  previousEntry: SessionEntry;
+  nextEntry: SessionEntry;
+}) {
+  if (params.previousEntry.sessionId) {
+    forgetActiveSessionForShutdown(params.previousEntry.sessionId);
+  }
+  if (params.nextEntry.sessionId && params.storePath) {
+    noteActiveSessionForShutdown({
+      cfg: params.cfg,
+      sessionKey: params.sessionKey,
+      sessionId: params.nextEntry.sessionId,
+      storePath: params.storePath,
+      sessionFile: params.nextEntry.sessionFile,
+      agentId: resolveAgentIdFromSessionKey(params.sessionKey),
+    });
+  }
+  const hookRunner = getGlobalHookRunner();
+  if (!hookRunner) {
+    return;
+  }
+
+  if (hookRunner.hasHooks("session_end")) {
+    const transcript = resolveStableSessionEndTranscript({
+      sessionId: params.previousEntry.sessionId,
+      storePath: params.storePath,
+      sessionFile: params.previousEntry.sessionFile,
+      agentId: resolveAgentIdFromSessionKey(params.sessionKey),
+    });
+    const payload = buildSessionEndHookPayload({
+      sessionId: params.previousEntry.sessionId,
+      sessionKey: params.sessionKey,
+      cfg: params.cfg,
+      reason: "compaction",
+      sessionFile: transcript.sessionFile,
+      transcriptArchived: transcript.transcriptArchived,
+      nextSessionId: params.nextEntry.sessionId,
+    });
+    void hookRunner.runSessionEnd(payload.event, payload.context).catch((err: unknown) => {
+      logVerbose(`session_end hook failed: ${String(err)}`);
+    });
+  }
+
+  if (hookRunner.hasHooks("session_start")) {
+    const payload = buildSessionStartHookPayload({
+      sessionId: params.nextEntry.sessionId,
+      sessionKey: params.sessionKey,
+      cfg: params.cfg,
+      resumedFrom: params.previousEntry.sessionId,
+    });
+    void hookRunner.runSessionStart(payload.event, payload.context).catch((err: unknown) => {
+      logVerbose(`session_start hook failed: ${String(err)}`);
+    });
+  }
+}
+
+function resolveNonNegativeTokenCount(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : undefined;
+}
+
+/** Ensures a session entry has the reusable skill snapshot needed for reply runs. */
 export async function ensureSkillSnapshot(params: {
   sessionEntry?: SessionEntry;
   sessionStore?: Record<string, SessionEntry>;
@@ -178,11 +163,27 @@ export async function ensureSkillSnapshot(params: {
 
   let nextEntry = sessionEntry;
   let systemSent = sessionEntry?.systemSent ?? false;
-  const remoteEligibility = getRemoteSkillEligibility();
-  const snapshotVersion = getSkillsSnapshotVersion(workspaceDir);
-  ensureSkillsWatcher({ workspaceDir, config: cfg });
-  const shouldRefreshSnapshot =
-    snapshotVersion > 0 && (nextEntry?.skillsSnapshot?.version ?? 0) < snapshotVersion;
+  const sessionAgentId = resolveSessionAgentId({ sessionKey, config: cfg });
+  const remoteEligibility = getRemoteSkillEligibility({
+    advertiseExecNode: canExecRequestNode({
+      cfg,
+      sessionEntry,
+      sessionKey,
+      agentId: sessionAgentId,
+    }),
+  });
+  const existingSnapshot = nextEntry?.skillsSnapshot;
+  const resolveSnapshot = (snapshot: SessionEntry["skillsSnapshot"]) =>
+    resolveReusableWorkspaceSkillSnapshot({
+      workspaceDir,
+      config: cfg,
+      agentId: sessionAgentId,
+      skillFilter,
+      eligibility: { remote: remoteEligibility },
+      existingSnapshot: snapshot,
+    });
+  const initialSnapshotState = resolveSnapshot(existingSnapshot);
+  const shouldRefreshSnapshot = initialSnapshotState.shouldRefresh;
 
   if (isFirstTurnInSession && sessionStore && sessionKey) {
     const current = nextEntry ??
@@ -191,14 +192,9 @@ export async function ensureSkillSnapshot(params: {
         updatedAt: Date.now(),
       };
     const skillSnapshot =
-      isFirstTurnInSession || !current.skillsSnapshot || shouldRefreshSnapshot
-        ? buildWorkspaceSkillSnapshot(workspaceDir, {
-            config: cfg,
-            skillFilter,
-            eligibility: { remote: remoteEligibility },
-            snapshotVersion,
-          })
-        : current.skillsSnapshot;
+      !current.skillsSnapshot || shouldRefreshSnapshot
+        ? initialSnapshotState.snapshot
+        : resolveSnapshot(current.skillsSnapshot).snapshot;
     nextEntry = {
       ...current,
       sessionId: sessionId ?? current.sessionId ?? crypto.randomUUID(),
@@ -210,22 +206,15 @@ export async function ensureSkillSnapshot(params: {
     systemSent = true;
   }
 
-  const skillsSnapshot = shouldRefreshSnapshot
-    ? buildWorkspaceSkillSnapshot(workspaceDir, {
-        config: cfg,
-        skillFilter,
-        eligibility: { remote: remoteEligibility },
-        snapshotVersion,
-      })
-    : (nextEntry?.skillsSnapshot ??
-      (isFirstTurnInSession
-        ? undefined
-        : buildWorkspaceSkillSnapshot(workspaceDir, {
-            config: cfg,
-            skillFilter,
-            eligibility: { remote: remoteEligibility },
-            snapshotVersion,
-          })));
+  const hasFreshSnapshotInEntry =
+    Boolean(nextEntry?.skillsSnapshot) &&
+    (nextEntry?.skillsSnapshot !== existingSnapshot || !shouldRefreshSnapshot);
+  const skillsSnapshot =
+    hasFreshSnapshotInEntry && nextEntry?.skillsSnapshot
+      ? resolveSnapshot(nextEntry.skillsSnapshot).snapshot
+      : shouldRefreshSnapshot || !nextEntry?.skillsSnapshot
+        ? initialSnapshotState.snapshot
+        : resolveSnapshot(nextEntry.skillsSnapshot).snapshot;
   if (
     skillsSnapshot &&
     sessionStore &&
@@ -249,24 +238,33 @@ export async function ensureSkillSnapshot(params: {
   return { sessionEntry: nextEntry, skillsSnapshot, systemSent };
 }
 
+/** Increments compaction count and persists the updated session entry. */
 export async function incrementCompactionCount(params: {
   sessionEntry?: SessionEntry;
   sessionStore?: Record<string, SessionEntry>;
   sessionKey?: string;
   storePath?: string;
+  cfg?: OpenClawConfig;
   now?: number;
   amount?: number;
   /** Token count after compaction - if provided, updates session token counts */
   tokensAfter?: number;
+  /** Session id after compaction, when the runtime rotated transcripts. */
+  newSessionId?: string;
+  /** Session file after compaction, when the runtime rotated transcripts. */
+  newSessionFile?: string;
 }): Promise<number | undefined> {
   const {
     sessionEntry,
     sessionStore,
     sessionKey,
     storePath,
+    cfg,
     now = Date.now(),
     amount = 1,
     tokensAfter,
+    newSessionId,
+    newSessionFile,
   } = params;
   if (!sessionStore || !sessionKey) {
     return undefined;
@@ -282,15 +280,40 @@ export async function incrementCompactionCount(params: {
     compactionCount: nextCount,
     updatedAt: now,
   };
+  const explicitNewSessionFile = normalizeOptionalString(newSessionFile);
+  const sessionIdChanged = Boolean(newSessionId && newSessionId !== entry.sessionId);
+  const sessionFileChanged = Boolean(
+    explicitNewSessionFile && explicitNewSessionFile !== entry.sessionFile,
+  );
+  if (sessionIdChanged && newSessionId) {
+    updates.sessionId = newSessionId;
+    updates.sessionFile =
+      explicitNewSessionFile ??
+      resolveCompactionSessionFile({
+        entry,
+        sessionKey,
+        storePath,
+        newSessionId,
+      });
+    updates.usageFamilyKey = entry.usageFamilyKey ?? sessionKey;
+    updates.usageFamilySessionIds = Array.from(
+      new Set([...(entry.usageFamilySessionIds ?? []), entry.sessionId, newSessionId]),
+    );
+  } else if (sessionFileChanged && explicitNewSessionFile) {
+    updates.sessionFile = explicitNewSessionFile;
+  }
   // If tokensAfter is provided, update the cached token counts to reflect post-compaction state
-  if (tokensAfter != null && tokensAfter > 0) {
-    updates.totalTokens = tokensAfter;
+  const tokensAfterCompaction = resolveNonNegativeTokenCount(tokensAfter);
+  if (tokensAfterCompaction !== undefined) {
+    updates.totalTokens = tokensAfterCompaction;
     updates.totalTokensFresh = true;
     // Clear input/output breakdown since we only have the total estimate after compaction
     updates.inputTokens = undefined;
     updates.outputTokens = undefined;
     updates.cacheRead = undefined;
     updates.cacheWrite = undefined;
+  } else if (incrementBy > 0) {
+    updates.totalTokensFresh = false;
   }
   sessionStore[sessionKey] = {
     ...entry,
@@ -304,5 +327,41 @@ export async function incrementCompactionCount(params: {
       };
     });
   }
+  if ((sessionIdChanged || sessionFileChanged) && cfg) {
+    emitCompactionSessionLifecycleHooks({
+      cfg,
+      sessionKey,
+      storePath,
+      previousEntry: entry,
+      nextEntry: sessionStore[sessionKey],
+    });
+  }
   return nextCount;
+}
+
+function resolveCompactionSessionFile(params: {
+  entry: SessionEntry;
+  sessionKey: string;
+  storePath?: string;
+  newSessionId: string;
+}): string {
+  const agentId = resolveAgentIdFromSessionKey(params.sessionKey);
+  const pathOpts = resolveSessionFilePathOptions({
+    agentId,
+    storePath: params.storePath,
+  });
+  const rewrittenSessionFile = rewriteSessionFileForNewSessionId({
+    sessionFile: params.entry.sessionFile,
+    previousSessionId: params.entry.sessionId,
+    nextSessionId: params.newSessionId,
+  });
+  const normalizedRewrittenSessionFile =
+    rewrittenSessionFile && path.isAbsolute(rewrittenSessionFile)
+      ? canonicalizeAbsoluteSessionFilePath(rewrittenSessionFile)
+      : rewrittenSessionFile;
+  return resolveSessionFilePath(
+    params.newSessionId,
+    normalizedRewrittenSessionFile ? { sessionFile: normalizedRewrittenSessionFile } : undefined,
+    pathOpts,
+  );
 }
