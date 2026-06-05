@@ -1,12 +1,13 @@
 // Shared confirm-gate staging helper for scopelybot write tools.
 //
 // THE invariant: a write tool's execute() must only STAGE — it calls stageWrite()
-// (which registers a pending action and returns a CONFIRM prompt) and never calls
-// scopelyFetch with a mutating method directly. The real mutation lives in the `run`
-// closure, fired ONLY by tryExecuteConfirm() (user-maintenance-tools.ts) when a human
-// replies `CONFIRM <code>`. The LLM cannot fabricate that inbound message, so the bot
-// cannot self-mutate. Each slice's test asserts scopelyFetch is not called during execute().
+// (which registers a pending action and delivers the CONFIRM prompt to the channel)
+// and never calls scopelyFetch with a mutating method directly. The real mutation
+// lives in the `run` closure, fired ONLY by tryExecuteConfirm() (user-maintenance-tools.ts)
+// when a human replies `CONFIRM <code>`. The LLM cannot fabricate that inbound message,
+// so the bot cannot self-mutate. Tests assert scopelyFetch is not called during execute().
 
+import { getChannelThreadAnchor, sendScopelyText } from "./comfort.js";
 import { makeCode, putPending } from "./pending-confirm.js";
 import { jsonResult } from "./scopely-api.js";
 
@@ -14,16 +15,38 @@ let codeSeed = 1;
 
 type FetchResult = Promise<{ ok: boolean; status: number; data: unknown }>;
 
-// Stage a gated mutation and return the confirm prompt. Does NOT execute.
-export function stageWrite(summary: string, run: () => FetchResult) {
+// Stage a gated mutation. Does NOT execute — the real call fires only when a
+// human replies `CONFIRM <code>` (consumed in the before_dispatch hook).
+//
+// The confirm prompt — INCLUDING the code — is delivered to the channel
+// deterministically here, threaded under the originating request. The code must
+// never travel back through the LLM coordinator: a small model fabricates,
+// rewrites, re-relays, and duplicates codes (observed live 2026-06-05). So the
+// tool result the model sees is CODE-FREE; the model only learns a prompt was
+// posted and must stay silent.
+export async function stageWrite(summary: string, run: () => FetchResult) {
   const code = makeCode(codeSeed++ * 7919 + summary.length);
   putPending({ code, summary, run });
-  return jsonResult({
-    staged: true,
-    message:
-      `⚠️ Confirm: ${summary} on PROD.\n` +
-      `Reply \`CONFIRM ${code}\` within 5 minutes to proceed, or ignore to cancel.`,
-  });
+  const prompt =
+    `⚠️ Confirm: ${summary} on PROD.\n` +
+    `Reply \`CONFIRM ${code}\` within 5 minutes to proceed, or ignore to cancel.`;
+
+  // Read the channel at call time (not module load) so env that loads after import
+  // — and test stubbing — both resolve correctly.
+  const channel = process.env.SCOPELYBOT_ZOOM_CHANNEL ?? "";
+  if (channel) {
+    await sendScopelyText(channel, prompt, getChannelThreadAnchor(channel));
+    return jsonResult({
+      staged: true,
+      awaiting_confirmation: true,
+      message:
+        "Confirm prompt was posted to the channel for the user. " +
+        "Reply NO_REPLY — do not repeat, relay, or invent the confirmation code.",
+    });
+  }
+  // No channel configured (dev/test only): fall back to returning the prompt
+  // inline so the gate still works outside the live deployment.
+  return jsonResult({ staged: true, message: prompt });
 }
 
 // Build a request body from only the fields the caller actually supplied, so we
