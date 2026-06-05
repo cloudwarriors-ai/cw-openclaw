@@ -1,17 +1,16 @@
 import type { Request, Response } from "express";
 import type { OpenClawConfig, RuntimeEnv } from "openclaw/plugin-sdk";
-
-import type { ZoomConversationStore } from "./conversation-store.js";
 import { createZoomConversationStoreFs } from "./conversation-store-fs.js";
+import type { ZoomConversationStore } from "./conversation-store.js";
 import { formatUnknownError } from "./errors.js";
 import { createZoomMessageHandler } from "./monitor-handler.js";
 import type { ZoomMonitorLogger } from "./monitor-types.js";
-import { createUploadRoutes } from "./upload-handler.js";
-import { resolveZoomUploadDir } from "./upload-path.js";
+import { getZoomRuntime } from "./runtime.js";
 import { resolveZoomCredentials } from "./token.js";
 import type { ZoomConfig, ZoomCredentials } from "./types.js";
+import { createUploadRoutes } from "./upload-handler.js";
+import { resolveZoomUploadDir } from "./upload-path.js";
 import { handleZoomChallenge, verifyZoomWebhook } from "./webhook.js";
-import { getZoomRuntime } from "./runtime.js";
 
 export type MonitorZoomOpts = {
   cfg: OpenClawConfig;
@@ -25,9 +24,7 @@ export type MonitorZoomResult = {
   shutdown: () => Promise<void>;
 };
 
-export async function monitorZoomProvider(
-  opts: MonitorZoomOpts,
-): Promise<MonitorZoomResult> {
+export async function monitorZoomProvider(opts: MonitorZoomOpts): Promise<MonitorZoomResult> {
   const core = getZoomRuntime();
   const log = core.logging.getChildLogger({ name: "zoom" });
   const cfg = opts.cfg;
@@ -92,7 +89,12 @@ export async function monitorZoomProvider(
 
   // File-upload routes
   const uploadRoutes = createUploadRoutes({
-    cfg, runtime, creds, textLimit, conversationStore, log: log as ZoomMonitorLogger,
+    cfg,
+    runtime,
+    creds,
+    textLimit,
+    conversationStore,
+    log: log as ZoomMonitorLogger,
   });
   expressApp.get("/zoom/file", uploadRoutes.handleGet);
   expressApp.post("/zoom/file", express.json({ limit: "15mb" }), uploadRoutes.handlePost);
@@ -153,7 +155,10 @@ export async function monitorZoomProvider(
       // Process message asynchronously
       await handleMessage(req.body);
     } catch (err) {
-      log.error("webhook handler failed", { error: formatUnknownError(err) });
+      log.error(
+        "webhook handler failed: " +
+          (err instanceof Error ? err.stack || err.message : String(err)),
+      );
       if (!res.headersSent) {
         res.status(500).json({ error: "internal error" });
       }

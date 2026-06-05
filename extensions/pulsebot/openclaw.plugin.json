@@ -8,10 +8,36 @@
     "properties": {
       "ppRepos": {
         "type": "array",
-        "items": { "type": "string" },
-        "default": ["cloudwarriors-ai/project-pulse"],
+        "items": {
+          "type": "string"
+        },
+        "default": [
+          "cloudwarriors-ai/project-pulse"
+        ],
         "description": "GitHub repos scoped for PP issue management"
       }
     }
+  },
+  "contracts": {
+    "tools": [
+      "gh_add_comment",
+      "gh_close_issue",
+      "gh_create_issue",
+      "gh_get_issue",
+      "gh_list_issues",
+      "gh_search_issues",
+      "pp_auth_status",
+      "pp_correlate_logs",
+      "pp_create_ticket",
+      "pp_get_project",
+      "pp_get_task",
+      "pp_get_timesheets",
+      "pp_list_projects",
+      "pp_list_tasks",
+      "pp_list_tickets",
+      "pp_list_users",
+      "pp_search",
+      "pp_update_ticket"
+    ]
   }
 }

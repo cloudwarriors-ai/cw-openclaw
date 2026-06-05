@@ -1,10 +1,10 @@
 import type { ChannelPlugin, OpenClawConfig } from "openclaw/plugin-sdk";
-import { DEFAULT_ACCOUNT_ID, PAIRING_APPROVED_MESSAGE } from "openclaw/plugin-sdk";
-
+import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/account-id";
+import { PAIRING_APPROVED_MESSAGE } from "openclaw/plugin-sdk/channel-status";
 import { zoomOnboardingAdapter } from "./onboarding.js";
 import { zoomOutbound } from "./outbound.js";
-import { probeZoom } from "./probe.js";
 import { resolveZoomGroupToolPolicy } from "./policy.js";
+import { probeZoom } from "./probe.js";
 import { sendZoomTextMessage } from "./send.js";
 import { resolveZoomThreadingConfig } from "./threading.js";
 import { resolveZoomCredentials } from "./token.js";

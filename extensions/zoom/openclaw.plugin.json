@@ -7,5 +7,21 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {}
+  },
+  "contracts": {
+    "tools": [
+      "docx_get_download",
+      "docx_read",
+      "docx_replace",
+      "zoom_get_prefilter_config",
+      "zoom_lookup_user",
+      "zoom_request_file_upload",
+      "zoom_send_action_card",
+      "zoom_send_as_user",
+      "zoom_send_at_message",
+      "zoom_send_dm",
+      "zoom_send_to_channel",
+      "zoom_set_prefilter_config"
+    ]
   }
 }

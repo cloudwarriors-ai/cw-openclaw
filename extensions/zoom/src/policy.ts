@@ -1,17 +1,14 @@
-import type {
-  AllowlistMatch,
-  ChannelGroupContext,
-  GroupPolicy,
-  GroupToolPolicyConfig,
-} from "openclaw/plugin-sdk";
+import type { AllowlistMatch } from "openclaw/plugin-sdk/allow-from";
+import type { ChannelGroupContext } from "openclaw/plugin-sdk/channel-contract";
+import type { GroupToolPolicyConfig } from "openclaw/plugin-sdk/channel-policy";
+import { resolveToolsBySender } from "openclaw/plugin-sdk/channel-policy";
 import {
   buildChannelKeyCandidates,
   normalizeChannelSlug,
-  resolveToolsBySender,
   resolveChannelEntryMatchWithFallback,
   resolveNestedAllowlistDecision,
-} from "openclaw/plugin-sdk";
-
+} from "openclaw/plugin-sdk/channel-targets";
+import type { GroupPolicy } from "openclaw/plugin-sdk/config-contracts";
 import type { ZoomConfig, ZoomChannelConfig } from "./types.js";
 
 export type ZoomResolvedRouteConfig = {

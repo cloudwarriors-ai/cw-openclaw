@@ -27,7 +27,7 @@ export function registerCorrelationTools(api: OpenClawPluginApi, logger: AuditLo
         async execute(_id: string, params: Record<string, unknown>) {
           try {
             const pattern = params.pattern as string;
-            const container = (params.container as string) || "dev-project-pulse";
+            const container = (params.container as string) || "project-pulse-dev";
             const tail = (params.tail as number) || 500;
             const since = params.since as string | undefined;
 

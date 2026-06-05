@@ -5,5 +5,11 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {}
+  },
+  "contracts": {
+    "tools": [
+      "memory_get",
+      "memory_search"
+    ]
   }
 }

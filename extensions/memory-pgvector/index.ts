@@ -1,7 +1,7 @@
 import { Type } from "@sinclair/typebox";
 import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { jsonResult, readNumberParam, readStringParam } from "openclaw/plugin-sdk";
+import { jsonResult, readNumberParam, readStringParam } from "openclaw/plugin-sdk/core";
 
 const MemorySearchSchema = Type.Object({
   query: Type.String(),
@@ -76,18 +76,33 @@ const plugin = {
         const rawId = readStringParam(params, "id");
         const id = extractMemoryId(rawPath ?? rawId ?? "");
         if (!id) {
-          return jsonResult({ path: rawPath ?? rawId ?? "", text: "", disabled: true, error: "memory id required" });
+          return jsonResult({
+            path: rawPath ?? rawId ?? "",
+            text: "",
+            disabled: true,
+            error: "memory id required",
+          });
         }
         const response = await callMemoryServer({
           method: "GET",
           path: `/memories/${encodeURIComponent(id)}`,
         });
         if (!response.ok) {
-          return jsonResult({ path: rawPath ?? id, text: "", disabled: true, error: response.error ?? response.payload });
+          return jsonResult({
+            path: rawPath ?? id,
+            text: "",
+            disabled: true,
+            error: response.error ?? response.payload,
+          });
         }
         const record = response.record;
         if (!record || typeof record !== "object" || Array.isArray(record)) {
-          return jsonResult({ path: rawPath ?? id, text: "", disabled: true, error: "malformed memory record response" });
+          return jsonResult({
+            path: rawPath ?? id,
+            text: "",
+            disabled: true,
+            error: "malformed memory record response",
+          });
         }
         const content = typeof record.content === "string" ? record.content : "";
         return jsonResult({
@@ -158,7 +173,10 @@ function resolveMemoryEndpoint(baseUrl: string, endpointPath: string): URL {
   return new URL(relativePath, base);
 }
 
-function toMemorySearchResult(record: unknown, score: unknown): {
+function toMemorySearchResult(
+  record: unknown,
+  score: unknown,
+): {
   path: string;
   startLine: number;
   endLine: number;

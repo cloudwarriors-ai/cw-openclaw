@@ -3,8 +3,8 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
 
-const DEVTOOLS_BASE = () => process.env.BIGHEAD_DEVTOOLS_API_URL ?? "http://bighead-devtools-api:9100";
-const DEVTOOLS_TOKEN = () => process.env.BIGHEAD_DEV_TOOLS_API ?? process.env.DEV_TOOLS_API ?? "";
+const DEVTOOLS_BASE = () => process.env.DEVTOOLS_API_URL ?? process.env.BIGHEAD_DEVTOOLS_API_URL ?? "http://bighead-devtools-api:9100";
+const DEVTOOLS_TOKEN = () => process.env.DEV_TOOLS_API ?? process.env.BIGHEAD_DEV_TOOLS_API ?? "";
 
 function jsonResult(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
@@ -148,19 +148,44 @@ export function registerDevtoolsTools(api: OpenClawPluginApi, logger: AuditLogge
     ),
   );
 
+  // bh_devtools_list_databases
+  api.registerTool(() =>
+    wrapToolWithAudit(
+      {
+        name: "bh_devtools_list_databases",
+        description: "List all available databases that can be queried via devtools.",
+        parameters: Type.Object({}),
+        async execute() {
+          try {
+            const result = await bhDevtoolsFetch("/api/v1/databases");
+            if (!result.ok) return jsonResult({ ok: false, error: `HTTP ${result.status}`, details: result.data });
+            return jsonResult({ ok: true, databases: result.data });
+          } catch (err) {
+            return errorResult(err);
+          }
+        },
+      },
+      logger,
+    ),
+  );
+
   // bh_devtools_db_tables
   api.registerTool(() =>
     wrapToolWithAudit(
       {
         name: "bh_devtools_db_tables",
         description:
-          "List all tables in the public schema of the Bighead database.",
-        parameters: Type.Object({}),
-        async execute() {
+          "List all tables in the public schema of a database. Use bh_devtools_list_databases to see available databases.",
+        parameters: Type.Object({
+          database: Type.Optional(Type.String({ description: "Database name (e.g. 'zoomwarriors2', 'zoomwarriors2_studio'). Uses default if omitted." })),
+        }),
+        async execute(_id: string, params: Record<string, unknown>) {
           try {
-            const result = await bhDevtoolsFetch("/api/v1/db/tables");
+            const db = params.database as string | undefined;
+            const qs = db ? `?database=${encodeURIComponent(db)}` : "";
+            const result = await bhDevtoolsFetch(`/api/v1/db/tables${qs}`);
             if (!result.ok) return jsonResult({ ok: false, error: `HTTP ${result.status}`, details: result.data });
-            return jsonResult({ ok: true, tables: result.data });
+            return jsonResult({ ok: true, ...result.data as object });
           } catch (err) {
             return errorResult(err);
           }
@@ -176,16 +201,19 @@ export function registerDevtoolsTools(api: OpenClawPluginApi, logger: AuditLogge
       {
         name: "bh_devtools_db_table_schema",
         description:
-          "Get the column definitions for a Bighead database table.",
+          "Get the column definitions for a database table. Use bh_devtools_list_databases to see available databases.",
         parameters: Type.Object({
           table_name: Type.String({ description: "The table name to get schema for" }),
+          database: Type.Optional(Type.String({ description: "Database name (e.g. 'zoomwarriors2', 'zoomwarriors2_studio'). Uses default if omitted." })),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
             const tableName = params.table_name as string;
-            const result = await bhDevtoolsFetch(`/api/v1/db/tables/${encodeURIComponent(tableName)}/schema`);
+            const db = params.database as string | undefined;
+            const qs = db ? `?database=${encodeURIComponent(db)}` : "";
+            const result = await bhDevtoolsFetch(`/api/v1/db/tables/${encodeURIComponent(tableName)}/schema${qs}`);
             if (!result.ok) return jsonResult({ ok: false, error: `HTTP ${result.status}`, details: result.data });
-            return jsonResult({ ok: true, columns: result.data });
+            return jsonResult({ ok: true, ...result.data as object });
           } catch (err) {
             return errorResult(err);
           }
@@ -201,15 +229,17 @@ export function registerDevtoolsTools(api: OpenClawPluginApi, logger: AuditLogge
       {
         name: "bh_devtools_db_query",
         description:
-          "Execute a read-only SQL query (SELECT or WITH only) against the Bighead database. Returns up to 1000 rows.",
+          "Execute a read-only SQL query (SELECT or WITH only) against a database. Returns up to 1000 rows. Use bh_devtools_list_databases to see available databases.",
         parameters: Type.Object({
           sql: Type.String({ description: "The SQL query to execute (SELECT or WITH only)" }),
           params: Type.Optional(Type.Array(Type.Unknown(), { description: "Parameterized query values ($1, $2, etc.)" })),
+          database: Type.Optional(Type.String({ description: "Database name (e.g. 'zoomwarriors2', 'zoomwarriors2_studio'). Uses default if omitted." })),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
             const body: Record<string, unknown> = { sql: params.sql };
             if (params.params) body.params = params.params;
+            if (params.database) body.database = params.database;
             const result = await bhDevtoolsFetch("/api/v1/db/query", {
               method: "POST",
               headers: { "Content-Type": "application/json" },

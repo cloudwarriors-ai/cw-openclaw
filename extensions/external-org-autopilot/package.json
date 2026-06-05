@@ -1,0 +1,14 @@
+{
+  "name": "@openclaw/external-org-autopilot",
+  "version": "0.1.0",
+  "description": "External Org Autopilot onboarding, sync, execution, and reporting tools",
+  "type": "module",
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

@@ -1,22 +1,26 @@
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
+import {
+  defineBundledChannelEntry,
+  type OpenClawPluginApi,
+} from "openclaw/plugin-sdk/channel-entry-contract";
+import {
+  formatToolParams,
+  registerZoomSubagentHooks,
+  registerZoomTools,
+  shouldBlockTool,
+} from "./register-full-api.js";
 
-import { zoomPlugin } from "./src/channel.js";
-import { shouldBlockTool, formatToolParams } from "./src/observe-tool-gate.js";
-import { setZoomRuntime } from "./src/runtime.js";
-import { registerZoomTools } from "./src/tools.js";
-
-export { monitorZoomProvider } from "./src/monitor.js";
-
-const plugin = {
+export default defineBundledChannelEntry({
   id: "zoom",
   name: "Zoom Team Chat",
   description: "Zoom Team Chat channel plugin (S2S OAuth)",
-  configSchema: emptyPluginConfigSchema(),
-  register(api: OpenClawPluginApi) {
-    setZoomRuntime(api.runtime);
-    api.registerChannel({ plugin: zoomPlugin });
+  importMetaUrl: import.meta.url,
+  plugin: { specifier: "./src/channel.js", exportName: "zoomPlugin" },
+  runtime: { specifier: "./src/runtime.js", exportName: "setZoomRuntime" },
+  registerFull(api: OpenClawPluginApi) {
     registerZoomTools(api);
+
+    // Route subagent (spoke) completion results back into the originating Zoom thread.
+    registerZoomSubagentHooks(api);
 
     // Gate write/mutation tools in observe-mode sessions.
     // Blocks silently — the monitor handler sends one consolidated approval card after dispatch.
@@ -33,6 +37,4 @@ const plugin = {
       };
     });
   },
-};
-
-export default plugin;
+});

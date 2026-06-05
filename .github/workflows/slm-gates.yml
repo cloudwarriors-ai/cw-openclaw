@@ -69,7 +69,9 @@ jobs:
         run: |
           set -euo pipefail
           corepack enable
-          corepack prepare pnpm@10.23.0 --activate
+          # Follow the repo's packageManager pin (pnpm 11); a stale pnpm 10
+          # here installs against the pnpm-11 lockfile and segfaults vitest.
+          corepack prepare pnpm@11.2.2 --activate
           pnpm -v
 
       - name: Setup Bun

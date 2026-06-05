@@ -1,7 +1,7 @@
 {
   "id": "claude-mem",
   "name": "Claude-Mem (Persistent Memory)",
-  "description": "Persistent memory compression system — records observations from agent sessions for cross-session context.",
+  "description": "Persistent memory compression system \u2014 records observations from agent sessions for cross-session context.",
   "kind": "memory",
   "version": "1.0.0",
   "author": "thedotmack",
@@ -26,5 +26,13 @@
         "description": "Project name for scoping observations in the memory database"
       }
     }
+  },
+  "contracts": {
+    "tools": [
+      "obs_get",
+      "obs_save",
+      "obs_search",
+      "obs_timeline"
+    ]
   }
 }

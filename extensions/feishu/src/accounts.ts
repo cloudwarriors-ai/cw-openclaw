@@ -2,6 +2,7 @@ import {
   DEFAULT_ACCOUNT_ID,
   type OpenClawConfig as ClawdbotConfig,
   createAccountListHelpers,
+  hasConfiguredAccountValue,
   normalizeAccountId,
   normalizeOptionalAccountId,
   resolveMergedAccountConfig,
@@ -20,6 +21,12 @@ const { listAccountIds: listFeishuAccountIds, resolveDefaultAccountId } = create
   "feishu",
   {
     allowUnlistedDefaultAccount: true,
+    hasImplicitDefaultAccount: (cfg) => {
+      const feishu = cfg.channels?.feishu;
+      return (
+        hasConfiguredAccountValue(feishu?.appId) && hasConfiguredAccountValue(feishu?.appSecret)
+      );
+    },
   },
 );
 
@@ -145,7 +152,9 @@ export function resolveDefaultFeishuAccountSelection(cfg: ClawdbotConfig): {
   accountId: string;
   source: FeishuDefaultAccountSelectionSource;
 } {
-  const preferred = normalizeOptionalAccountId(cfg.channels?.feishu?.defaultAccount);
+  const preferred = normalizeOptionalAccountId(
+    (cfg.channels?.feishu as FeishuConfig | undefined)?.defaultAccount,
+  );
   if (preferred) {
     return {
       accountId: preferred,
@@ -172,18 +181,64 @@ export function resolveDefaultFeishuAccountId(cfg: ClawdbotConfig): string {
   return resolveDefaultAccountId(cfg);
 }
 
+function resolveRawFeishuAccountConfig(
+  accounts: Record<string, Partial<FeishuConfig>> | undefined,
+  accountId: string,
+): Partial<FeishuConfig> | undefined {
+  if (!accounts || typeof accounts !== "object") {
+    return undefined;
+  }
+  if (Object.hasOwn(accounts, accountId)) {
+    return accounts[accountId];
+  }
+  const normalized = accountId.toLowerCase();
+  const matchKey = Object.keys(accounts).find((key) => key.toLowerCase() === normalized);
+  return matchKey ? accounts[matchKey] : undefined;
+}
+
 /**
  * Merge top-level config with account-specific config.
  * Account-specific fields override top-level fields.
  */
 function mergeFeishuAccountConfig(cfg: ClawdbotConfig, accountId: string): FeishuConfig {
-  const feishuCfg = cfg.channels?.feishu;
-  return resolveMergedAccountConfig<FeishuConfig>({
+  const feishuCfg = cfg.channels?.feishu as FeishuConfig | undefined;
+  const accounts = feishuCfg?.accounts as Record<string, Partial<FeishuConfig>> | undefined;
+  const accountTools = resolveRawFeishuAccountConfig(accounts, accountId)?.tools;
+  const merged = resolveMergedAccountConfig<FeishuConfig>({
     channelConfig: feishuCfg,
-    accounts: feishuCfg?.accounts as Record<string, Partial<FeishuConfig>> | undefined,
+    accounts,
     accountId,
     omitKeys: ["defaultAccount"],
+    nestedObjectKeys: ["tools"],
   });
+  const topTools = feishuCfg?.tools;
+  if (merged.tools === undefined && topTools !== undefined) {
+    return { ...merged, tools: topTools };
+  }
+  if (
+    topTools?.bitable === false ||
+    (topTools?.bitable === undefined && topTools?.base === false)
+  ) {
+    return {
+      ...merged,
+      tools: {
+        ...merged.tools,
+        bitable: false,
+        base: false,
+      },
+    };
+  }
+  if (accountTools?.bitable === undefined && accountTools?.base !== undefined) {
+    return {
+      ...merged,
+      tools: {
+        ...merged.tools,
+        bitable: accountTools.base,
+        base: accountTools.base,
+      },
+    };
+  }
+  return merged;
 }
 
 /**
@@ -256,7 +311,7 @@ function buildResolvedFeishuAccount(params: {
   const selectionSource = hasExplicitAccountId
     ? "explicit"
     : (defaultSelection?.source ?? "fallback");
-  const feishuCfg = params.cfg.channels?.feishu;
+  const feishuCfg = params.cfg.channels?.feishu as FeishuConfig | undefined;
 
   const baseEnabled = feishuCfg?.enabled !== false;
   const merged = mergeFeishuAccountConfig(params.cfg, accountId);
@@ -264,7 +319,7 @@ function buildResolvedFeishuAccount(params: {
   const enabled = baseEnabled && accountEnabled;
   const baseCreds = resolveFeishuBaseCredentials(merged, params.baseMode);
   const eventSecrets = resolveFeishuEventSecrets(merged, params.eventSecretMode);
-  const accountName = merged.name;
+  const accountName = (merged as FeishuAccountConfig).name;
 
   return {
     accountId,

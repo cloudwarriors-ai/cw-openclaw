@@ -6,6 +6,7 @@ import {
   acquireLocalHeavyCheckLockSync,
   applyLocalOxlintPolicy,
 } from "./local-heavy-check-runtime.mjs";
+import { createManagedCommandInvocation } from "./managed-child-process.mjs";
 
 export function runExtensionOxlint(params) {
   const repoRoot = process.cwd();
@@ -18,6 +19,7 @@ export function runExtensionOxlint(params) {
   });
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), params.tempDirPrefix));
   const tempConfigPath = path.join(tempDir, "oxlint.json");
+  let exitCode = 0;
 
   try {
     prepareExtensionPackageBoundaryArtifacts(repoRoot);
@@ -27,7 +29,10 @@ export function runExtensionOxlint(params) {
     );
 
     if (extensionFiles.length === 0) {
-      console.error(params.emptyMessage);
+      console.log(params.emptyMessage);
+      if (params.allowEmpty === true) {
+        return;
+      }
       process.exit(1);
     }
 
@@ -35,21 +40,29 @@ export function runExtensionOxlint(params) {
 
     const baseArgs = ["-c", tempConfigPath, ...process.argv.slice(2), ...extensionFiles];
     const { args: finalArgs, env } = applyLocalOxlintPolicy(baseArgs, process.env);
-    const result = spawnSync(oxlintPath, finalArgs, {
+    const oxlint = createManagedCommandInvocation({
+      args: finalArgs,
+      bin: oxlintPath,
+      env,
+    });
+    const result = spawnSync(oxlint.command, oxlint.args, {
       stdio: "inherit",
       env,
-      shell: process.platform === "win32",
+      shell: oxlint.shell,
+      windowsVerbatimArguments: oxlint.windowsVerbatimArguments,
     });
 
     if (result.error) {
       throw result.error;
     }
 
-    process.exit(result.status ?? 1);
+    exitCode = result.status ?? 1;
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
     releaseLock();
   }
+
+  process.exitCode = exitCode;
 }
 
 function prepareExtensionPackageBoundaryArtifacts(repoRoot) {
@@ -59,6 +72,7 @@ function prepareExtensionPackageBoundaryArtifacts(repoRoot) {
     toolName: "extension-package-boundary-artifacts",
     lockName: "extension-package-boundary-artifacts",
   });
+  let exitCode = 0;
 
   try {
     const result = spawnSync(
@@ -75,11 +89,13 @@ function prepareExtensionPackageBoundaryArtifacts(repoRoot) {
       throw result.error;
     }
 
-    if ((result.status ?? 1) !== 0) {
-      process.exit(result.status ?? 1);
-    }
+    exitCode = result.status ?? 1;
   } finally {
     releaseLock();
+  }
+
+  if (exitCode !== 0) {
+    process.exitCode = exitCode;
   }
 }
 
@@ -121,6 +137,9 @@ function collectTypeScriptFiles(directoryPath) {
   for (const entry of entries.toSorted((a, b) => a.name.localeCompare(b.name))) {
     const entryPath = path.join(directoryPath, entry.name);
     if (entry.isDirectory()) {
+      if (shouldSkipExtensionLintDirectory(entry.name)) {
+        continue;
+      }
       files.push(...collectTypeScriptFiles(entryPath));
       continue;
     }
@@ -137,4 +156,8 @@ function collectTypeScriptFiles(directoryPath) {
   }
 
   return files;
+}
+
+function shouldSkipExtensionLintDirectory(name) {
+  return name === "node_modules";
 }

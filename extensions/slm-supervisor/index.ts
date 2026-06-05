@@ -43,25 +43,32 @@ const plugin = {
     const router = createSlmSupervisorRouter({ appService, orchestrator });
     const slmHttpAuthConfig = resolveSlmHttpAuthConfig(process.env);
 
-    api.registerHttpHandler(async (req, res) => {
-      const url = new URL(req.url ?? "/", "http://localhost");
-      if (!url.pathname.startsWith("/v1/slm/supervisor/")) {
-        return false;
-      }
-      const authFailure = enforceSlmHttpAuth(
-        {
-          xOpenclawSlmToken: normalizeHeader(req.headers["x-openclaw-slm-token"]),
-        },
-        slmHttpAuthConfig,
-      );
-      if (authFailure) {
-        writeResponse(res, authFailure.status, authFailure.body);
+    // Migrated from removed api.registerHttpHandler. Prefix-route on
+    // /v1/slm/supervisor/ with plugin auth (we enforce our own slm token below).
+    api.registerHttpRoute({
+      path: "/v1/slm/supervisor/",
+      match: "prefix",
+      auth: "plugin",
+      handler: async (req, res) => {
+        const url = new URL(req.url ?? "/", "http://localhost");
+        if (!url.pathname.startsWith("/v1/slm/supervisor/")) {
+          return false;
+        }
+        const authFailure = enforceSlmHttpAuth(
+          {
+            xOpenclawSlmToken: normalizeHeader(req.headers["x-openclaw-slm-token"]),
+          },
+          slmHttpAuthConfig,
+        );
+        if (authFailure) {
+          writeResponse(res, authFailure.status, authFailure.body);
+          return true;
+        }
+        const request = await toRouterRequest(req, url);
+        const response = await router.handle(request);
+        writeResponse(res, response.status, response.body);
         return true;
-      }
-      const request = await toRouterRequest(req, url);
-      const response = await router.handle(request);
-      writeResponse(res, response.status, response.body);
-      return true;
+      },
     });
   },
 };

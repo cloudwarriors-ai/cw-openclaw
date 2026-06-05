@@ -5,16 +5,20 @@
  * like command processing, session lifecycle, etc.
  */
 
+import type { SessionsPatchParams } from "../../packages/gateway-protocol/src/schema.js";
 import type { WorkspaceBootstrapFile } from "../agents/workspace.js";
-import type { CliDeps } from "../cli/deps.js";
-import type { OpenClawConfig } from "../config/config.js";
-import type { SessionEntry } from "../config/sessions.js";
-import type { SessionsPatchParams } from "../gateway/protocol/index.js";
+import type { CliDeps } from "../cli/outbound-send-deps.js";
+import type { SessionEntry } from "../config/sessions/types.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
-
-export type InternalHookEventType = "command" | "session" | "agent" | "gateway" | "message";
+import type {
+  InternalHookEvent,
+  InternalHookEventType,
+  InternalHookHandler,
+} from "./internal-hook-types.js";
+export type { InternalHookEvent, InternalHookEventType, InternalHookHandler };
 
 export type AgentBootstrapHookContext = {
   workspaceDir: string;
@@ -54,7 +58,7 @@ export type MessageReceivedHookContext = {
   content: string;
   /** Unix timestamp when the message was received */
   timestamp?: number;
-  /** Channel identifier (e.g., "telegram", "whatsapp") */
+  /** Channel identifier (for example "chat" or "support-chat") */
   channelId: string;
   /** Provider account ID for multi-account setups */
   accountId?: string;
@@ -81,7 +85,7 @@ export type MessageSentHookContext = {
   success: boolean;
   /** Error message if sending failed */
   error?: string;
-  /** Channel identifier (e.g., "telegram", "whatsapp") */
+  /** Channel identifier (for example "chat" or "support-chat") */
   channelId: string;
   /** Provider account ID for multi-account setups */
   accountId?: string;
@@ -112,7 +116,7 @@ type MessageEnrichedBodyHookContext = {
   bodyForAgent?: string;
   /** Unix timestamp when the message was received */
   timestamp?: number;
-  /** Channel identifier (e.g., "telegram", "whatsapp") */
+  /** Channel identifier (for example "chat" or "support-chat") */
   channelId: string;
   /** Conversation/chat ID */
   conversationId?: string;
@@ -171,23 +175,6 @@ export type SessionPatchHookEvent = InternalHookEvent & {
   action: "patch";
   context: SessionPatchHookContext;
 };
-
-export interface InternalHookEvent {
-  /** The type of event (command, session, agent, gateway, etc.) */
-  type: InternalHookEventType;
-  /** The specific action within the type (e.g., 'new', 'reset', 'stop') */
-  action: string;
-  /** The session key this event relates to */
-  sessionKey: string;
-  /** Additional context specific to the event */
-  context: Record<string, unknown>;
-  /** Timestamp when the event occurred */
-  timestamp: Date;
-  /** Messages to send back to the user (hooks can push to this array) */
-  messages: string[];
-}
-
-export type InternalHookHandler = (event: InternalHookEvent) => Promise<void> | void;
 
 /**
  * Registry of hook handlers by event key.
@@ -405,7 +392,11 @@ export function isMessageReceivedEvent(
   if (!context) {
     return false;
   }
-  return hasStringContextField(context, "from") && hasStringContextField(context, "channelId");
+  return (
+    hasStringContextField(context, "from") &&
+    hasStringContextField(context, "content") &&
+    hasStringContextField(context, "channelId")
+  );
 }
 
 export function isMessageSentEvent(event: InternalHookEvent): event is MessageSentHookEvent {
@@ -418,6 +409,7 @@ export function isMessageSentEvent(event: InternalHookEvent): event is MessageSe
   }
   return (
     hasStringContextField(context, "to") &&
+    hasStringContextField(context, "content") &&
     hasStringContextField(context, "channelId") &&
     hasBooleanContextField(context, "success")
   );

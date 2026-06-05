@@ -90,27 +90,35 @@ const plugin = {
 
     registerSlmPipelineGatewayMethods(api, appService);
 
-    api.registerHttpHandler(async (req, res) => {
-      const url = new URL(req.url ?? "/", "http://localhost");
-      if (!isPipelineHttpPath(url.pathname)) {
-        return false;
-      }
+    // Migrated from removed api.registerHttpHandler. Register a prefix route on
+    // /v1/slm/ and explicitly defer supervisor paths back to the dispatch chain so
+    // slm-supervisor's prefix route can handle them.
+    api.registerHttpRoute({
+      path: "/v1/slm/",
+      match: "prefix",
+      auth: "plugin",
+      handler: async (req, res) => {
+        const url = new URL(req.url ?? "/", "http://localhost");
+        if (!isPipelineHttpPath(url.pathname)) {
+          return false;
+        }
 
-      const authFailure = enforceSlmHttpAuth(
-        {
-          xOpenclawSlmToken: normalizeHeader(req.headers["x-openclaw-slm-token"]),
-        },
-        slmHttpAuthConfig,
-      );
-      if (authFailure) {
-        writeResponse(res, authFailure.status, authFailure.body);
+        const authFailure = enforceSlmHttpAuth(
+          {
+            xOpenclawSlmToken: normalizeHeader(req.headers["x-openclaw-slm-token"]),
+          },
+          slmHttpAuthConfig,
+        );
+        if (authFailure) {
+          writeResponse(res, authFailure.status, authFailure.body);
+          return true;
+        }
+
+        const request = await toRouterRequest(req, url);
+        const response = await router.handle(request);
+        writeResponse(res, response.status, response.body);
         return true;
-      }
-
-      const request = await toRouterRequest(req, url);
-      const response = await router.handle(request);
-      writeResponse(res, response.status, response.body);
-      return true;
+      },
     });
   },
 };
