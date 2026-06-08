@@ -20,6 +20,7 @@ services:
     container_name: openclaw
     user: root
     environment:
+    - OPENCLAW_TEST_CAPTURE=${OPENCLAW_TEST_CAPTURE:-0}
     - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
     - ZOOM_PREFILTER_MODEL=${ZOOM_PREFILTER_MODEL}

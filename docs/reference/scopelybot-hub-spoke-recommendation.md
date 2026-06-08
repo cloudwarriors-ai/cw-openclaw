@@ -204,3 +204,75 @@ and silently undoes all scoping work for threaded conversations. Note the audit 
 - Tool catalog / admin surface: `docs/reference/scopely-admin-config-roadmap.md`,
   `docs/reference/scopely-user-maintenance-roadmap.md`
 - ScopelyBot extension: `extensions/scopelybot/`
+
+---
+
+## Appendix — As-deployed configuration snapshot (2026-06-08)
+
+> **Why this is here.** The hub-and-spoke *wiring* (agent definitions, allowlists, router/worker
+> personas, plugin enablement) lives in **gitignored runtime state** — `~/.openclaw/openclaw.json`
+> (`agents.list[]`, `plugins.entries`, `bindings`) and `~/.openclaw/workspace-*/IDENTITY.md` — so it
+> is **not otherwise reviewable from this branch**. This appendix snapshots the live config verbatim
+> for review/reproducibility. It is a record only; the running environment is unchanged.
+
+### Agents (coordinator + 8 spokes), all `model.primary = openrouter/openai/gpt-5.4-mini`, fallback `openrouter/anthropic/claude-haiku-4.5`
+
+```
+scopelybot (COORDINATOR, router-only)  tools.allow(4): sessions_spawn, subagents,
+                                       scopely_health_check, scopely_auth_status
+  subagents.allowAgents: scopely-observe, scopely-admin, scopely-users, scopely-orgs,
+                         scopely-pricing, scopely-vendors, scopely-deploy, scopely-github
+
+scopely-observe  (15) active_users, auth_status, get_session, health_check, list_sessions,
+                      list_users, recent_errors, recent_logins, search, user_activity,
+                      extraction_detail, extraction_metrics, extraction_sessions,
+                      wizard_funnel, correlate_errors
+scopely-admin    (7)  audit_logs, dashboard_stats, pending_approvals, session_pricing,
+                      vendor_config, passthrough_run_now, passthrough_status
+scopely-users    (10) approve_access_request, create_invite, list_users, get_user,
+                      list_access_requests, list_invites, reject_access_request,
+                      reset_user_password, set_user_active, update_user
+scopely-orgs     (8)  add_org_domain, create_org, delete_org, get_org, list_org_domains,
+                      list_orgs, remove_org_domain, update_org
+scopely-pricing  (15) create/update/delete {currency, pricing_default, pricing_item},
+                      get_pricing_default, get_session_pricing_config, list_currencies,
+                      list_pricing_defaults, list_pricing_items, update_session_pricing_config
+scopely-vendors  (13) create/update/delete {vendor, project_type, vendor_term},
+                      get_vendor, list_project_types, list_vendors, list_vendor_terms
+scopely-deploy   (14) create/update/delete {deployment_type, deployment_type_template,
+                      scoping_card}, get_scoping_card, list_deployment_types,
+                      list_deployment_type_templates, list_project_types, list_scoping_cards
+scopely-github   (6)  gh_add_comment, gh_close_issue, gh_create_issue, gh_get_issue,
+                      gh_list_issues, gh_search_issues
+```
+(All tool names carry the `scopely_` prefix. Spokes are **unbound**; only the coordinator is bound.)
+
+### Plugin enablement + binding
+```
+plugins.entries.scopelybot = { "enabled": true, "config": { "scopelyRepos": ["cloudwarriors-ai/scopely"] } }
+binding: scopelybot <- zoom channel 575b23671d6b4b7f8c22b1924b6177fa@conference.xmpp.zoom.us
+```
+
+### Coordinator persona (`workspace-scopelybot/IDENTITY.md`) — router prompt
+Key clauses (full text in runtime state):
+- "You are a **router**, not a doer ... only liveness checks (`scopely_health_check`,
+  `scopely_auth_status`). Classify into **one** domain and delegate to that domain's spoke."
+- "**NEVER answer domain questions from memory** ... immediately spawn the relevant spoke and relay
+  its fresh result." / "**Do not ask permission to route.** Just spawn and answer."
+- Delegation: `sessions_spawn(runtime="subagent", agentId="<spoke>", task="<full restatement>")`;
+  reply **exactly `NO_REPLY`** on the spawn turn; relay only on the result turn; never poll.
+- A routing table (domain -> spoke).
+- Confirm-gate: "the confirmation code is handled **entirely by the system - never by you** ... a
+  spoke returns `awaiting_confirmation: true` and **no code** ... reply `NO_REPLY` ... never write a
+  `CONFIRM <code>` line yourself."
+
+### Spoke persona (`workspace-scopely-users/IDENTITY.md`) — worker prompt (representative)
+- "You are a **worker subagent** ... do exactly that task using only your tools, then return the
+  result. You do **not** talk to the channel."
+- "If you lack an id/value ... look it up with your read tools first; ... rather than guessing."
+- WARNING **known drift (cleanup item):** the spoke persona still says "Return that
+  `Reply CONFIRM <code>` message **verbatim**." That predates the deterministic confirm-gate fix
+  (`a8eb400b39`), where `stageWrite()` now posts the prompt itself and returns a **code-free**
+  result — so the spoke no longer relays a code regardless of this line. The text is obsolete and
+  should be reconciled with the coordinator's "no code" contract. Functionally harmless (the code
+  path is deterministic), but worth cleaning up.

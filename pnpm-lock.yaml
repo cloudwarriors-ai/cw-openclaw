@@ -1637,6 +1637,12 @@ importers:
         specifier: workspace:*
         version: link:../..
 
+  extensions/test-capture:
+    devDependencies:
+      openclaw:
+        specifier: workspace:*
+        version: link:../..
+
   extensions/tlon:
     dependencies:
       '@aws-sdk/client-s3':
