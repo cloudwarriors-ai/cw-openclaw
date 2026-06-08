@@ -6,6 +6,11 @@ status: reference
 
 # Hub-and-Spoke Agent Pattern — Reuse Playbook
 
+> **Superseded.** The canonical, comprehensive guide is now
+> [Hub-and-Spoke for Support Bots — Implementation Guide](/reference/hub-and-spoke-implementation-guide)
+> (decision framework, full recipe, confirm-gated writes, deploy, noise-free validation, failure
+> modes). This page is kept for history; start with the implementation guide.
+
 When one agent accumulates too many tools (degradation starts ~30-50; selection gets worse beyond
 that), split it into a small **router coordinator** that delegates to single-domain **specialist
 subagents ("spokes")**, each seeing only its own small toolset. First proven on `scopelybot` (86
