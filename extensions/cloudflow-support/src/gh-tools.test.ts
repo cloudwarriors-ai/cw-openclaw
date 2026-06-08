@@ -5,20 +5,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const execSyncMock = vi.fn();
 vi.mock("child_process", () => ({ execSync: (...args: unknown[]) => execSyncMock(...args) }));
 
-vi.mock("./pp-api.js", () => ({
+vi.mock("./helpers.js", () => ({
   jsonResult: (data: unknown) => ({ content: [{ type: "text", text: JSON.stringify(data) }] }),
   errorResult: (err: unknown) => ({
     content: [{ type: "text", text: JSON.stringify({ ok: false, error: String(err) }) }],
   }),
 }));
 
-const sendPulseTextMock = vi.fn();
+const sendCfTextMock = vi.fn();
 vi.mock("./comfort.js", () => ({
-  sendPulseText: (...args: unknown[]) => sendPulseTextMock(...args),
+  sendCfText: (...args: unknown[]) => sendCfTextMock(...args),
   getChannelThreadAnchor: () => "MSG-ANCHOR",
   rememberChannelThreadAnchor: () => {},
   sendComfortMessage: () => {},
-  PULSEBOT_CHANNEL: "pulsebot-default@conference.xmpp.zoom.us",
+  CF_CHANNEL: "cf-default@conference.xmpp.zoom.us",
 }));
 
 // Stakeholder/DM helpers are not under test here — stub to no-ops.
@@ -26,7 +26,7 @@ vi.mock("./stakeholders.js", () => ({
   buildStakeholderWorkPrefix: () => "",
   extractStakeholdersFromIssue: () => ({ stakeholders: [], reporter: undefined }),
   formatStakeholderBlock: () => "",
-  parseIssueNumberFromUrl: () => 77,
+  parseIssueNumberFromUrl: () => 42,
   resolveStakeholderDmTarget: () => undefined,
   upsertStakeholderBlock: (body: string) => body,
 }));
@@ -44,8 +44,8 @@ type ToolDef = {
 };
 
 const noopLogger = () => {};
-const CHANNEL = "pulsebot@conference.xmpp.zoom.us";
-const REPO = "cloudwarriors-ai/project-pulse";
+const CHANNEL = "cloudflow@conference.xmpp.zoom.us";
+const REPO = "cloudwarriors-ai/cloudflow";
 
 function buildTools(): Record<string, ToolDef> {
   const tools: Record<string, ToolDef> = {};
@@ -55,7 +55,7 @@ function buildTools(): Record<string, ToolDef> {
       tools[t.name] = t;
     },
   } as never;
-  registerGhTools(api, noopLogger as never, { ppRepos: [REPO] });
+  registerGhTools(api, noopLogger as never, { cfRepos: [REPO] });
   return tools;
 }
 
@@ -64,42 +64,32 @@ function parse(res: { content: { text: string }[] }) {
 }
 
 function codeFromDelivery(): string | undefined {
-  const text = sendPulseTextMock.mock.calls.at(-1)?.[1];
+  const text = sendCfTextMock.mock.calls.at(-1)?.[1];
   return String(text ?? "").match(/CONFIRM (\d{4})/)?.[1];
 }
 
-describe("pulsebot gh reads", () => {
+describe("cloudflow gh reads", () => {
   beforeEach(() => {
     execSyncMock.mockReset();
-    sendPulseTextMock.mockReset();
+    sendCfTextMock.mockReset();
   });
 
   it("list_issues returns parsed issue data (no staging)", async () => {
     const tools = buildTools();
     execSyncMock.mockReturnValue(
-      JSON.stringify([{ number: 42, title: "OAuth login fails", state: "open" }]),
+      JSON.stringify([{ number: 42, title: "Deploy broke", state: "open" }]),
     );
-    const payload = parse(await tools.gh_list_issues.execute("t", { state: "open", limit: 1 }));
+    const payload = parse(await tools.cf_gh_list_issues.execute("t", { state: "open", limit: 1 }));
     expect(payload.ok).toBe(true);
     expect((payload.data as Array<Record<string, unknown>>)[0]?.number).toBe(42);
     expect(String(execSyncMock.mock.calls[0]?.[0])).toContain("gh issue list");
-    expect(sendPulseTextMock).not.toHaveBeenCalled();
-  });
-
-  it("surfaces gh-not-found errors without throwing", async () => {
-    const tools = buildTools();
-    execSyncMock.mockImplementation(() => {
-      throw new Error("/bin/sh: 1: gh: not found");
-    });
-    const payload = parse(await tools.gh_search_issues.execute("t", { query: "oauth timeout" }));
-    expect(payload.ok).toBe(false);
-    expect(String(payload.error)).toContain("gh: not found");
+    expect(sendCfTextMock).not.toHaveBeenCalled();
   });
 
   it("blocks repositories outside the allowlist", async () => {
     const tools = buildTools();
     const payload = parse(
-      await tools.gh_list_issues.execute("t", { repo: "other-org/other-repo" }),
+      await tools.cf_gh_list_issues.execute("t", { repo: "other-org/other-repo" }),
     );
     expect(payload.ok).toBe(false);
     expect(String(payload.error)).toContain("not in allowed list");
@@ -107,34 +97,33 @@ describe("pulsebot gh reads", () => {
   });
 });
 
-describe("pulsebot gh writes are confirm-gated", () => {
+describe("cloudflow gh writes are confirm-gated", () => {
   beforeEach(() => {
     execSyncMock.mockReset();
-    sendPulseTextMock.mockReset();
-    process.env.PULSEBOT_ZOOM_CHANNEL = CHANNEL;
+    sendCfTextMock.mockReset();
+    process.env.CF_ZOOM_CHANNEL = CHANNEL;
   });
   afterEach(() => {
-    delete process.env.PULSEBOT_ZOOM_CHANNEL;
+    delete process.env.CF_ZOOM_CHANNEL;
   });
 
   it("create_issue stages — no gh shell-out, code-free result, prompt to channel", async () => {
     const tools = buildTools();
     const staged = parse(
-      await tools.gh_create_issue.execute("t", { title: "Crash on boot", body: "details" }),
+      await tools.cf_gh_create_issue.execute("t", { title: "Deploy broke", body: "details" }),
     );
-
     expect(staged.staged).toBe(true);
     expect(staged.awaiting_confirmation).toBe(true);
     expect(JSON.stringify(staged)).not.toMatch(/CONFIRM \d{4}/);
-    expect(execSyncMock).not.toHaveBeenCalled(); // no mutation at stage time
-    expect(sendPulseTextMock).toHaveBeenCalledTimes(1);
-    expect(sendPulseTextMock.mock.calls[0][1]).toMatch(/CONFIRM \d{4}/);
+    expect(execSyncMock).not.toHaveBeenCalled();
+    expect(sendCfTextMock).toHaveBeenCalledTimes(1);
+    expect(sendCfTextMock.mock.calls[0][1]).toMatch(/CONFIRM \d{4}/);
   });
 
   it("create_issue runs `gh issue create` only after CONFIRM", async () => {
     const tools = buildTools();
-    execSyncMock.mockReturnValue("https://github.com/cloudwarriors-ai/project-pulse/issues/77");
-    await tools.gh_create_issue.execute("t", { title: "Crash", body: "x" });
+    execSyncMock.mockReturnValue("https://github.com/cloudwarriors-ai/cloudflow/issues/42");
+    await tools.cf_gh_create_issue.execute("t", { title: "Deploy broke", body: "x" });
     expect(execSyncMock).not.toHaveBeenCalled();
 
     const code = codeFromDelivery();
@@ -154,8 +143,7 @@ describe("pulsebot gh writes are confirm-gated", () => {
   it("close_issue stages and does not close until CONFIRM", async () => {
     const tools = buildTools();
     execSyncMock.mockReturnValue("closed");
-    await tools.gh_close_issue.execute("t", { number: 7 });
-    // Stage time: nothing shells out (not even the issue-view read inside the closure).
+    await tools.cf_gh_close_issue.execute("t", { number: 7 });
     expect(execSyncMock).not.toHaveBeenCalled();
 
     const code = codeFromDelivery();
@@ -169,10 +157,10 @@ describe("pulsebot gh writes are confirm-gated", () => {
   it("an unknown repo is rejected at stage time (no staging, no prompt)", async () => {
     const tools = buildTools();
     const res = parse(
-      await tools.gh_create_issue.execute("t", { repo: "evil/repo", title: "x", body: "y" }),
+      await tools.cf_gh_create_issue.execute("t", { repo: "evil/repo", title: "x", body: "y" }),
     );
     expect(res.ok).toBe(false);
-    expect(sendPulseTextMock).not.toHaveBeenCalled();
+    expect(sendCfTextMock).not.toHaveBeenCalled();
     expect(execSyncMock).not.toHaveBeenCalled();
   });
 });

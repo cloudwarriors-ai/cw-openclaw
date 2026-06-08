@@ -1,4 +1,8 @@
-const PULSEBOT_CHANNEL = "b6a0428ca4364fd9873fe6a2ea1376fd@conference.xmpp.zoom.us";
+// The pulsebot Zoom channel JID. Exported so the confirm gate (gated.ts) can deliver
+// the CONFIRM prompt to the same channel deterministically when the PULSEBOT_ZOOM_CHANNEL
+// env override is not set — the code must never fall back to an inline (LLM-relayed)
+// prompt in production.
+export const PULSEBOT_CHANNEL = "b6a0428ca4364fd9873fe6a2ea1376fd@conference.xmpp.zoom.us";
 
 let cachedToken: { token: string; expiresAt: number } | null = null;
 
@@ -70,4 +74,67 @@ export async function sendComfortMessage(
   } catch (err) {
     console.error("[pulsebot] comfort message failed:", err);
   }
+}
+
+// Generic text send to the pulsebot Zoom channel (reuses the bot token). Used by the
+// confirm gate to deterministically post the CONFIRM prompt (with the code). Pass
+// replyToMessageId to thread the message under the originating request.
+export async function sendPulseText(
+  channelJid: string,
+  text: string,
+  replyToMessageId?: string,
+): Promise<void> {
+  const botJid = process.env.ZOOM_BOT_JID ?? "";
+  const accountId = process.env.ZOOM_ACCOUNT_ID ?? "";
+  if (!channelJid || !botJid || !accountId) return;
+  const replyTo =
+    typeof replyToMessageId === "string" && replyToMessageId.trim().length > 0
+      ? replyToMessageId.trim()
+      : undefined;
+  try {
+    const token = await getToken();
+    const body: Record<string, unknown> = {
+      robot_jid: botJid,
+      to_jid: channelJid,
+      account_id: accountId,
+      content: { head: { text: "PulseBot" }, body: [{ type: "message", text }] },
+    };
+    if (replyTo) {
+      body.reply_to = replyTo;
+      body.reply_main_message_id = replyTo;
+    }
+    await fetch("https://api.zoom.us/v2/im/chat/messages", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    console.error("[pulsebot] sendPulseText failed:", err);
+  }
+}
+
+// Per-channel thread anchor for confirm-prompt delivery. The confirm gate stages
+// inside the write tool, decoupled from the inbound message event, so it has no
+// direct handle on the originating message id. The message_received hook stashes
+// the latest inbound message id here (keyed by channel JID); stageWrite() reads it
+// to thread the deterministic CONFIRM prompt under the user's request instead of
+// posting it at channel root. In-memory, TTL-bounded; lost on restart is fine —
+// a missing anchor only degrades to a root-level (still deterministic) prompt.
+type ThreadAnchor = { messageId: string; expiresAt: number };
+const ANCHOR_TTL_MS = 6 * 60 * 60 * 1000; // 6h, matches the zoom reply-root TTL
+const threadAnchors = new Map<string, ThreadAnchor>();
+
+export function rememberChannelThreadAnchor(channelJid: string, messageId?: string): void {
+  if (!channelJid || !messageId) return;
+  threadAnchors.set(channelJid, { messageId, expiresAt: Date.now() + ANCHOR_TTL_MS });
+}
+
+export function getChannelThreadAnchor(channelJid: string): string | undefined {
+  const entry = threadAnchors.get(channelJid);
+  if (!entry) return undefined;
+  if (entry.expiresAt <= Date.now()) {
+    threadAnchors.delete(channelJid);
+    return undefined;
+  }
+  return entry.messageId;
 }

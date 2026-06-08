@@ -1,9 +1,10 @@
-import { Type } from "@sinclair/typebox";
 import { execSync } from "child_process";
+import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { jsonResult, errorResult } from "./pp-api.js";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
+import { stageWrite } from "./gated.js";
+import { jsonResult, errorResult } from "./pp-api.js";
 import {
   buildStakeholderWorkPrefix,
   extractStakeholdersFromIssue,
@@ -77,10 +78,15 @@ export function registerGhTools(api: OpenClawPluginApi, logger: AuditLogger, con
     wrapToolWithAudit(
       {
         name: "gh_list_issues",
-        description: "List GitHub issues from a Project Pulse repo. Returns title, number, state, labels, assignees.",
+        description:
+          "List GitHub issues from a Project Pulse repo. Returns title, number, state, labels, assignees.",
         parameters: Type.Object({
-          repo: Type.Optional(Type.String({ description: "Repo (owner/name). Defaults to primary PP repo." })),
-          state: Type.Optional(Type.String({ description: "Filter: open, closed, all (default: open)" })),
+          repo: Type.Optional(
+            Type.String({ description: "Repo (owner/name). Defaults to primary PP repo." }),
+          ),
+          state: Type.Optional(
+            Type.String({ description: "Filter: open, closed, all (default: open)" }),
+          ),
           label: Type.Optional(Type.String({ description: "Filter by label" })),
           limit: Type.Optional(Type.Number({ description: "Max results (default 30)" })),
         }),
@@ -112,7 +118,9 @@ export function registerGhTools(api: OpenClawPluginApi, logger: AuditLogger, con
         description:
           "Get details of a specific GitHub issue including comments and parsed stakeholder metadata.",
         parameters: Type.Object({
-          repo: Type.Optional(Type.String({ description: "Repo (owner/name). Defaults to primary PP repo." })),
+          repo: Type.Optional(
+            Type.String({ description: "Repo (owner/name). Defaults to primary PP repo." }),
+          ),
           number: Type.Number({ description: "Issue number" }),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
@@ -141,67 +149,72 @@ export function registerGhTools(api: OpenClawPluginApi, logger: AuditLogger, con
         description:
           "Create a new GitHub issue in a Project Pulse repo. PulseBot persists reporter/stakeholders in a machine-readable metadata block for retrieval.",
         parameters: Type.Object({
-          repo: Type.Optional(Type.String({ description: "Repo (owner/name). Defaults to primary PP repo." })),
+          repo: Type.Optional(
+            Type.String({ description: "Repo (owner/name). Defaults to primary PP repo." }),
+          ),
           title: Type.String({ description: "Issue title" }),
           body: Type.String({ description: "Issue body (markdown)" }),
           labels: Type.Optional(Type.Array(Type.String(), { description: "Labels to apply" })),
           reporter: Type.Optional(
             Type.String({
-              description: "Reporter identity (email, @github-user, or Zoom JID). Added to stakeholder metadata.",
+              description:
+                "Reporter identity (email, @github-user, or Zoom JID). Added to stakeholder metadata.",
             }),
           ),
           stakeholders: Type.Optional(
-            Type.Array(
-              Type.String(),
-              { description: "Additional stakeholder identities (emails, @github-users, or JIDs)." },
-            ),
+            Type.Array(Type.String(), {
+              description: "Additional stakeholder identities (emails, @github-users, or JIDs).",
+            }),
           ),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
             const repo = (params.repo as string) || getAllowedRepos(config)[0];
-            assertAllowedRepo(repo, config);
-            const labels = params.labels as string[] | undefined;
-            const labelFlag = labels?.length ? ` --label "${labels.join(",")}"` : "";
-            const bodyStr = String(params.body ?? "");
-            const reporter = typeof params.reporter === "string" ? params.reporter : undefined;
-            const stakeholders = Array.isArray(params.stakeholders)
-              ? (params.stakeholders as string[])
-              : [];
-            const enrichedBody = upsertStakeholderBlock(bodyStr, { reporter, stakeholders });
+            assertAllowedRepo(repo, config); // validate now; mutation is deferred to confirm
+            const summary = `create GitHub issue "${params.title as string}" in ${repo}`;
+            return await stageWrite(summary, async () => {
+              const labels = params.labels as string[] | undefined;
+              const labelFlag = labels?.length ? ` --label "${labels.join(",")}"` : "";
+              const bodyStr = String(params.body ?? "");
+              const reporter = typeof params.reporter === "string" ? params.reporter : undefined;
+              const stakeholders = Array.isArray(params.stakeholders)
+                ? (params.stakeholders as string[])
+                : [];
+              const enrichedBody = upsertStakeholderBlock(bodyStr, { reporter, stakeholders });
 
-            const result = execSync(
-              `gh issue create --repo ${repo} --title "${(params.title as string).replace(/"/g, '\\"')}"${labelFlag} --body-file -`,
-              {
-                encoding: "utf-8",
-                input: enrichedBody,
-                timeout: 30000,
-                env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1" },
-              },
-            );
-            const url = result.trim();
-            const issueNumber = parseIssueNumberFromUrl(url);
-
-            if (issueNumber) {
-              const metadataComment = formatStakeholderBlock({ reporter, stakeholders });
-              execSync(
-                `gh issue comment ${issueNumber} --repo ${repo} --body-file -`,
+              const result = execSync(
+                `gh issue create --repo ${repo} --title "${(params.title as string).replace(/"/g, '\\"')}"${labelFlag} --body-file -`,
                 {
                   encoding: "utf-8",
-                  input: metadataComment,
+                  input: enrichedBody,
                   timeout: 30000,
                   env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1" },
                 },
               );
-            }
+              const url = result.trim();
+              const issueNumber = parseIssueNumberFromUrl(url);
 
-            return jsonResult({
-              ok: true,
-              url,
-              issueNumber,
-              reporter,
-              stakeholders,
-              metadataSaved: Boolean(issueNumber),
+              if (issueNumber) {
+                const metadataComment = formatStakeholderBlock({ reporter, stakeholders });
+                execSync(`gh issue comment ${issueNumber} --repo ${repo} --body-file -`, {
+                  encoding: "utf-8",
+                  input: metadataComment,
+                  timeout: 30000,
+                  env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1" },
+                });
+              }
+
+              return {
+                ok: true,
+                status: 200,
+                data: {
+                  url,
+                  issueNumber,
+                  reporter,
+                  stakeholders,
+                  metadataSaved: Boolean(issueNumber),
+                },
+              };
             });
           } catch (err) {
             return errorResult(err);
@@ -220,39 +233,47 @@ export function registerGhTools(api: OpenClawPluginApi, logger: AuditLogger, con
         description:
           "Add a comment to an existing GitHub issue. PulseBot auto-mentions stored stakeholders so work updates are visible.",
         parameters: Type.Object({
-          repo: Type.Optional(Type.String({ description: "Repo (owner/name). Defaults to primary PP repo." })),
+          repo: Type.Optional(
+            Type.String({ description: "Repo (owner/name). Defaults to primary PP repo." }),
+          ),
           number: Type.Number({ description: "Issue number" }),
           body: Type.String({ description: "Comment body (markdown)" }),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
             const repo = (params.repo as string) || getAllowedRepos(config)[0];
-            assertAllowedRepo(repo, config);
-            const issue = gh(
-              `issue view ${params.number} --repo ${repo} --json number,url,title,body,assignees,comments`,
-            ) as GhIssueLike;
-            const extracted = extractStakeholdersFromIssue(issue);
-            const prefix = buildStakeholderWorkPrefix(extracted.stakeholders);
-            const originalBody = String(params.body ?? "");
-            const body =
-              prefix && !/^\s*(\/cc|Stakeholders:)/im.test(originalBody)
-                ? `${prefix}\n\n${originalBody}`
-                : originalBody;
+            assertAllowedRepo(repo, config); // validate now; mutation is deferred to confirm
+            const summary = `add comment to issue #${Number(params.number)} in ${repo}`;
+            return await stageWrite(summary, async () => {
+              const issue = gh(
+                `issue view ${params.number} --repo ${repo} --json number,url,title,body,assignees,comments`,
+              ) as GhIssueLike;
+              const extracted = extractStakeholdersFromIssue(issue);
+              const prefix = buildStakeholderWorkPrefix(extracted.stakeholders);
+              const originalBody = String(params.body ?? "");
+              const body =
+                prefix && !/^\s*(\/cc|Stakeholders:)/im.test(originalBody)
+                  ? `${prefix}\n\n${originalBody}`
+                  : originalBody;
 
-            const result = execSync(
-              `gh issue comment ${params.number} --repo ${repo} --body-file -`,
-              {
-                encoding: "utf-8",
-                input: body,
-                timeout: 30000,
-                env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1" },
-              },
-            );
-            return jsonResult({
-              ok: true,
-              url: result.trim(),
-              stakeholders: extracted.stakeholders,
-              reporter: extracted.reporter,
+              const result = execSync(
+                `gh issue comment ${params.number} --repo ${repo} --body-file -`,
+                {
+                  encoding: "utf-8",
+                  input: body,
+                  timeout: 30000,
+                  env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1" },
+                },
+              );
+              return {
+                ok: true,
+                status: 200,
+                data: {
+                  url: result.trim(),
+                  stakeholders: extracted.stakeholders,
+                  reporter: extracted.reporter,
+                },
+              };
             });
           } catch (err) {
             return errorResult(err);
@@ -271,7 +292,9 @@ export function registerGhTools(api: OpenClawPluginApi, logger: AuditLogger, con
         description: "Search GitHub issues by keyword in Project Pulse repos.",
         parameters: Type.Object({
           query: Type.String({ description: "Search query" }),
-          repo: Type.Optional(Type.String({ description: "Repo (owner/name). Defaults to primary PP repo." })),
+          repo: Type.Optional(
+            Type.String({ description: "Repo (owner/name). Defaults to primary PP repo." }),
+          ),
           limit: Type.Optional(Type.Number({ description: "Max results (default 20)" })),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
@@ -301,94 +324,102 @@ export function registerGhTools(api: OpenClawPluginApi, logger: AuditLogger, con
         description:
           "Close a GitHub issue, mention stakeholders in a closing comment, and DM stakeholders on Zoom.",
         parameters: Type.Object({
-          repo: Type.Optional(Type.String({ description: "Repo (owner/name). Defaults to primary PP repo." })),
+          repo: Type.Optional(
+            Type.String({ description: "Repo (owner/name). Defaults to primary PP repo." }),
+          ),
           number: Type.Number({ description: "Issue number" }),
-          comment: Type.Optional(Type.String({ description: "Closing update comment to post before close." })),
-          reason: Type.Optional(Type.String({ description: "Close reason: completed or not_planned." })),
+          comment: Type.Optional(
+            Type.String({ description: "Closing update comment to post before close." }),
+          ),
+          reason: Type.Optional(
+            Type.String({ description: "Close reason: completed or not_planned." }),
+          ),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
             const repo = (params.repo as string) || getAllowedRepos(config)[0];
-            assertAllowedRepo(repo, config);
+            assertAllowedRepo(repo, config); // validate now; mutation is deferred to confirm
             const issueNumber = Number(params.number);
             const closeReason = stringifyReason(params.reason);
             const closingComment = typeof params.comment === "string" ? params.comment.trim() : "";
-
-            const issue = gh(
-              `issue view ${issueNumber} --repo ${repo} --json number,url,title,body,assignees,comments`,
-            ) as GhIssueLike;
-            const extracted = extractStakeholdersFromIssue(issue);
-            const prefix = buildStakeholderWorkPrefix(extracted.stakeholders);
-            if (closingComment || prefix) {
-              const commentBody = [prefix, closingComment].filter(Boolean).join("\n\n").trim();
-              if (commentBody) {
-                execSync(
-                  `gh issue comment ${issueNumber} --repo ${repo} --body-file -`,
-                  {
+            const summary = `close issue #${issueNumber} in ${repo} (${closeReason})`;
+            return await stageWrite(summary, async () => {
+              const issue = gh(
+                `issue view ${issueNumber} --repo ${repo} --json number,url,title,body,assignees,comments`,
+              ) as GhIssueLike;
+              const extracted = extractStakeholdersFromIssue(issue);
+              const prefix = buildStakeholderWorkPrefix(extracted.stakeholders);
+              if (closingComment || prefix) {
+                const commentBody = [prefix, closingComment].filter(Boolean).join("\n\n").trim();
+                if (commentBody) {
+                  execSync(`gh issue comment ${issueNumber} --repo ${repo} --body-file -`, {
                     encoding: "utf-8",
                     input: commentBody,
                     timeout: 30000,
                     env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1" },
-                  },
-                );
+                  });
+                }
               }
-            }
 
-            const closeOutput = execSync(
-              `gh issue close ${issueNumber} --repo ${repo} --reason "${closeReason}"`,
-              {
-                encoding: "utf-8",
-                timeout: 30000,
-                env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1" },
-              },
-            ).trim();
+              const closeOutput = execSync(
+                `gh issue close ${issueNumber} --repo ${repo} --reason "${closeReason}"`,
+                {
+                  encoding: "utf-8",
+                  timeout: 30000,
+                  env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1" },
+                },
+              ).trim();
 
-            const dmTargets = extracted.stakeholders
-              .map((stakeholder) =>
-                resolveStakeholderDmTarget(stakeholder, {
-                  mapEnv: process.env.PULSEBOT_STAKEHOLDER_MAP,
-                  defaultDomain: process.env.PULSEBOT_STAKEHOLDER_EMAIL_DOMAIN,
-                }),
-              )
-              .filter((value): value is string => Boolean(value));
+              const dmTargets = extracted.stakeholders
+                .map((stakeholder) =>
+                  resolveStakeholderDmTarget(stakeholder, {
+                    mapEnv: process.env.PULSEBOT_STAKEHOLDER_MAP,
+                    defaultDomain: process.env.PULSEBOT_STAKEHOLDER_EMAIL_DOMAIN,
+                  }),
+                )
+                .filter((value): value is string => Boolean(value));
 
-            const uniqueTargets = [...new Set(dmTargets.map((target) => target.toLowerCase()))];
-            const issueTitle = issue.title || `Issue ${issueNumber}`;
-            const dmMessage = formatStakeholderDmMessage({
-              issueNumber,
-              issueTitle,
-              repo,
-              closedBy: "pulsebot",
-              closingComment,
-            });
-
-            const notified: string[] = [];
-            const notifyErrors: Array<{ stakeholder: string; error: string }> = [];
-            for (const stakeholder of uniqueTargets) {
-              const dmResult = await sendStakeholderZoomDm({
-                toContact: stakeholder,
-                message: dmMessage,
+              const uniqueTargets = [...new Set(dmTargets.map((target) => target.toLowerCase()))];
+              const issueTitle = issue.title || `Issue ${issueNumber}`;
+              const dmMessage = formatStakeholderDmMessage({
+                issueNumber,
+                issueTitle,
+                repo,
+                closedBy: "pulsebot",
+                closingComment,
               });
-              if (dmResult.ok) {
-                notified.push(stakeholder);
-              } else {
-                notifyErrors.push({
-                  stakeholder,
-                  error: dmResult.error ?? "unknown error",
-                });
-              }
-            }
 
-            return jsonResult({
-              ok: true,
-              number: issueNumber,
-              repo,
-              closeOutput,
-              closeReason,
-              stakeholders: extracted.stakeholders,
-              reporter: extracted.reporter,
-              notified,
-              notifyErrors,
+              const notified: string[] = [];
+              const notifyErrors: Array<{ stakeholder: string; error: string }> = [];
+              for (const stakeholder of uniqueTargets) {
+                const dmResult = await sendStakeholderZoomDm({
+                  toContact: stakeholder,
+                  message: dmMessage,
+                });
+                if (dmResult.ok) {
+                  notified.push(stakeholder);
+                } else {
+                  notifyErrors.push({
+                    stakeholder,
+                    error: dmResult.error ?? "unknown error",
+                  });
+                }
+              }
+
+              return {
+                ok: true,
+                status: 200,
+                data: {
+                  number: issueNumber,
+                  repo,
+                  closeOutput,
+                  closeReason,
+                  stakeholders: extracted.stakeholders,
+                  reporter: extracted.reporter,
+                  notified,
+                  notifyErrors,
+                },
+              };
             });
           } catch (err) {
             return errorResult(err);

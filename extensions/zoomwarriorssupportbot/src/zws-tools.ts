@@ -1,8 +1,9 @@
 import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { zwsFetch, jsonResult, errorResult } from "./zws-api.js";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
+import { describeChanges, pickBody, stageWrite } from "./gated.js";
+import { zwsFetch, jsonResult, errorResult } from "./zws-api.js";
 
 export function registerZwsTools(api: OpenClawPluginApi, logger: AuditLogger) {
   // zws_auth_status
@@ -10,7 +11,8 @@ export function registerZwsTools(api: OpenClawPluginApi, logger: AuditLogger) {
     wrapToolWithAudit(
       {
         name: "zws_auth_status",
-        description: "Check Project Pulse authentication status for ZoomWarriors support. Returns current session info.",
+        description:
+          "Check Project Pulse authentication status for ZoomWarriors support. Returns current session info.",
         parameters: Type.Object({}),
         async execute() {
           try {
@@ -31,9 +33,12 @@ export function registerZwsTools(api: OpenClawPluginApi, logger: AuditLogger) {
     wrapToolWithAudit(
       {
         name: "zws_list_projects",
-        description: "List Project Pulse projects for ZoomWarriors. Supports optional query filters.",
+        description:
+          "List Project Pulse projects for ZoomWarriors. Supports optional query filters.",
         parameters: Type.Object({
-          status: Type.Optional(Type.String({ description: "Filter by status (e.g. active, completed)" })),
+          status: Type.Optional(
+            Type.String({ description: "Filter by status (e.g. active, completed)" }),
+          ),
           search: Type.Optional(Type.String({ description: "Search term" })),
           limit: Type.Optional(Type.Number({ description: "Max results (default 50)" })),
         }),
@@ -41,7 +46,12 @@ export function registerZwsTools(api: OpenClawPluginApi, logger: AuditLogger) {
           try {
             const qs = buildQuery(params, ["status", "search", "limit"]);
             const result = await zwsFetch(`/api/v1/projects${qs}`);
-            if (!result.ok) return jsonResult({ ok: false, error: `HTTP ${result.status}`, details: result.data });
+            if (!result.ok)
+              return jsonResult({
+                ok: false,
+                error: `HTTP ${result.status}`,
+                details: result.data,
+              });
             return jsonResult({ ok: true, data: result.data });
           } catch (err) {
             return errorResult(err);
@@ -63,8 +73,15 @@ export function registerZwsTools(api: OpenClawPluginApi, logger: AuditLogger) {
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
-            const result = await zwsFetch(`/api/v1/projects/${encodeURIComponent(params.id as string)}`);
-            if (!result.ok) return jsonResult({ ok: false, error: `HTTP ${result.status}`, details: result.data });
+            const result = await zwsFetch(
+              `/api/v1/projects/${encodeURIComponent(params.id as string)}`,
+            );
+            if (!result.ok)
+              return jsonResult({
+                ok: false,
+                error: `HTTP ${result.status}`,
+                details: result.data,
+              });
             return jsonResult({ ok: true, data: result.data });
           } catch (err) {
             return errorResult(err);
@@ -80,7 +97,8 @@ export function registerZwsTools(api: OpenClawPluginApi, logger: AuditLogger) {
     wrapToolWithAudit(
       {
         name: "zws_list_tasks",
-        description: "List Project Pulse tasks for ZoomWarriors. Filter by project, status, assignee.",
+        description:
+          "List Project Pulse tasks for ZoomWarriors. Filter by project, status, assignee.",
         parameters: Type.Object({
           projectId: Type.Optional(Type.String({ description: "Filter by project ID" })),
           status: Type.Optional(Type.String({ description: "Filter by status" })),
@@ -91,7 +109,12 @@ export function registerZwsTools(api: OpenClawPluginApi, logger: AuditLogger) {
           try {
             const qs = buildQuery(params, ["projectId", "status", "assigneeId", "limit"]);
             const result = await zwsFetch(`/api/v1/tasks${qs}`);
-            if (!result.ok) return jsonResult({ ok: false, error: `HTTP ${result.status}`, details: result.data });
+            if (!result.ok)
+              return jsonResult({
+                ok: false,
+                error: `HTTP ${result.status}`,
+                details: result.data,
+              });
             return jsonResult({ ok: true, data: result.data });
           } catch (err) {
             return errorResult(err);
@@ -113,8 +136,15 @@ export function registerZwsTools(api: OpenClawPluginApi, logger: AuditLogger) {
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
-            const result = await zwsFetch(`/api/v1/tasks/${encodeURIComponent(params.id as string)}`);
-            if (!result.ok) return jsonResult({ ok: false, error: `HTTP ${result.status}`, details: result.data });
+            const result = await zwsFetch(
+              `/api/v1/tasks/${encodeURIComponent(params.id as string)}`,
+            );
+            if (!result.ok)
+              return jsonResult({
+                ok: false,
+                error: `HTTP ${result.status}`,
+                details: result.data,
+              });
             return jsonResult({ ok: true, data: result.data });
           } catch (err) {
             return errorResult(err);
@@ -130,18 +160,28 @@ export function registerZwsTools(api: OpenClawPluginApi, logger: AuditLogger) {
     wrapToolWithAudit(
       {
         name: "zws_list_tickets",
-        description: "List Project Pulse tickets for ZoomWarriors (bug reports, feature requests). Filter by status, priority, project.",
+        description:
+          "List Project Pulse tickets for ZoomWarriors (bug reports, feature requests). Filter by status, priority, project.",
         parameters: Type.Object({
           projectId: Type.Optional(Type.String({ description: "Filter by project ID" })),
-          status: Type.Optional(Type.String({ description: "Filter by status (open, in_progress, resolved, closed)" })),
-          priority: Type.Optional(Type.String({ description: "Filter by priority (low, medium, high, critical)" })),
+          status: Type.Optional(
+            Type.String({ description: "Filter by status (open, in_progress, resolved, closed)" }),
+          ),
+          priority: Type.Optional(
+            Type.String({ description: "Filter by priority (low, medium, high, critical)" }),
+          ),
           limit: Type.Optional(Type.Number({ description: "Max results (default 50)" })),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
             const qs = buildQuery(params, ["projectId", "status", "priority", "limit"]);
             const result = await zwsFetch(`/api/v1/tickets${qs}`);
-            if (!result.ok) return jsonResult({ ok: false, error: `HTTP ${result.status}`, details: result.data });
+            if (!result.ok)
+              return jsonResult({
+                ok: false,
+                error: `HTTP ${result.status}`,
+                details: result.data,
+              });
             return jsonResult({ ok: true, data: result.data });
           } catch (err) {
             return errorResult(err);
@@ -157,28 +197,34 @@ export function registerZwsTools(api: OpenClawPluginApi, logger: AuditLogger) {
     wrapToolWithAudit(
       {
         name: "zws_create_ticket",
-        description: "Create a new ticket in Project Pulse for ZoomWarriors. Requires title and project ID.",
+        description:
+          "Create a new ticket in Project Pulse for ZoomWarriors. Requires title and project ID.",
         parameters: Type.Object({
           title: Type.String({ description: "Ticket title" }),
-          description: Type.Optional(Type.String({ description: "Ticket description (markdown supported)" })),
+          description: Type.Optional(
+            Type.String({ description: "Ticket description (markdown supported)" }),
+          ),
           projectId: Type.String({ description: "Project ID to create ticket in" }),
-          priority: Type.Optional(Type.String({ description: "Priority: low, medium, high, critical" })),
+          priority: Type.Optional(
+            Type.String({ description: "Priority: low, medium, high, critical" }),
+          ),
           assigneeId: Type.Optional(Type.String({ description: "User ID to assign" })),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
-            const result = await zwsFetch("/api/v1/tickets", {
-              method: "POST",
-              body: JSON.stringify({
-                title: params.title,
-                description: params.description,
-                projectId: params.projectId,
-                priority: params.priority,
-                assigneeId: params.assigneeId,
+            const summary = `create ticket "${params.title as string}" in project ${params.projectId as string}`;
+            return await stageWrite(summary, () =>
+              zwsFetch("/api/v1/tickets", {
+                method: "POST",
+                body: JSON.stringify({
+                  title: params.title,
+                  description: params.description,
+                  projectId: params.projectId,
+                  priority: params.priority,
+                  assigneeId: params.assigneeId,
+                }),
               }),
-            });
-            if (!result.ok) return jsonResult({ ok: false, error: `HTTP ${result.status}`, details: result.data });
-            return jsonResult({ ok: true, data: result.data });
+            );
           } catch (err) {
             return errorResult(err);
           }
@@ -204,13 +250,21 @@ export function registerZwsTools(api: OpenClawPluginApi, logger: AuditLogger) {
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
-            const { id, ...body } = params;
-            const result = await zwsFetch(`/api/v1/tickets/${encodeURIComponent(id as string)}`, {
-              method: "PATCH",
-              body: JSON.stringify(body),
-            });
-            if (!result.ok) return jsonResult({ ok: false, error: `HTTP ${result.status}`, details: result.data });
-            return jsonResult({ ok: true, data: result.data });
+            const id = params.id as string;
+            const body = pickBody(params, [
+              "title",
+              "description",
+              "status",
+              "priority",
+              "assigneeId",
+            ]);
+            const summary = `update ticket ${id}: ${describeChanges(body)}`;
+            return await stageWrite(summary, () =>
+              zwsFetch(`/api/v1/tickets/${encodeURIComponent(id)}`, {
+                method: "PATCH",
+                body: JSON.stringify(body),
+              }),
+            );
           } catch (err) {
             return errorResult(err);
           }
@@ -234,7 +288,12 @@ export function registerZwsTools(api: OpenClawPluginApi, logger: AuditLogger) {
           try {
             const qs = buildQuery(params, ["role", "search"]);
             const result = await zwsFetch(`/api/v1/users${qs}`);
-            if (!result.ok) return jsonResult({ ok: false, error: `HTTP ${result.status}`, details: result.data });
+            if (!result.ok)
+              return jsonResult({
+                ok: false,
+                error: `HTTP ${result.status}`,
+                details: result.data,
+              });
             return jsonResult({ ok: true, data: result.data });
           } catch (err) {
             return errorResult(err);
@@ -250,7 +309,8 @@ export function registerZwsTools(api: OpenClawPluginApi, logger: AuditLogger) {
     wrapToolWithAudit(
       {
         name: "zws_get_timesheets",
-        description: "Get Project Pulse timesheet data for ZoomWarriors. Filter by user, project, date range.",
+        description:
+          "Get Project Pulse timesheet data for ZoomWarriors. Filter by user, project, date range.",
         parameters: Type.Object({
           userId: Type.Optional(Type.String({ description: "Filter by user ID" })),
           projectId: Type.Optional(Type.String({ description: "Filter by project ID" })),
@@ -261,7 +321,12 @@ export function registerZwsTools(api: OpenClawPluginApi, logger: AuditLogger) {
           try {
             const qs = buildQuery(params, ["userId", "projectId", "startDate", "endDate"]);
             const result = await zwsFetch(`/api/v1/timesheets${qs}`);
-            if (!result.ok) return jsonResult({ ok: false, error: `HTTP ${result.status}`, details: result.data });
+            if (!result.ok)
+              return jsonResult({
+                ok: false,
+                error: `HTTP ${result.status}`,
+                details: result.data,
+              });
             return jsonResult({ ok: true, data: result.data });
           } catch (err) {
             return errorResult(err);
@@ -277,17 +342,25 @@ export function registerZwsTools(api: OpenClawPluginApi, logger: AuditLogger) {
     wrapToolWithAudit(
       {
         name: "zws_search",
-        description: "Full-text search across Project Pulse for ZoomWarriors (projects, tasks, tickets, users).",
+        description:
+          "Full-text search across Project Pulse for ZoomWarriors (projects, tasks, tickets, users).",
         parameters: Type.Object({
           query: Type.String({ description: "Search query" }),
-          type: Type.Optional(Type.String({ description: "Limit to type: projects, tasks, tickets, users" })),
+          type: Type.Optional(
+            Type.String({ description: "Limit to type: projects, tasks, tickets, users" }),
+          ),
           limit: Type.Optional(Type.Number({ description: "Max results (default 20)" })),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
             const qs = buildQuery(params, ["query", "type", "limit"]);
             const result = await zwsFetch(`/api/v1/search${qs}`);
-            if (!result.ok) return jsonResult({ ok: false, error: `HTTP ${result.status}`, details: result.data });
+            if (!result.ok)
+              return jsonResult({
+                ok: false,
+                error: `HTTP ${result.status}`,
+                details: result.data,
+              });
             return jsonResult({ ok: true, data: result.data });
           } catch (err) {
             return errorResult(err);

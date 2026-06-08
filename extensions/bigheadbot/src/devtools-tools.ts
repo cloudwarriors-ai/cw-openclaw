@@ -3,7 +3,10 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
 
-const DEVTOOLS_BASE = () => process.env.DEVTOOLS_API_URL ?? process.env.BIGHEAD_DEVTOOLS_API_URL ?? "http://bighead-devtools-api:9100";
+const DEVTOOLS_BASE = () =>
+  process.env.DEVTOOLS_API_URL ??
+  process.env.BIGHEAD_DEVTOOLS_API_URL ??
+  "http://bighead-devtools-api:9100";
 const DEVTOOLS_TOKEN = () => process.env.DEV_TOOLS_API ?? process.env.BIGHEAD_DEV_TOOLS_API ?? "";
 
 function jsonResult(data: unknown) {
@@ -12,7 +15,24 @@ function jsonResult(data: unknown) {
 
 function errorResult(err: unknown) {
   const message = err instanceof Error ? err.message : String(err);
-  return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: message }) }] };
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: message }) }],
+  };
+}
+
+// Client-side defense-in-depth for bh_devtools_db_query. The /db/query endpoint is
+// contractually read-only (SELECT/WITH only), but the tool must not forward a
+// non-read or stacked statement and rely on the backend to refuse it. Returns an
+// error string when the SQL is not a single read-only statement, else undefined.
+export function assertReadOnlySql(sql: string): string | undefined {
+  const trimmed = sql.trim().replace(/;\s*$/, ""); // tolerate one trailing semicolon
+  if (!/^(select|with)\b/i.test(trimmed)) {
+    return "Only read-only SELECT or WITH queries are allowed.";
+  }
+  if (trimmed.includes(";")) {
+    return "Stacked/multiple statements are not allowed; submit a single SELECT/WITH query.";
+  }
+  return undefined;
 }
 
 async function bhDevtoolsFetch(
@@ -51,7 +71,12 @@ export function registerDevtoolsTools(api: OpenClawPluginApi, logger: AuditLogge
         async execute() {
           try {
             const result = await bhDevtoolsFetch("/api/v1/containers");
-            if (!result.ok) return jsonResult({ ok: false, error: `HTTP ${result.status}`, details: result.data });
+            if (!result.ok)
+              return jsonResult({
+                ok: false,
+                error: `HTTP ${result.status}`,
+                details: result.data,
+              });
             return jsonResult({ ok: true, containers: result.data });
           } catch (err) {
             return errorResult(err);
@@ -71,8 +96,15 @@ export function registerDevtoolsTools(api: OpenClawPluginApi, logger: AuditLogge
           "Get logs from a Docker container on the Bighead server. Returns the last N lines of logs.",
         parameters: Type.Object({
           container_id: Type.String({ description: "The container ID or name" }),
-          tail: Type.Optional(Type.Number({ description: "Number of lines to return (default 200)", default: 200 })),
-          since: Type.Optional(Type.String({ description: "Show logs since timestamp (e.g. '2024-01-01T00:00:00Z') or relative (e.g. '1h')" })),
+          tail: Type.Optional(
+            Type.Number({ description: "Number of lines to return (default 200)", default: 200 }),
+          ),
+          since: Type.Optional(
+            Type.String({
+              description:
+                "Show logs since timestamp (e.g. '2024-01-01T00:00:00Z') or relative (e.g. '1h')",
+            }),
+          ),
           until: Type.Optional(Type.String({ description: "Show logs until timestamp" })),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
@@ -86,7 +118,12 @@ export function registerDevtoolsTools(api: OpenClawPluginApi, logger: AuditLogge
             const result = await bhDevtoolsFetch(
               `/api/v1/containers/${encodeURIComponent(containerId)}/logs?${queryParams.toString()}`,
             );
-            if (!result.ok) return jsonResult({ ok: false, error: `HTTP ${result.status}`, details: result.data });
+            if (!result.ok)
+              return jsonResult({
+                ok: false,
+                error: `HTTP ${result.status}`,
+                details: result.data,
+              });
             return jsonResult({ ok: true, logs: result.data });
           } catch (err) {
             return errorResult(err);
@@ -102,17 +139,23 @@ export function registerDevtoolsTools(api: OpenClawPluginApi, logger: AuditLogge
     wrapToolWithAudit(
       {
         name: "bh_devtools_list_files",
-        description:
-          "List files and directories at a given path in the Bighead codebase.",
+        description: "List files and directories at a given path in the Bighead codebase.",
         parameters: Type.Object({
-          path: Type.Optional(Type.String({ description: "Directory path to list (defaults to root)" })),
+          path: Type.Optional(
+            Type.String({ description: "Directory path to list (defaults to root)" }),
+          ),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
             const path = params.path as string | undefined;
             const endpoint = path ? `/api/v1/files/${encodeURIComponent(path)}` : "/api/v1/files";
             const result = await bhDevtoolsFetch(endpoint);
-            if (!result.ok) return jsonResult({ ok: false, error: `HTTP ${result.status}`, details: result.data });
+            if (!result.ok)
+              return jsonResult({
+                ok: false,
+                error: `HTTP ${result.status}`,
+                details: result.data,
+              });
             return jsonResult({ ok: true, files: result.data });
           } catch (err) {
             return errorResult(err);
@@ -128,8 +171,7 @@ export function registerDevtoolsTools(api: OpenClawPluginApi, logger: AuditLogge
     wrapToolWithAudit(
       {
         name: "bh_devtools_read_file",
-        description:
-          "Read the contents of a file from the Bighead codebase.",
+        description: "Read the contents of a file from the Bighead codebase.",
         parameters: Type.Object({
           path: Type.String({ description: "File path to read" }),
         }),
@@ -137,7 +179,12 @@ export function registerDevtoolsTools(api: OpenClawPluginApi, logger: AuditLogge
           try {
             const path = params.path as string;
             const result = await bhDevtoolsFetch(`/api/v1/files/${encodeURIComponent(path)}`);
-            if (!result.ok) return jsonResult({ ok: false, error: `HTTP ${result.status}`, details: result.data });
+            if (!result.ok)
+              return jsonResult({
+                ok: false,
+                error: `HTTP ${result.status}`,
+                details: result.data,
+              });
             return jsonResult({ ok: true, content: result.data });
           } catch (err) {
             return errorResult(err);
@@ -158,7 +205,12 @@ export function registerDevtoolsTools(api: OpenClawPluginApi, logger: AuditLogge
         async execute() {
           try {
             const result = await bhDevtoolsFetch("/api/v1/databases");
-            if (!result.ok) return jsonResult({ ok: false, error: `HTTP ${result.status}`, details: result.data });
+            if (!result.ok)
+              return jsonResult({
+                ok: false,
+                error: `HTTP ${result.status}`,
+                details: result.data,
+              });
             return jsonResult({ ok: true, databases: result.data });
           } catch (err) {
             return errorResult(err);
@@ -177,15 +229,25 @@ export function registerDevtoolsTools(api: OpenClawPluginApi, logger: AuditLogge
         description:
           "List all tables in the public schema of a database. Use bh_devtools_list_databases to see available databases.",
         parameters: Type.Object({
-          database: Type.Optional(Type.String({ description: "Database name (e.g. 'zoomwarriors2', 'zoomwarriors2_studio'). Uses default if omitted." })),
+          database: Type.Optional(
+            Type.String({
+              description:
+                "Database name (e.g. 'zoomwarriors2', 'zoomwarriors2_studio'). Uses default if omitted.",
+            }),
+          ),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
             const db = params.database as string | undefined;
             const qs = db ? `?database=${encodeURIComponent(db)}` : "";
             const result = await bhDevtoolsFetch(`/api/v1/db/tables${qs}`);
-            if (!result.ok) return jsonResult({ ok: false, error: `HTTP ${result.status}`, details: result.data });
-            return jsonResult({ ok: true, ...result.data as object });
+            if (!result.ok)
+              return jsonResult({
+                ok: false,
+                error: `HTTP ${result.status}`,
+                details: result.data,
+              });
+            return jsonResult({ ok: true, ...(result.data as object) });
           } catch (err) {
             return errorResult(err);
           }
@@ -204,16 +266,28 @@ export function registerDevtoolsTools(api: OpenClawPluginApi, logger: AuditLogge
           "Get the column definitions for a database table. Use bh_devtools_list_databases to see available databases.",
         parameters: Type.Object({
           table_name: Type.String({ description: "The table name to get schema for" }),
-          database: Type.Optional(Type.String({ description: "Database name (e.g. 'zoomwarriors2', 'zoomwarriors2_studio'). Uses default if omitted." })),
+          database: Type.Optional(
+            Type.String({
+              description:
+                "Database name (e.g. 'zoomwarriors2', 'zoomwarriors2_studio'). Uses default if omitted.",
+            }),
+          ),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
             const tableName = params.table_name as string;
             const db = params.database as string | undefined;
             const qs = db ? `?database=${encodeURIComponent(db)}` : "";
-            const result = await bhDevtoolsFetch(`/api/v1/db/tables/${encodeURIComponent(tableName)}/schema${qs}`);
-            if (!result.ok) return jsonResult({ ok: false, error: `HTTP ${result.status}`, details: result.data });
-            return jsonResult({ ok: true, ...result.data as object });
+            const result = await bhDevtoolsFetch(
+              `/api/v1/db/tables/${encodeURIComponent(tableName)}/schema${qs}`,
+            );
+            if (!result.ok)
+              return jsonResult({
+                ok: false,
+                error: `HTTP ${result.status}`,
+                details: result.data,
+              });
+            return jsonResult({ ok: true, ...(result.data as object) });
           } catch (err) {
             return errorResult(err);
           }
@@ -232,12 +306,24 @@ export function registerDevtoolsTools(api: OpenClawPluginApi, logger: AuditLogge
           "Execute a read-only SQL query (SELECT or WITH only) against a database. Returns up to 1000 rows. Use bh_devtools_list_databases to see available databases.",
         parameters: Type.Object({
           sql: Type.String({ description: "The SQL query to execute (SELECT or WITH only)" }),
-          params: Type.Optional(Type.Array(Type.Unknown(), { description: "Parameterized query values ($1, $2, etc.)" })),
-          database: Type.Optional(Type.String({ description: "Database name (e.g. 'zoomwarriors2', 'zoomwarriors2_studio'). Uses default if omitted." })),
+          params: Type.Optional(
+            Type.Array(Type.Unknown(), {
+              description: "Parameterized query values ($1, $2, etc.)",
+            }),
+          ),
+          database: Type.Optional(
+            Type.String({
+              description:
+                "Database name (e.g. 'zoomwarriors2', 'zoomwarriors2_studio'). Uses default if omitted.",
+            }),
+          ),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
-            const body: Record<string, unknown> = { sql: params.sql };
+            const sql = (params.sql as string) ?? "";
+            const sqlGuard = assertReadOnlySql(sql);
+            if (sqlGuard) return jsonResult({ ok: false, error: sqlGuard });
+            const body: Record<string, unknown> = { sql };
             if (params.params) body.params = params.params;
             if (params.database) body.database = params.database;
             const result = await bhDevtoolsFetch("/api/v1/db/query", {
@@ -245,8 +331,13 @@ export function registerDevtoolsTools(api: OpenClawPluginApi, logger: AuditLogge
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(body),
             });
-            if (!result.ok) return jsonResult({ ok: false, error: `HTTP ${result.status}`, details: result.data });
-            return jsonResult({ ok: true, ...result.data as object });
+            if (!result.ok)
+              return jsonResult({
+                ok: false,
+                error: `HTTP ${result.status}`,
+                details: result.data,
+              });
+            return jsonResult({ ok: true, ...(result.data as object) });
           } catch (err) {
             return errorResult(err);
           }
