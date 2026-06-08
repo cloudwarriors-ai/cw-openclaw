@@ -1,11 +1,15 @@
 import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { jsonResult, errorResult } from "./helpers.js";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
 import { getFirebaseIdToken, getApiBaseUrl, clearFirebaseToken } from "./cf-auth.js";
+import { stageWrite } from "./gated.js";
+import { jsonResult, errorResult } from "./helpers.js";
 
-async function cfApi(path: string, opts?: { method?: string; body?: unknown; retried?: boolean }): Promise<unknown> {
+async function cfApi(
+  path: string,
+  opts?: { method?: string; body?: unknown; retried?: boolean },
+): Promise<unknown> {
   const token = await getFirebaseIdToken();
   const baseUrl = getApiBaseUrl();
   const resp = await fetch(`${baseUrl}${path}`, {
@@ -48,7 +52,8 @@ export function registerCfOpsTools(api: OpenClawPluginApi, logger: AuditLogger) 
     wrapToolWithAudit(
       {
         name: "cf_discover_ops",
-        description: "List all available CloudFlow operations with their domains, descriptions, required scopes, and input/output schemas.",
+        description:
+          "List all available CloudFlow operations with their domains, descriptions, required scopes, and input/output schemas.",
         parameters: Type.Object({}),
         async execute(_id: string, _params: Record<string, unknown>) {
           try {
@@ -68,17 +73,32 @@ export function registerCfOpsTools(api: OpenClawPluginApi, logger: AuditLogger) 
     wrapToolWithAudit(
       {
         name: "cf_execute_op",
-        description: "Execute any CloudFlow operation by ID. Use cf_discover_ops first to see available operations and their required payloads.",
+        description:
+          "Execute any CloudFlow operation by ID. Use cf_discover_ops first to see available operations and their required payloads.",
         parameters: Type.Object({
-          operationId: Type.String({ description: "The operation ID (e.g., 'listTickets', 'getDeployment')" }),
-          payload: Type.Optional(Type.Object({}, { additionalProperties: true, description: "Operation-specific input payload" })),
+          operationId: Type.String({
+            description: "The operation ID (e.g., 'listTickets', 'getDeployment')",
+          }),
+          payload: Type.Optional(
+            Type.Object(
+              {},
+              { additionalProperties: true, description: "Operation-specific input payload" },
+            ),
+          ),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
             const operationId = params.operationId as string;
             const payload = (params.payload as Record<string, unknown>) ?? {};
-            const data = await executeOp(operationId, payload);
-            return jsonResult({ ok: true, data });
+            // cf_execute_op runs an ARBITRARY operation by id — it can be a mutating op.
+            // The operation catalog is not statically known here, so we cannot classify
+            // read vs write deterministically; gate every call fail-closed. Dedicated
+            // read tools (cf_list_*, cf_get_*) call executeOp() directly and stay ungated.
+            const summary = `execute CloudFlow operation "${operationId}"`;
+            return await stageWrite(summary, async () => {
+              const data = await executeOp(operationId, payload);
+              return { ok: true, status: 200, data };
+            });
           } catch (err) {
             return errorResult(err);
           }
@@ -95,7 +115,11 @@ export function registerCfOpsTools(api: OpenClawPluginApi, logger: AuditLogger) 
         name: "cf_list_tickets",
         description: "List CloudFlow support tickets. Optionally filter by status or tenant.",
         parameters: Type.Object({
-          status: Type.Optional(Type.String({ description: "Filter by ticket status (open, in_progress, resolved, closed)" })),
+          status: Type.Optional(
+            Type.String({
+              description: "Filter by ticket status (open, in_progress, resolved, closed)",
+            }),
+          ),
           tenantId: Type.Optional(Type.String({ description: "Filter by tenant ID" })),
           limit: Type.Optional(Type.Number({ description: "Max results (default 25)" })),
         }),
@@ -193,7 +217,9 @@ export function registerCfOpsTools(api: OpenClawPluginApi, logger: AuditLogger) 
         name: "cf_list_users",
         description: "List CloudFlow platform users. Filter by role or search by name/email.",
         parameters: Type.Object({
-          role: Type.Optional(Type.String({ description: "Filter by platform role (PM, PE, SM, Dev, HR)" })),
+          role: Type.Optional(
+            Type.String({ description: "Filter by platform role (PM, PE, SM, Dev, HR)" }),
+          ),
           search: Type.Optional(Type.String({ description: "Search by name or email" })),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
@@ -243,7 +269,9 @@ export function registerCfOpsTools(api: OpenClawPluginApi, logger: AuditLogger) 
         name: "cf_get_deploy_status",
         description: "Check the latest Firebase App Hosting deployment status via GitHub Actions.",
         parameters: Type.Object({
-          limit: Type.Optional(Type.Number({ description: "Number of recent runs to check (default 5)" })),
+          limit: Type.Optional(
+            Type.Number({ description: "Number of recent runs to check (default 5)" }),
+          ),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
