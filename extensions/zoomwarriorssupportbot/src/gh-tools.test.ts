@@ -113,6 +113,7 @@ describe("zws gh writes are confirm-gated", () => {
     const reply = await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
+      conversationId: CHANNEL,
       logger: noopLogger as never,
     });
 
@@ -129,7 +130,12 @@ describe("zws gh writes are confirm-gated", () => {
     expect(execFileSyncMock).not.toHaveBeenCalled();
 
     const code = codeFromDelivery();
-    await tryExecuteConfirm({ text: `CONFIRM ${code}`, actor: "t", logger: noopLogger as never });
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: CHANNEL,
+      logger: noopLogger as never,
+    });
     expect(ghArgvContaining("close")).toBeDefined();
   });
 
@@ -145,6 +151,33 @@ describe("zws gh writes are confirm-gated", () => {
     expect(res.ok).toBe(false);
     expect(sendZwsTextMock).not.toHaveBeenCalled();
     expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("a CONFIRM from a DIFFERENT channel cannot fire the staged write", async () => {
+    const tools = buildTools();
+    execFileSyncMock.mockReturnValue("https://github.com/cloudwarriors-ai/zoomwarriors2/issues/42");
+    await tools.zws_gh_create_issue.execute("t", { title: "Crash", body: "x" });
+    const code = codeFromDelivery();
+
+    // Wrong channel: must be refused and must NOT consume the pending action.
+    const wrong = await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "attacker",
+      conversationId: "someone-elses-channel@conference.xmpp.zoom.us",
+      logger: noopLogger as never,
+    });
+    expect(wrong).toMatch(/different channel|expired|already been used/);
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+
+    // Right channel: the action is still there and fires.
+    const right = await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: CHANNEL,
+      logger: noopLogger as never,
+    });
+    expect(right).toMatch(/✅ Done/);
+    expect(ghArgvContaining("create")).toBeDefined();
   });
 });
 
@@ -201,7 +234,12 @@ describe("zws gh tools are injection-safe (execFileSync, no shell)", () => {
     const title = 'Crash "$(rm -rf /)" `id`';
     await tools.zws_gh_create_issue.execute("t", { title, body: "x" });
     const code = codeFromDelivery();
-    await tryExecuteConfirm({ text: `CONFIRM ${code}`, actor: "t", logger: noopLogger as never });
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: CHANNEL,
+      logger: noopLogger as never,
+    });
     const argv = ghArgvContaining("create");
     expect(argv).toBeDefined();
     expect(argv).toContain(title); // verbatim, unescaped

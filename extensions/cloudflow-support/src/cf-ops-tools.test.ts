@@ -112,6 +112,7 @@ describe("cloudflow cf_execute_op is confirm-gated", () => {
     const reply = await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
+      conversationId: CHANNEL,
       logger: noopLogger as never,
     });
 
@@ -138,6 +139,7 @@ describe("cloudflow cf_execute_op is confirm-gated", () => {
     const reply = await tryExecuteConfirm({
       text: "CONFIRM 0000",
       actor: "t",
+      conversationId: CHANNEL,
       logger: noopLogger as never,
     });
     expect(reply).toMatch(/No pending action/i);

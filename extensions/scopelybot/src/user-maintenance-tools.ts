@@ -365,13 +365,15 @@ export function registerUserMaintenanceTools(api: OpenClawPluginApi, logger: Aud
 export async function tryExecuteConfirm(params: {
   text: string;
   actor: string;
+  conversationId: string;
   logger: AuditLogger;
 }): Promise<string | null> {
   const m = params.text.trim().match(/^CONFIRM\s+(\d{4})\b/i);
   if (!m) return null;
-  const action = takePending(m[1]);
+  // Channel-scoped: only consumes an action staged for THIS conversation.
+  const action = takePending(m[1], params.conversationId);
   if (!action) {
-    return `No pending action for code ${m[1]} — it may have expired (5 min) or already been used.`;
+    return `No pending action for code ${m[1]} — it may have expired (5 min), already been used, or was requested in a different channel.`;
   }
   const start = Date.now();
   try {

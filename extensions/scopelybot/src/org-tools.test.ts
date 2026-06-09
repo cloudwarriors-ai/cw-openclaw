@@ -91,7 +91,12 @@ describe("org-tools", () => {
     });
     const code = codeOf(staged);
     fetchMock.mockResolvedValue({ ok: true, status: 201, data: {} });
-    await tryExecuteConfirm({ text: `CONFIRM ${code}`, actor: "t", logger: noopLogger as never });
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: "",
+      logger: noopLogger as never,
+    });
     const [path, opts] = fetchMock.mock.calls[0];
     expect(path).toBe("/api/auth/orgs/");
     expect(opts.method).toBe("POST");
@@ -107,7 +112,12 @@ describe("org-tools", () => {
     const staged = await t.scopely_update_org.execute("x", { org_id: 3, slug: "new-slug" });
     const code = codeOf(staged);
     fetchMock.mockResolvedValue({ ok: true, status: 200, data: {} });
-    await tryExecuteConfirm({ text: `CONFIRM ${code}`, actor: "t", logger: noopLogger as never });
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: "",
+      logger: noopLogger as never,
+    });
     const [path, opts] = fetchMock.mock.calls.at(-1)!;
     expect(path).toBe("/api/auth/orgs/3/");
     expect(opts.method).toBe("PATCH");
@@ -118,7 +128,12 @@ describe("org-tools", () => {
     const t = buildTools();
     const code = codeOf(await t.scopely_delete_org.execute("x", { org_id: 7 }));
     fetchMock.mockResolvedValue({ ok: true, status: 204, data: null });
-    await tryExecuteConfirm({ text: `CONFIRM ${code}`, actor: "t", logger: noopLogger as never });
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: "",
+      logger: noopLogger as never,
+    });
     expect(fetchMock).toHaveBeenLastCalledWith(
       "/api/auth/orgs/7/",
       expect.objectContaining({ method: "DELETE" }),
@@ -131,7 +146,12 @@ describe("org-tools", () => {
       await t.scopely_add_org_domain.execute("x", { org_id: 7, domain: "Acme.COM" }),
     );
     fetchMock.mockResolvedValue({ ok: true, status: 201, data: {} });
-    await tryExecuteConfirm({ text: `CONFIRM ${code}`, actor: "t", logger: noopLogger as never });
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: "",
+      logger: noopLogger as never,
+    });
     const [path, opts] = fetchMock.mock.calls.at(-1)!;
     expect(path).toBe("/api/auth/orgs/7/domains/");
     expect(JSON.parse(opts.body)).toEqual({ domain: "acme.com" });
@@ -143,7 +163,12 @@ describe("org-tools", () => {
       await t.scopely_remove_org_domain.execute("x", { org_id: 7, domain_id: 12 }),
     );
     fetchMock.mockResolvedValue({ ok: true, status: 204, data: null });
-    await tryExecuteConfirm({ text: `CONFIRM ${code}`, actor: "t", logger: noopLogger as never });
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: "",
+      logger: noopLogger as never,
+    });
     expect(fetchMock).toHaveBeenLastCalledWith(
       "/api/auth/orgs/7/domains/12/",
       expect.objectContaining({ method: "DELETE" }),

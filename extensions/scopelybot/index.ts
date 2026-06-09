@@ -99,7 +99,12 @@ const plugin = {
       if (ctx.channelId !== "zoom") return;
       const text = typeof event.content === "string" ? event.content : "";
       if (!CONFIRM_RE.test(text.trim())) return;
-      const result = await tryExecuteConfirm({ text, actor: ctx.senderId ?? "", logger });
+      const result = await tryExecuteConfirm({
+        text,
+        actor: ctx.senderId ?? "",
+        conversationId: ctx.conversationId ?? "",
+        logger,
+      });
       // `handled: true` suppresses the coordinator so the CONFIRM cannot re-stage; the
       // result string (executed / "no pending action") is delivered threaded by core.
       console.log("[scopelybot] before_dispatch claimed CONFIRM (coordinator suppressed)");

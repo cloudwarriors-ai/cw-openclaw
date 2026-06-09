@@ -89,7 +89,12 @@ describe("vendor-config-tools", () => {
       }),
     );
     fetchMock.mockResolvedValue({ ok: true, status: 201, data: {} });
-    await tryExecuteConfirm({ text: `CONFIRM ${code}`, actor: "t", logger: noopLogger as never });
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: "",
+      logger: noopLogger as never,
+    });
     const [path, opts] = fetchMock.mock.calls[0];
     expect(path).toBe("/api/admin/vendors/");
     expect(opts.method).toBe("POST");
@@ -106,7 +111,12 @@ describe("vendor-config-tools", () => {
       await t.scopely_update_vendor.execute("x", { vendor_key: "zoom", status: "inactive" }),
     );
     fetchMock.mockResolvedValue({ ok: true, status: 200, data: {} });
-    await tryExecuteConfirm({ text: `CONFIRM ${code}`, actor: "t", logger: noopLogger as never });
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: "",
+      logger: noopLogger as never,
+    });
     const [path, opts] = fetchMock.mock.calls.at(-1)!;
     expect(path).toBe("/api/admin/vendors/zoom/");
     expect(opts.method).toBe("PATCH");
@@ -125,7 +135,12 @@ describe("vendor-config-tools", () => {
       }),
     );
     fetchMock.mockResolvedValue({ ok: true, status: 201, data: {} });
-    await tryExecuteConfirm({ text: `CONFIRM ${code}`, actor: "t", logger: noopLogger as never });
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: "",
+      logger: noopLogger as never,
+    });
     expect(fetchMock).toHaveBeenLastCalledWith(
       "/api/admin/vendors/zoom/project-types/",
       expect.objectContaining({ method: "POST" }),
@@ -137,6 +152,7 @@ describe("vendor-config-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${delCode}`,
       actor: "t",
+      conversationId: "",
       logger: noopLogger as never,
     });
     expect(fetchMock).toHaveBeenLastCalledWith(
@@ -156,7 +172,12 @@ describe("vendor-config-tools", () => {
       }),
     );
     fetchMock.mockResolvedValue({ ok: true, status: 201, data: {} });
-    await tryExecuteConfirm({ text: `CONFIRM ${code}`, actor: "t", logger: noopLogger as never });
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: "",
+      logger: noopLogger as never,
+    });
     const [path, opts] = fetchMock.mock.calls.at(-1)!;
     expect(path).toBe("/api/admin/vendors/zoom/terms/");
     expect(JSON.parse(opts.body)).toEqual({ scope: "field", key: "seats", label: "Licenses" });

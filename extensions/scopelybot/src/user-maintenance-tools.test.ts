@@ -129,6 +129,7 @@ describe("user-maintenance-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "tester",
+      conversationId: CHANNEL,
       logger: noopLogger as never,
     });
 
@@ -159,6 +160,7 @@ describe("user-maintenance-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "tester",
+      conversationId: CHANNEL,
       logger: noopLogger as never,
     });
 
@@ -177,6 +179,7 @@ describe("user-maintenance-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${approveCode}`,
       actor: "t",
+      conversationId: CHANNEL,
       logger: noopLogger as never,
     });
     expect(fetchMock).toHaveBeenLastCalledWith(
@@ -193,6 +196,7 @@ describe("user-maintenance-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${rejectCode}`,
       actor: "t",
+      conversationId: CHANNEL,
       logger: noopLogger as never,
     });
     expect(fetchMock).toHaveBeenLastCalledWith(
@@ -201,12 +205,40 @@ describe("user-maintenance-tools", () => {
     );
   });
 
+  it("a CONFIRM from a DIFFERENT channel cannot fire the staged write", async () => {
+    const tools = buildTools();
+    await tools.scopely_update_user.execute("t", { user_id: 7, role: "org_admin" });
+    const code = codeFromDelivery();
+
+    // Wrong channel: must be refused and must NOT consume the pending action.
+    fetchMock.mockResolvedValue({ ok: true, status: 200, data: {} });
+    const wrong = await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "attacker",
+      conversationId: "someone-elses-channel@conference.xmpp.zoom.us",
+      logger: noopLogger as never,
+    });
+    expect(wrong).toMatch(/different channel|expired|already been used/);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // Right channel: the action is still there and fires.
+    const right = await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: CHANNEL,
+      logger: noopLogger as never,
+    });
+    expect(right).toMatch(/✅ Done/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("a wrong/expired code executes nothing (fail-closed)", async () => {
     buildTools();
     fetchMock.mockResolvedValue({ ok: true, status: 200, data: {} });
     const reply = await tryExecuteConfirm({
       text: "CONFIRM 0000",
       actor: "t",
+      conversationId: CHANNEL,
       logger: noopLogger as never,
     });
     expect(reply).toMatch(/No pending action/i);
