@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getMemorySearchManagerMockCalls,
   getMemorySearchManagerMockConfigs,
@@ -478,5 +478,64 @@ describe("memory_search corpus labels", () => {
         source: "sessions",
       },
     ]);
+  });
+});
+
+describe("memory_search channel scoping", () => {
+  // CW: customer-channel sessions get channel-scoped recall from the stored
+  // session subject (set from GroupSubject by deriveGroupSessionPatch). The slug
+  // is derived here from the session store — this replaced the pre-sync reply-run
+  // channelSlug producer, so the scope no longer threads through the reply run.
+  const CUSTOMER_SESSION_KEY = "agent:main:zoom-customer";
+  const sessions = sessionStore as Record<
+    string,
+    { sessionId: string; updatedAt: number; sessionFile: string; subject?: string }
+  >;
+
+  beforeEach(() => {
+    resetMemoryToolMockState({ searchImpl: async () => [] });
+    memoryToolsTesting.resetMemorySearchToolCooldowns();
+    sessions[CUSTOMER_SESSION_KEY] = {
+      sessionId: "thread-customer",
+      updatedAt: 1,
+      sessionFile: "/tmp/sessions/thread-customer.jsonl",
+      subject: "Test Customer",
+    };
+  });
+
+  afterEach(() => {
+    delete sessions[CUSTOMER_SESSION_KEY];
+  });
+
+  it("scopes search to the customer channel derived from the session subject", async () => {
+    let seenScope: string | undefined;
+    let seenChannelSlug: string | undefined;
+    setMemorySearchImpl(async (opts) => {
+      seenScope = opts?.scope;
+      seenChannelSlug = opts?.channelSlug;
+      return [];
+    });
+
+    const tool = createMemorySearchToolOrThrow({ agentSessionKey: CUSTOMER_SESSION_KEY });
+    await tool.execute("scoped", { query: "hello" });
+
+    expect(seenChannelSlug).toBe("test-customer");
+    expect(seenScope).toBe("channel");
+  });
+
+  it("leaves sessions without a subject globally scoped", async () => {
+    let seenScope: string | undefined;
+    let seenChannelSlug: string | undefined;
+    setMemorySearchImpl(async (opts) => {
+      seenScope = opts?.scope;
+      seenChannelSlug = opts?.channelSlug;
+      return [];
+    });
+
+    const tool = createMemorySearchToolOrThrow({ agentSessionKey: "agent:main:main" });
+    await tool.execute("unscoped", { query: "hello" });
+
+    expect(seenChannelSlug).toBeUndefined();
+    expect(seenScope).toBeUndefined();
   });
 });
