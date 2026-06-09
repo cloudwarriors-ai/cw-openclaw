@@ -34,9 +34,18 @@ const plugin = {
     const logger = createAuditLogger(workspaceDir);
     const pluginConfig: PluginConfig = config ?? { ppRepos: ["cloudwarriors-ai/project-pulse"] };
 
-    registerPpTools(api, logger);
-    registerGhTools(api, logger, pluginConfig);
-    registerCorrelationTools(api, logger, pluginConfig);
+    // Register every tool as `optional: true` so per-agent allowlists actually
+    // scope them: non-optional plugin tools bypass allowlists and become visible
+    // to EVERY agent. With this wrapper, only agents whose `tools.allow` includes
+    // a tool name, the plugin id ("pulsebot"), or "group:plugins" see them.
+    const optionalApi: OpenClawPluginApi = {
+      ...api,
+      registerTool: (tool, opts) => api.registerTool(tool, { ...opts, optional: true }),
+    };
+
+    registerPpTools(optionalApi, logger);
+    registerGhTools(optionalApi, logger, pluginConfig);
+    registerCorrelationTools(optionalApi, logger, pluginConfig);
 
     // Comfort message + thread-anchor capture on inbound. CONFIRM execution is
     // NOT handled here: message_received is a fire-and-forget OBSERVE hook (it
