@@ -90,7 +90,12 @@ describe("deployment-config-tools", () => {
       }),
     );
     fetchMock.mockResolvedValue({ ok: true, status: 201, data: {} });
-    await tryExecuteConfirm({ text: `CONFIRM ${code}`, actor: "t", logger: noopLogger as never });
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: "",
+      logger: noopLogger as never,
+    });
     const [path, opts] = fetchMock.mock.calls[0];
     expect(path).toBe("/api/admin/vendors/zoom/project-types/4/deployment-types/");
     expect(opts.method).toBe("POST");
@@ -103,7 +108,12 @@ describe("deployment-config-tools", () => {
       await t.scopely_update_deployment_type_template.execute("x", { id: 3, sort_order: 9 }),
     );
     fetchMock.mockResolvedValue({ ok: true, status: 200, data: {} });
-    await tryExecuteConfirm({ text: `CONFIRM ${code}`, actor: "t", logger: noopLogger as never });
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: "",
+      logger: noopLogger as never,
+    });
     const [path, opts] = fetchMock.mock.calls.at(-1)!;
     expect(path).toBe("/api/admin/deployment-type-templates/3/");
     expect(opts.method).toBe("PATCH");

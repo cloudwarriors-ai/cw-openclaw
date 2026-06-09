@@ -142,6 +142,7 @@ describe("cloudflow gh writes are confirm-gated", () => {
     const reply = await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
+      conversationId: CHANNEL,
       logger: noopLogger as never,
     });
 
@@ -156,7 +157,12 @@ describe("cloudflow gh writes are confirm-gated", () => {
     expect(execFileSyncMock).not.toHaveBeenCalled();
 
     const code = codeFromDelivery();
-    await tryExecuteConfirm({ text: `CONFIRM ${code}`, actor: "t", logger: noopLogger as never });
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: CHANNEL,
+      logger: noopLogger as never,
+    });
     expect(ghArgvContaining("close")).toBeDefined();
   });
 
@@ -168,6 +174,33 @@ describe("cloudflow gh writes are confirm-gated", () => {
     expect(res.ok).toBe(false);
     expect(sendCfTextMock).not.toHaveBeenCalled();
     expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("a CONFIRM from a DIFFERENT channel cannot fire the staged write", async () => {
+    const tools = buildTools();
+    execFileSyncMock.mockReturnValue("https://github.com/cloudwarriors-ai/cloudflow/issues/42");
+    await tools.cf_gh_create_issue.execute("t", { title: "Deploy broke", body: "x" });
+    const code = codeFromDelivery();
+
+    // Wrong channel: must be refused and must NOT consume the pending action.
+    const wrong = await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "attacker",
+      conversationId: "someone-elses-channel@conference.xmpp.zoom.us",
+      logger: noopLogger as never,
+    });
+    expect(wrong).toMatch(/different channel|expired|already been used/);
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+
+    // Right channel: the action is still there and fires.
+    const right = await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: CHANNEL,
+      logger: noopLogger as never,
+    });
+    expect(right).toMatch(/✅ Done/);
+    expect(ghArgvContaining("create")).toBeDefined();
   });
 });
 

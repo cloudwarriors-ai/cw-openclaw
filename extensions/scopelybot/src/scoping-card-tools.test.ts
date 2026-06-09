@@ -96,7 +96,12 @@ describe("scoping-card-tools", () => {
       }),
     );
     fetchMock.mockResolvedValue({ ok: true, status: 201, data: {} });
-    await tryExecuteConfirm({ text: `CONFIRM ${code}`, actor: "t", logger: noopLogger as never });
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: "",
+      logger: noopLogger as never,
+    });
     const [path, opts] = fetchMock.mock.calls[0];
     expect(path).toBe("/api/admin/vendors/zoom/project-types/4/cards/");
     expect(opts.method).toBe("POST");
@@ -120,7 +125,12 @@ describe("scoping-card-tools", () => {
     expect(staged.message).toContain("REPLACE fields (1 total)");
     const code = staged.message.match(/CONFIRM (\d{4})/)?.[1];
     fetchMock.mockResolvedValue({ ok: true, status: 200, data: {} });
-    await tryExecuteConfirm({ text: `CONFIRM ${code}`, actor: "t", logger: noopLogger as never });
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: "",
+      logger: noopLogger as never,
+    });
     expect(fetchMock).toHaveBeenLastCalledWith(
       "/api/admin/vendors/zoom/project-types/4/cards/11/",
       expect.objectContaining({ method: "PATCH" }),

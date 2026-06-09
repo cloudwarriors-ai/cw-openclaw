@@ -115,7 +115,12 @@ describe("pricing-tools", () => {
       }),
     );
     fetchMock.mockResolvedValue({ ok: true, status: 201, data: {} });
-    await tryExecuteConfirm({ text: `CONFIRM ${code}`, actor: "t", logger: noopLogger as never });
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: "",
+      logger: noopLogger as never,
+    });
     const [path, opts] = fetchMock.mock.calls[0];
     expect(path).toBe("/api/admin/pricing-defaults/");
     expect(opts.method).toBe("POST");
@@ -142,7 +147,12 @@ describe("pricing-tools", () => {
       }),
     );
     fetchMock.mockResolvedValue({ ok: true, status: 201, data: {} });
-    await tryExecuteConfirm({ text: `CONFIRM ${code}`, actor: "t", logger: noopLogger as never });
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: "",
+      logger: noopLogger as never,
+    });
     const [path, opts] = fetchMock.mock.calls.at(-1)!;
     expect(path).toBe("/api/admin/vendors/zoom/project-types/7/pricing-items/");
     expect(opts.method).toBe("POST");
@@ -162,7 +172,12 @@ describe("pricing-tools", () => {
       }),
     );
     fetchMock.mockResolvedValue({ ok: true, status: 200, data: {} });
-    await tryExecuteConfirm({ text: `CONFIRM ${code}`, actor: "t", logger: noopLogger as never });
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: "",
+      logger: noopLogger as never,
+    });
     const [path, opts] = fetchMock.mock.calls.at(-1)!;
     expect(path).toBe("/api/admin/vendors/zoom/project-types/7/pricing-items/42/");
     expect(opts.method).toBe("PATCH");
@@ -173,7 +188,12 @@ describe("pricing-tools", () => {
     const t = buildTools();
     const code = codeOf(await t.scopely_delete_currency.execute("x", { id: 9 }));
     fetchMock.mockResolvedValue({ ok: true, status: 204, data: null });
-    await tryExecuteConfirm({ text: `CONFIRM ${code}`, actor: "t", logger: noopLogger as never });
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: "",
+      logger: noopLogger as never,
+    });
     expect(fetchMock).toHaveBeenLastCalledWith(
       "/api/admin/currencies/9/",
       expect.objectContaining({ method: "DELETE" }),

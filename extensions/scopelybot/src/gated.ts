@@ -11,8 +11,6 @@ import { getChannelThreadAnchor, sendScopelyText } from "./comfort.js";
 import { makeCode, putPending } from "./pending-confirm.js";
 import { jsonResult } from "./scopely-api.js";
 
-let codeSeed = 1;
-
 type FetchResult = Promise<{ ok: boolean; status: number; data: unknown }>;
 
 // Stage a gated mutation. Does NOT execute — the real call fires only when a
@@ -25,15 +23,17 @@ type FetchResult = Promise<{ ok: boolean; status: number; data: unknown }>;
 // tool result the model sees is CODE-FREE; the model only learns a prompt was
 // posted and must stay silent.
 export async function stageWrite(summary: string, run: () => FetchResult) {
-  const code = makeCode(codeSeed++ * 7919 + summary.length);
-  putPending({ code, summary, run });
+  // Read the channel at call time (not module load) so env that loads after import
+  // — and test stubbing — both resolve correctly.
+  const channel = process.env.SCOPELYBOT_ZOOM_CHANNEL ?? "";
+  // Bind the staged action to that channel: only a CONFIRM from it can fire the
+  // action (takePending enforces the match). Code is unpredictable (crypto).
+  const code = makeCode();
+  putPending({ code, conversationId: channel, summary, run });
   const prompt =
     `⚠️ Confirm: ${summary} on PROD.\n` +
     `Reply \`CONFIRM ${code}\` within 5 minutes to proceed, or ignore to cancel.`;
 
-  // Read the channel at call time (not module load) so env that loads after import
-  // — and test stubbing — both resolve correctly.
-  const channel = process.env.SCOPELYBOT_ZOOM_CHANNEL ?? "";
   if (channel) {
     await sendScopelyText(channel, prompt, getChannelThreadAnchor(channel));
     return jsonResult({

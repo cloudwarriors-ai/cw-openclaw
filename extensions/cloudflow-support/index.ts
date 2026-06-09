@@ -70,7 +70,12 @@ const plugin = {
       if (ctx.channelId !== "zoom") return undefined;
       const text = typeof event.content === "string" ? event.content : "";
       if (!CONFIRM_RE.test(text.trim())) return undefined;
-      const result = await tryExecuteConfirm({ text, actor: ctx.senderId ?? "", logger });
+      const result = await tryExecuteConfirm({
+        text,
+        actor: ctx.senderId ?? "",
+        conversationId: ctx.conversationId ?? "",
+        logger,
+      });
       return { handled: true, text: result ?? undefined };
     });
 

@@ -113,7 +113,12 @@ describe("zws confirm-gated writes", () => {
     expect(code).toBeTruthy();
 
     fetchMock.mockResolvedValue({ ok: true, status: 201, data: { id: "t1" } });
-    await tryExecuteConfirm({ text: `CONFIRM ${code}`, actor: "t", logger: noopLogger as never });
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: CHANNEL,
+      logger: noopLogger as never,
+    });
 
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/v1/tickets",
@@ -128,7 +133,12 @@ describe("zws confirm-gated writes", () => {
 
     const code = codeFromDelivery();
     fetchMock.mockResolvedValue({ ok: true, status: 200, data: {} });
-    await tryExecuteConfirm({ text: `CONFIRM ${code}`, actor: "t", logger: noopLogger as never });
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: CHANNEL,
+      logger: noopLogger as never,
+    });
 
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/v1/tickets/t9",
@@ -156,6 +166,7 @@ describe("zws confirm-gated writes", () => {
     const reply = await tryExecuteConfirm({
       text: "CONFIRM 0000",
       actor: "t",
+      conversationId: CHANNEL,
       logger: noopLogger as never,
     });
     expect(reply).toMatch(/No pending action/i);
