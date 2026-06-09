@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
@@ -275,10 +276,21 @@ export function registerCfOpsTools(api: OpenClawPluginApi, logger: AuditLogger) 
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
-            const { execSync } = await import("child_process");
-            const limit = (params.limit as number) || 5;
-            const result = execSync(
-              `gh run list --repo cloudwarriors-ai/cloudflow --limit ${limit} --json databaseId,displayTitle,status,conclusion,createdAt,updatedAt,headBranch`,
+            const rawLimit = typeof params.limit === "number" ? params.limit : Number(params.limit);
+            const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 5;
+            // Explicit argv (NO shell): the LLM-controlled limit is a literal argv element.
+            const result = execFileSync(
+              "gh",
+              [
+                "run",
+                "list",
+                "--repo",
+                "cloudwarriors-ai/cloudflow",
+                "--limit",
+                String(limit),
+                "--json",
+                "databaseId,displayTitle,status,conclusion,createdAt,updatedAt,headBranch",
+              ],
               {
                 encoding: "utf-8",
                 timeout: 30000,

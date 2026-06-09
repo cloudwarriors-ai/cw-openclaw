@@ -1,13 +1,20 @@
+import { execFileSync } from "node:child_process";
 import { Type } from "@sinclair/typebox";
-import { execSync } from "child_process";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
 
 type PluginConfig = { zwsRepos?: string[] };
 
-const DEVTOOLS_BASE = () => process.env.ZWS_DEVTOOLS_API_URL ?? process.env.BIGHEAD_DEVTOOLS_API_URL ?? "http://bighead-devtools-api:9100";
-const DEVTOOLS_TOKEN = () => process.env.ZWS_DEV_TOOLS_API ?? process.env.BIGHEAD_DEV_TOOLS_API ?? process.env.DEV_TOOLS_API ?? "";
+const DEVTOOLS_BASE = () =>
+  process.env.ZWS_DEVTOOLS_API_URL ??
+  process.env.BIGHEAD_DEVTOOLS_API_URL ??
+  "http://bighead-devtools-api:9100";
+const DEVTOOLS_TOKEN = () =>
+  process.env.ZWS_DEV_TOOLS_API ??
+  process.env.BIGHEAD_DEV_TOOLS_API ??
+  process.env.DEV_TOOLS_API ??
+  "";
 
 function jsonResult(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
@@ -15,10 +22,16 @@ function jsonResult(data: unknown) {
 
 function errorResult(err: unknown) {
   const message = err instanceof Error ? err.message : String(err);
-  return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: message }) }] };
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: message }) }],
+  };
 }
 
-export function registerCorrelationTools(api: OpenClawPluginApi, logger: AuditLogger, config: PluginConfig) {
+export function registerCorrelationTools(
+  api: OpenClawPluginApi,
+  logger: AuditLogger,
+  config: PluginConfig,
+) {
   api.registerTool(() =>
     wrapToolWithAudit(
       {
@@ -28,8 +41,14 @@ export function registerCorrelationTools(api: OpenClawPluginApi, logger: AuditLo
           "Searches container logs via DevTools API and GitHub issues in parallel.",
         parameters: Type.Object({
           pattern: Type.String({ description: "Error pattern to search for (case-insensitive)" }),
-          container: Type.Optional(Type.String({ description: "Container to search logs in (default: zoomwarriors2-backend)" })),
-          repo: Type.Optional(Type.String({ description: "GitHub repo to search (default: primary ZW2 repo)" })),
+          container: Type.Optional(
+            Type.String({
+              description: "Container to search logs in (default: zoomwarriors2-backend)",
+            }),
+          ),
+          repo: Type.Optional(
+            Type.String({ description: "GitHub repo to search (default: primary ZW2 repo)" }),
+          ),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
@@ -50,7 +69,9 @@ export function registerCorrelationTools(api: OpenClawPluginApi, logger: AuditLo
                 if (resp.ok) {
                   const logs = (await resp.json()) as string[];
                   const re = new RegExp(pattern, "i");
-                  logMatches = (Array.isArray(logs) ? logs : []).filter((l) => re.test(String(l))).slice(0, 50);
+                  logMatches = (Array.isArray(logs) ? logs : [])
+                    .filter((l) => re.test(l))
+                    .slice(0, 50);
                 }
               } catch {
                 // DevTools unavailable, continue with GH search
@@ -58,15 +79,30 @@ export function registerCorrelationTools(api: OpenClawPluginApi, logger: AuditLo
             }
 
             // Search GitHub issues
+            // Explicit argv (NO shell): the LLM-controlled query is passed literally.
             let ghIssues: unknown = [];
             try {
-              const escaped = pattern.replace(/"/g, '\\"');
-              ghIssues = JSON.parse(
-                execSync(
-                  `gh search issues "${escaped}" --repo ${repo} --limit 10 --json number,title,state,labels,updatedAt`,
-                  { encoding: "utf-8", timeout: 30000, env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1" } },
-                ),
+              const query = pattern.slice(0, 100);
+              const result = execFileSync(
+                "gh",
+                [
+                  "search",
+                  "issues",
+                  query,
+                  "--repo",
+                  repo,
+                  "--limit",
+                  "10",
+                  "--json",
+                  "number,title,state,labels,updatedAt",
+                ],
+                {
+                  encoding: "utf-8",
+                  timeout: 30000,
+                  env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1" },
+                },
               );
+              ghIssues = JSON.parse(result);
             } catch {
               // GH search may fail, continue
             }
