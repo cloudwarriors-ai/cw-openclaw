@@ -1,15 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
 import type { AuditLogger } from "./audit.js";
 import { registerCorrelationTools } from "./correlation-tools.js";
 
-const { execSyncMock } = vi.hoisted(() => ({ execSyncMock: vi.fn() }));
+const { execFileSyncMock } = vi.hoisted(() => ({ execFileSyncMock: vi.fn() }));
 
 vi.mock("child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("child_process")>();
   return {
     ...actual,
-    execSync: execSyncMock,
+    execFileSync: execFileSyncMock,
   };
 });
 
@@ -42,7 +41,7 @@ describe("pulsebot correlation tool", () => {
   const fetchMock = vi.fn();
 
   beforeEach(() => {
-    execSyncMock.mockReset();
+    execFileSyncMock.mockReset();
     fetchMock.mockReset();
     vi.stubGlobal("fetch", fetchMock);
     process.env.DEV_TOOLS_API = "test-token";
@@ -65,7 +64,7 @@ describe("pulsebot correlation tool", () => {
       ok: true,
       json: async () => ({ logs: "start\nerror timeout in worker\ndone" }),
     });
-    execSyncMock.mockReturnValue(
+    execFileSyncMock.mockReturnValue(
       JSON.stringify([{ number: 77, title: "Timeout in worker pool", state: "open" }]),
     );
 
@@ -80,7 +79,7 @@ describe("pulsebot correlation tool", () => {
     expect(Array.isArray(payload.ghIssues)).toBe(true);
     expect((payload.ghIssues as Array<Record<string, unknown>>)[0]?.number).toBe(77);
     expect(fetchMock).toHaveBeenCalledOnce();
-    expect(execSyncMock).toHaveBeenCalledOnce();
+    expect(execFileSyncMock).toHaveBeenCalledOnce();
   });
 
   it("continues when gh search fails", async () => {
@@ -93,7 +92,7 @@ describe("pulsebot correlation tool", () => {
       ok: true,
       json: async () => ({ logs: "timeout\ntimeout\nok" }),
     });
-    execSyncMock.mockImplementation(() => {
+    execFileSyncMock.mockImplementation(() => {
       throw new Error("/bin/sh: 1: gh: not found");
     });
 
