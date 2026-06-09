@@ -5,6 +5,8 @@ type SearchImpl = (opts?: {
   maxResults?: number;
   minScore?: number;
   sessionKey?: string;
+  scope?: "channel" | "all-customers" | "global";
+  channelSlug?: string;
   qmdSearchModeOverride?: "query" | "search" | "vsearch";
   onDebug?: (debug: MemorySearchRuntimeDebug) => void;
 }) => Promise<unknown[]>;
