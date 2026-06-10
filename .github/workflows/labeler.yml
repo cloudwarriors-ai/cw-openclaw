@@ -27,6 +27,9 @@ permissions: {}
 
 jobs:
   label:
+    # cw-fork (2026-06-10): upstream-maintainer automation; always fails on the
+    # fork (missing upstream context/secrets). Upstream-only.
+    if: github.repository == 'openclaw/openclaw'
     permissions:
       contents: read
       pull-requests: write
