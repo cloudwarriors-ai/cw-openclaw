@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fetchMock = vi.fn();
 vi.mock("./scopely-api.js", () => ({
@@ -8,6 +8,16 @@ vi.mock("./scopely-api.js", () => ({
     content: [{ type: "text", text: JSON.stringify({ ok: false, error: String(err) }) }],
   }),
   buildQuery: () => "",
+}));
+
+// Staging delivers the CONFIRM prompt (with the code) to the channel via
+// sendScopelyText — never through the tool result. Spy on the delivery.
+const sendScopelyTextMock = vi.fn();
+vi.mock("./comfort.js", () => ({
+  sendScopelyText: (...args: unknown[]) => sendScopelyTextMock(...args),
+  getChannelThreadAnchor: () => "MSG-ANCHOR",
+  rememberChannelThreadAnchor: () => {},
+  sendComfortMessage: () => {},
 }));
 
 import { registerScopingCardTools } from "./scoping-card-tools.js";
@@ -33,11 +43,21 @@ function buildTools(): Record<string, ToolDef> {
   return tools;
 }
 const parse = (res: { content: { text: string }[] }) => JSON.parse(res.content[0].text);
-const codeOf = (res: { content: { text: string }[] }) =>
-  parse(res).message.match(/CONFIRM (\d{4})/)?.[1];
+const CHANNEL = "vipbot@conference.xmpp.zoom.us";
+// codeOf(await stage(...)): the tool result is code-free by design; the code is
+// read from the channel delivery spy (sendScopelyText prompt, arg index 1).
+const codeOf = (_res: { content: { text: string }[] }) =>
+  String(sendScopelyTextMock.mock.calls.at(-1)?.[1] ?? "").match(/CONFIRM (\d{4})/)?.[1];
 
 describe("scoping-card-tools", () => {
-  beforeEach(() => fetchMock.mockReset());
+  beforeEach(() => {
+    fetchMock.mockReset();
+    sendScopelyTextMock.mockReset();
+    process.env.SCOPELYBOT_ZOOM_CHANNEL = CHANNEL;
+  });
+  afterEach(() => {
+    delete process.env.SCOPELYBOT_ZOOM_CHANNEL;
+  });
 
   it("read tools hit the correct nested BFF paths immediately", async () => {
     const t = buildTools();
@@ -99,7 +119,7 @@ describe("scoping-card-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
-      conversationId: "",
+      conversationId: CHANNEL,
       logger: noopLogger as never,
     });
     const [path, opts] = fetchMock.mock.calls[0];
@@ -122,13 +142,16 @@ describe("scoping-card-tools", () => {
         fields: [{ key: "a", label: "A", field_type: "boolean" }],
       }),
     );
-    expect(staged.message).toContain("REPLACE fields (1 total)");
-    const code = staged.message.match(/CONFIRM (\d{4})/)?.[1];
+    expect(staged.staged).toBe(true);
+    // The replacement warning travels in the channel prompt, not the tool result.
+    const prompt = String(sendScopelyTextMock.mock.calls.at(-1)?.[1] ?? "");
+    expect(prompt).toContain("REPLACE fields (1 total)");
+    const code = prompt.match(/CONFIRM (\d{4})/)?.[1];
     fetchMock.mockResolvedValue({ ok: true, status: 200, data: {} });
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
-      conversationId: "",
+      conversationId: CHANNEL,
       logger: noopLogger as never,
     });
     expect(fetchMock).toHaveBeenLastCalledWith(

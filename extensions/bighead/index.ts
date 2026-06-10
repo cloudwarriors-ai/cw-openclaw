@@ -5,12 +5,18 @@ import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 const plugin = {
   id: "bighead",
   name: "Bighead",
-  description: "Bighead AI avatar integration - send Rebecca to join Zoom meetings (multiworker, user-scoped sessions)",
+  description:
+    "Bighead AI avatar integration - send Rebecca to join Zoom meetings (multiworker, user-scoped sessions)",
   configSchema: emptyPluginConfigSchema(),
 
   register(api: OpenClawPluginApi) {
+    // "bighead" is the compose-internal service name — not reachable outside the
+    // deployment network, so a default host is safe. The token has NO default:
+    // a baked-in placeholder ("dev-token") could silently authenticate against a
+    // backend that ships the same placeholder. Fail closed instead.
     const bigheadUrl = () => process.env.BIGHEAD_API_URL ?? "http://bighead:8000";
-    const bigheadToken = () => process.env.BIGHEAD_GATEWAY_TOKEN ?? process.env.OPENCLAW_GATEWAY_TOKEN ?? "dev-token";
+    const bigheadToken = () =>
+      process.env.BIGHEAD_GATEWAY_TOKEN ?? process.env.OPENCLAW_GATEWAY_TOKEN ?? "";
 
     // bighead_join_meeting - spawns a dedicated worker per session
     api.registerTool(() => ({
@@ -56,12 +62,29 @@ const plugin = {
         const displayName = (params.display_name as string) ?? undefined;
         const announcement = (params.announcement as string) ?? undefined;
 
+        const token = bigheadToken();
+        if (!token) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  ok: false,
+                  error:
+                    "BIGHEAD_GATEWAY_TOKEN (or OPENCLAW_GATEWAY_TOKEN) is not set — " +
+                    "refusing to call Bighead without a real token (fail-closed).",
+                }),
+              },
+            ],
+          };
+        }
+
         try {
           const resp = await fetch(`${bigheadUrl()}/api/sessions/start-by-email`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              Authorization: `Bearer ${bigheadToken()}`,
+              Authorization: `Bearer ${token}`,
             },
             body: JSON.stringify({
               user_email: userEmail,
@@ -131,7 +154,12 @@ const plugin = {
 
           if (!resp.ok) {
             return {
-              content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: data.error ?? `HTTP ${resp.status}` }) }],
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify({ ok: false, error: data.error ?? `HTTP ${resp.status}` }),
+                },
+              ],
             };
           }
 
@@ -141,7 +169,9 @@ const plugin = {
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : String(err);
           return {
-            content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: message }) }],
+            content: [
+              { type: "text" as const, text: JSON.stringify({ ok: false, error: message }) },
+            ],
           };
         }
       },
@@ -176,7 +206,12 @@ const plugin = {
 
           if (!resp.ok) {
             return {
-              content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: data.error ?? `HTTP ${resp.status}` }) }],
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify({ ok: false, error: data.error ?? `HTTP ${resp.status}` }),
+                },
+              ],
             };
           }
 
@@ -186,7 +221,9 @@ const plugin = {
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : String(err);
           return {
-            content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: message }) }],
+            content: [
+              { type: "text" as const, text: JSON.stringify({ ok: false, error: message }) },
+            ],
           };
         }
       },

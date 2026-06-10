@@ -26,6 +26,19 @@ export async function stageWrite(summary: string, run: () => FetchResult) {
   // Read the channel at call time (not module load) so env that loads after import
   // — and test stubbing — both resolve correctly.
   const channel = process.env.SCOPELYBOT_ZOOM_CHANNEL ?? "";
+  if (!channel) {
+    // FAIL CLOSED. Without a channel the CONFIRM prompt would have to travel
+    // inline through the model — codes get fabricated/relayed (observed live
+    // 2026-06-05) — and, since pending actions are channel-bound, an inline
+    // staging could never be confirmed anyway. Refuse to stage instead of
+    // silently degrading on a misconfigured deployment.
+    return jsonResult({
+      ok: false,
+      error:
+        "SCOPELYBOT_ZOOM_CHANNEL is not configured — write staging is disabled (fail-closed). " +
+        "Set the env var to the bot's Zoom channel JID.",
+    });
+  }
   // Bind the staged action to that channel: only a CONFIRM from it can fire the
   // action (takePending enforces the match). Code is unpredictable (crypto).
   const code = makeCode();
@@ -34,19 +47,14 @@ export async function stageWrite(summary: string, run: () => FetchResult) {
     `⚠️ Confirm: ${summary} on PROD.\n` +
     `Reply \`CONFIRM ${code}\` within 5 minutes to proceed, or ignore to cancel.`;
 
-  if (channel) {
-    await sendScopelyText(channel, prompt, getChannelThreadAnchor(channel));
-    return jsonResult({
-      staged: true,
-      awaiting_confirmation: true,
-      message:
-        "Confirm prompt was posted to the channel for the user. " +
-        "Reply NO_REPLY — do not repeat, relay, or invent the confirmation code.",
-    });
-  }
-  // No channel configured (dev/test only): fall back to returning the prompt
-  // inline so the gate still works outside the live deployment.
-  return jsonResult({ staged: true, message: prompt });
+  await sendScopelyText(channel, prompt, getChannelThreadAnchor(channel));
+  return jsonResult({
+    staged: true,
+    awaiting_confirmation: true,
+    message:
+      "Confirm prompt was posted to the channel for the user. " +
+      "Reply NO_REPLY — do not repeat, relay, or invent the confirmation code.",
+  });
 }
 
 // Build a request body from only the fields the caller actually supplied, so we

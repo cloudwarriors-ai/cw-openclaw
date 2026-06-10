@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fetchMock = vi.fn();
 vi.mock("./scopely-api.js", () => ({
@@ -13,6 +13,16 @@ vi.mock("./scopely-api.js", () => ({
     const s = qs.toString();
     return s ? `?${s}` : "";
   },
+}));
+
+// Staging delivers the CONFIRM prompt (with the code) to the channel via
+// sendScopelyText — never through the tool result. Spy on the delivery.
+const sendScopelyTextMock = vi.fn();
+vi.mock("./comfort.js", () => ({
+  sendScopelyText: (...args: unknown[]) => sendScopelyTextMock(...args),
+  getChannelThreadAnchor: () => "MSG-ANCHOR",
+  rememberChannelThreadAnchor: () => {},
+  sendComfortMessage: () => {},
 }));
 
 import { registerOrgTools } from "./org-tools.js";
@@ -39,8 +49,11 @@ function buildTools(): Record<string, ToolDef> {
   return tools;
 }
 const parse = (res: { content: { text: string }[] }) => JSON.parse(res.content[0].text);
-const codeOf = (res: { content: { text: string }[] }) =>
-  parse(res).message.match(/CONFIRM (\d{4})/)?.[1];
+const CHANNEL = "vipbot@conference.xmpp.zoom.us";
+// codeOf(await stage(...)): the tool result is code-free by design; the code is
+// read from the channel delivery spy (sendScopelyText prompt, arg index 1).
+const codeOf = (_res: { content: { text: string }[] }) =>
+  String(sendScopelyTextMock.mock.calls.at(-1)?.[1] ?? "").match(/CONFIRM (\d{4})/)?.[1];
 
 const READ_TOOLS = ["scopely_list_orgs", "scopely_get_org", "scopely_list_org_domains"];
 const WRITE_TOOLS = [
@@ -52,7 +65,14 @@ const WRITE_TOOLS = [
 ];
 
 describe("org-tools", () => {
-  beforeEach(() => fetchMock.mockReset());
+  beforeEach(() => {
+    fetchMock.mockReset();
+    sendScopelyTextMock.mockReset();
+    process.env.SCOPELYBOT_ZOOM_CHANNEL = CHANNEL;
+  });
+  afterEach(() => {
+    delete process.env.SCOPELYBOT_ZOOM_CHANNEL;
+  });
 
   it("read tools hit the correct BFF paths immediately", async () => {
     const t = buildTools();
@@ -94,7 +114,7 @@ describe("org-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
-      conversationId: "",
+      conversationId: CHANNEL,
       logger: noopLogger as never,
     });
     const [path, opts] = fetchMock.mock.calls[0];
@@ -115,7 +135,7 @@ describe("org-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
-      conversationId: "",
+      conversationId: CHANNEL,
       logger: noopLogger as never,
     });
     const [path, opts] = fetchMock.mock.calls.at(-1)!;
@@ -131,7 +151,7 @@ describe("org-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
-      conversationId: "",
+      conversationId: CHANNEL,
       logger: noopLogger as never,
     });
     expect(fetchMock).toHaveBeenLastCalledWith(
@@ -149,7 +169,7 @@ describe("org-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
-      conversationId: "",
+      conversationId: CHANNEL,
       logger: noopLogger as never,
     });
     const [path, opts] = fetchMock.mock.calls.at(-1)!;
@@ -166,7 +186,7 @@ describe("org-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
-      conversationId: "",
+      conversationId: CHANNEL,
       logger: noopLogger as never,
     });
     expect(fetchMock).toHaveBeenLastCalledWith(
