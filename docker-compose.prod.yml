@@ -117,6 +117,9 @@ services:
     - traefik.http.routers.openclaw.rule=Host(`${OPENCLAW_PUBLIC_DOMAIN}`)
     - traefik.http.routers.openclaw.entrypoints=websecure
     - traefik.http.routers.openclaw.tls.certresolver=letsencrypt
+    # Required: with two services on one container, Traefik drops any router
+    # that does not name its service ("too many services") — observed live.
+    - traefik.http.routers.openclaw.service=openclaw
     - traefik.http.services.openclaw.loadbalancer.server.port=18789
     - traefik.http.routers.openclaw-zoom.rule=Host(`${OPENCLAW_PUBLIC_DOMAIN}`) &&
       PathPrefix(`/zoom/`)
