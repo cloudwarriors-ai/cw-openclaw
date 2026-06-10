@@ -23,7 +23,8 @@ vi.mock("./comfort.js", () => ({
   sendComfortMessage: () => {},
 }));
 
-import { registerUserMaintenanceTools, tryExecuteConfirm } from "./user-maintenance-tools.js";
+import { tryExecuteConfirm } from "./confirm.js";
+import { registerUserMaintenanceTools } from "./user-maintenance-tools.js";
 
 type ToolDef = {
   name: string;

@@ -3,7 +3,7 @@
 // THE invariant: a write tool's execute() must only STAGE — it calls stageWrite()
 // (which registers a pending action and delivers the CONFIRM prompt to the channel)
 // and never calls scopelyFetch with a mutating method directly. The real mutation
-// lives in the `run` closure, fired ONLY by tryExecuteConfirm() (user-maintenance-tools.ts)
+// lives in the `run` closure, fired ONLY by tryExecuteConfirm() (confirm.ts)
 // when a human replies `CONFIRM <code>`. The LLM cannot fabricate that inbound message,
 // so the bot cannot self-mutate. Tests assert scopelyFetch is not called during execute().
 

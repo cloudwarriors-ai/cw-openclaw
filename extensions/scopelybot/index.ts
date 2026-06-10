@@ -2,6 +2,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { registerAdminTools } from "./src/admin-tools.js";
 import { createAuditLogger } from "./src/audit.js";
 import { rememberChannelThreadAnchor, sendComfortMessage } from "./src/comfort.js";
+import { tryExecuteConfirm } from "./src/confirm.js";
 import { registerCorrelationTools } from "./src/correlation-tools.js";
 import { registerDeploymentConfigTools } from "./src/deployment-config-tools.js";
 import { registerGhTools } from "./src/gh-tools.js";
@@ -12,7 +13,7 @@ import { registerPassthroughTools } from "./src/passthrough-tools.js";
 import { registerPricingTools } from "./src/pricing-tools.js";
 import { registerScopelyTools } from "./src/scopely-tools.js";
 import { registerScopingCardTools } from "./src/scoping-card-tools.js";
-import { registerUserMaintenanceTools, tryExecuteConfirm } from "./src/user-maintenance-tools.js";
+import { registerUserMaintenanceTools } from "./src/user-maintenance-tools.js";
 import { registerVendorConfigTools } from "./src/vendor-config-tools.js";
 
 type PluginConfig = { scopelyRepos?: string[] };

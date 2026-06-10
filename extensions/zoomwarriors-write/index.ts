@@ -1,10 +1,10 @@
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
-import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
-import { zw2Fetch, getZw2Base } from "../zoomwarriors/zw2-auth.js";
+import { zw2Fetch, getZw2Base } from "./zw2-auth.js";
 
 const ZW2_BASE = getZw2Base();
 
@@ -58,7 +58,9 @@ function jsonResult(data: unknown) {
 
 function errorResult(err: unknown) {
   const message = err instanceof Error ? err.message : String(err);
-  return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: message }) }] };
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: message }) }],
+  };
 }
 
 // --- Section submission helper ---
@@ -75,9 +77,10 @@ function registerSectionTool(
     description,
     parameters: Type.Object({
       order_id: Type.Number({ description: "The ZW2 order ID" }),
-      data: method === "POST"
-        ? Type.Optional(Type.String({ description: "JSON string of section fields to submit" }))
-        : Type.Optional(Type.String({ description: "Not used for GET requests" })),
+      data:
+        method === "POST"
+          ? Type.Optional(Type.String({ description: "JSON string of section fields to submit" }))
+          : Type.Optional(Type.String({ description: "Not used for GET requests" })),
     }),
     async execute(_id: string, params: Record<string, unknown>) {
       try {
@@ -131,45 +134,75 @@ const plugin = {
     }));
 
     // Section submission tools
-    registerSectionTool(api, "zw2_submit_customer_info",
+    registerSectionTool(
+      api,
+      "zw2_submit_customer_info",
       "Submit customer info (Section 1) for a ZW2 order: order_name, order_type, company details, decision maker, billing contact.",
-      (id) => `/api/v1/orders/${id}/customer-info/`);
+      (id) => `/api/v1/orders/${id}/customer-info/`,
+    );
 
-    registerSectionTool(api, "zw2_submit_zp_license",
+    registerSectionTool(
+      api,
+      "zw2_submit_zp_license",
       "Submit Zoom Phone license counts (Section 2): zoom_phone_licenses, common_area_licenses, power_pack_licenses, additional_dids.",
-      (id) => `/api/v1/orders/${id}/zp-license/`);
+      (id) => `/api/v1/orders/${id}/zp-license/`,
+    );
 
-    registerSectionTool(api, "zw2_submit_zp_location",
+    registerSectionTool(
+      api,
+      "zw2_submit_zp_location",
       "Submit Zoom Phone location info (Section 3): sites, e911 zones, foreign ports, international deployment.",
-      (id) => `/api/v1/orders/${id}/zp-location/`);
+      (id) => `/api/v1/orders/${id}/zp-location/`,
+    );
 
-    registerSectionTool(api, "zw2_submit_zp_features",
+    registerSectionTool(
+      api,
+      "zw2_submit_zp_features",
       "Submit Zoom Phone features (Section 4): auto receptionists, call queues, ATAs, paging.",
-      (id) => `/api/v1/orders/${id}/zp-features/`);
+      (id) => `/api/v1/orders/${id}/zp-features/`,
+    );
 
-    registerSectionTool(api, "zw2_submit_zp_hardware",
+    registerSectionTool(
+      api,
+      "zw2_submit_zp_hardware",
       "Submit Zoom Phone hardware info (Section 5): physical phones, reprovisioning.",
-      (id) => `/api/v1/orders/${id}/zp-hardware/`);
+      (id) => `/api/v1/orders/${id}/zp-hardware/`,
+    );
 
-    registerSectionTool(api, "zw2_submit_zp_sbc_pbx",
+    registerSectionTool(
+      api,
+      "zw2_submit_zp_sbc_pbx",
       "Submit Zoom Phone SBC/PBX config (Section 6): BYOC, SBC count/type, PBX count/type.",
-      (id) => `/api/v1/orders/${id}/zp-sbc-pbx/`);
+      (id) => `/api/v1/orders/${id}/zp-sbc-pbx/`,
+    );
 
-    registerSectionTool(api, "zw2_submit_zcc",
+    registerSectionTool(
+      api,
+      "zw2_submit_zcc",
       "Submit Zoom Contact Center config (Section 7): agents, channels (voice/video/sms/webchat/email/social), BYOC.",
-      (id) => `/api/v1/orders/${id}/zcc/`);
+      (id) => `/api/v1/orders/${id}/zcc/`,
+    );
 
-    registerSectionTool(api, "zw2_submit_wfo",
+    registerSectionTool(
+      api,
+      "zw2_submit_wfo",
       "Submit Workplace Optimization (Section 8): workforce management, quality management, AI expert assist, ZVA.",
-      (id) => `/api/v1/orders/${id}/zcc-workplace-optimization/`);
+      (id) => `/api/v1/orders/${id}/zcc-workplace-optimization/`,
+    );
 
-    registerSectionTool(api, "zw2_submit_additions",
+    registerSectionTool(
+      api,
+      "zw2_submit_additions",
       "Submit additions (Section 9): SSO, marketplace apps, CTI integrations.",
-      (id) => `/api/v1/orders/${id}/additions/`);
+      (id) => `/api/v1/orders/${id}/additions/`,
+    );
 
-    registerSectionTool(api, "zw2_submit_wrapup",
+    registerSectionTool(
+      api,
+      "zw2_submit_wrapup",
       "Submit wrapup questions (Section 10): go-live events, training sessions, on-site support.",
-      (id) => `/api/v1/orders/${id}/wrapup-questions/`);
+      (id) => `/api/v1/orders/${id}/wrapup-questions/`,
+    );
 
     // --- Order Modification Tools (Training Data Patterns) ---
 
@@ -195,15 +228,21 @@ const plugin = {
     }));
 
     // SOW generation
-    registerSectionTool(api, "zw2_generate_sow",
+    registerSectionTool(
+      api,
+      "zw2_generate_sow",
       "Generate the Statement of Work document for a completed ZW2 order.",
-      (id) => `/api/v1/orders/${id}/generate-sow/`);
+      (id) => `/api/v1/orders/${id}/generate-sow/`,
+    );
 
     // SOW download (GET)
-    registerSectionTool(api, "zw2_download_sow",
+    registerSectionTool(
+      api,
+      "zw2_download_sow",
       "Download the generated SOW PDF for a ZW2 order. Returns the PDF content or download URL.",
       (id) => `/api/v1/orders/${id}/download-sow-pdf/`,
-      "GET");
+      "GET",
+    );
 
     // --- Extraction tracking tools ---
 
@@ -213,10 +252,14 @@ const plugin = {
         "Save transcript extraction data for a ZW2 order. Call after each bighead_analyze_transcript or bighead_followup to track the latest state. Links conversation_id to order_id.",
       parameters: Type.Object({
         conversation_id: Type.String({ description: "Rebecca conversation ID from bighead" }),
-        order_id: Type.Optional(Type.Number({ description: "ZW2 order ID (set after zw2_create_order)" })),
+        order_id: Type.Optional(
+          Type.Number({ description: "ZW2 order ID (set after zw2_create_order)" }),
+        ),
         extracted_data: Type.String({ description: "Full extracted JSON blob from Rebecca" }),
         customer_name: Type.Optional(Type.String({ description: "Customer/company name" })),
-        order_type: Type.Optional(Type.String({ description: "zoom_phone, zoom_contact_center, or both" })),
+        order_type: Type.Optional(
+          Type.String({ description: "zoom_phone, zoom_contact_center, or both" }),
+        ),
       }),
       async execute(_id: string, params: Record<string, unknown>) {
         try {
@@ -227,7 +270,9 @@ const plugin = {
           const notes = JSON.stringify(parsed.confidence_notes ?? []);
           const mfCount = Array.isArray(parsed.missing_fields) ? parsed.missing_fields.length : 0;
 
-          const existing = db.prepare("SELECT id, followup_count FROM extractions WHERE conversation_id = ?").get(convId) as { id: number; followup_count: number } | undefined;
+          const existing = db
+            .prepare("SELECT id, followup_count FROM extractions WHERE conversation_id = ?")
+            .get(convId) as { id: number; followup_count: number } | undefined;
 
           if (existing) {
             db.prepare(`UPDATE extractions SET
@@ -236,19 +281,37 @@ const plugin = {
               customer_name = COALESCE(?, customer_name),
               order_type = COALESCE(?, order_type),
               followup_count = ?
-              WHERE conversation_id = ?`
-            ).run(data, missing, notes,
-              params.order_id ?? null, params.customer_name ?? null, params.order_type ?? null,
-              existing.followup_count + 1, convId);
+              WHERE conversation_id = ?`).run(
+              data,
+              missing,
+              notes,
+              params.order_id ?? null,
+              params.customer_name ?? null,
+              params.order_type ?? null,
+              existing.followup_count + 1,
+              convId,
+            );
           } else {
             db.prepare(`INSERT INTO extractions
               (conversation_id, order_id, customer_name, order_type, extracted_data, missing_fields, confidence_notes, started_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-            ).run(convId, params.order_id ?? null, params.customer_name ?? null,
-              params.order_type ?? null, data, missing, notes, new Date().toISOString());
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
+              convId,
+              params.order_id ?? null,
+              params.customer_name ?? null,
+              params.order_type ?? null,
+              data,
+              missing,
+              notes,
+              new Date().toISOString(),
+            );
           }
 
-          return jsonResult({ ok: true, conversation_id: convId, missing_fields_count: mfCount, updated: !!existing });
+          return jsonResult({
+            ok: true,
+            conversation_id: convId,
+            missing_fields_count: mfCount,
+            updated: !!existing,
+          });
         } catch (err) {
           return errorResult(err);
         }
@@ -266,16 +329,23 @@ const plugin = {
       async execute(_id: string, params: Record<string, unknown>) {
         try {
           const convId = params.conversation_id as string;
-          const row = db.prepare("SELECT id FROM extractions WHERE conversation_id = ?").get(convId) as { id: number } | undefined;
+          const row = db
+            .prepare("SELECT id FROM extractions WHERE conversation_id = ?")
+            .get(convId) as { id: number } | undefined;
           if (!row) return jsonResult({ ok: false, error: "Session not found" });
 
           db.prepare(`UPDATE extractions SET
             status = 'completed', completed_at = ?,
             order_id = COALESCE(?, order_id)
-            WHERE conversation_id = ?`
-          ).run(new Date().toISOString(), params.order_id ?? null, convId);
+            WHERE conversation_id = ?`).run(
+            new Date().toISOString(),
+            params.order_id ?? null,
+            convId,
+          );
 
-          const session = db.prepare("SELECT * FROM extractions WHERE conversation_id = ?").get(convId) as Record<string, unknown>;
+          const session = db
+            .prepare("SELECT * FROM extractions WHERE conversation_id = ?")
+            .get(convId) as Record<string, unknown>;
           return jsonResult({ ok: true, ...session });
         } catch (err) {
           return errorResult(err);
@@ -295,9 +365,13 @@ const plugin = {
         try {
           let row: Record<string, unknown> | undefined;
           if (params.conversation_id) {
-            row = db.prepare("SELECT * FROM extractions WHERE conversation_id = ?").get(params.conversation_id as string) as Record<string, unknown> | undefined;
+            row = db
+              .prepare("SELECT * FROM extractions WHERE conversation_id = ?")
+              .get(params.conversation_id as string) as Record<string, unknown> | undefined;
           } else if (params.order_id) {
-            row = db.prepare("SELECT * FROM extractions WHERE order_id = ?").get(params.order_id as number) as Record<string, unknown> | undefined;
+            row = db
+              .prepare("SELECT * FROM extractions WHERE order_id = ?")
+              .get(params.order_id as number) as Record<string, unknown> | undefined;
           } else {
             return jsonResult({ ok: false, error: "Provide conversation_id or order_id" });
           }
@@ -306,13 +380,19 @@ const plugin = {
 
           // Parse JSON fields for readability
           if (typeof row.extracted_data === "string") {
-            try { row.extracted_data = JSON.parse(row.extracted_data); } catch {}
+            try {
+              row.extracted_data = JSON.parse(row.extracted_data);
+            } catch {}
           }
           if (typeof row.missing_fields === "string") {
-            try { row.missing_fields = JSON.parse(row.missing_fields); } catch {}
+            try {
+              row.missing_fields = JSON.parse(row.missing_fields);
+            } catch {}
           }
           if (typeof row.confidence_notes === "string") {
-            try { row.confidence_notes = JSON.parse(row.confidence_notes); } catch {}
+            try {
+              row.confidence_notes = JSON.parse(row.confidence_notes);
+            } catch {}
           }
 
           return jsonResult({ ok: true, ...row });
@@ -328,7 +408,9 @@ const plugin = {
         "List recent extraction sessions. Shows conversation_id, order_id, customer, status, and followup count.",
       parameters: Type.Object({
         limit: Type.Optional(Type.Number({ description: "Max rows to return (default 20)" })),
-        status: Type.Optional(Type.String({ description: "Filter by status: in_progress, completed" })),
+        status: Type.Optional(
+          Type.String({ description: "Filter by status: in_progress, completed" }),
+        ),
       }),
       async execute(_id: string, params: Record<string, unknown>) {
         try {
@@ -337,13 +419,17 @@ const plugin = {
 
           let rows: unknown[];
           if (status) {
-            rows = db.prepare(
-              "SELECT id, conversation_id, order_id, customer_name, order_type, status, followup_count, started_at, completed_at FROM extractions WHERE status = ? ORDER BY id DESC LIMIT ?"
-            ).all(status, limit) as unknown[];
+            rows = db
+              .prepare(
+                "SELECT id, conversation_id, order_id, customer_name, order_type, status, followup_count, started_at, completed_at FROM extractions WHERE status = ? ORDER BY id DESC LIMIT ?",
+              )
+              .all(status, limit) as unknown[];
           } else {
-            rows = db.prepare(
-              "SELECT id, conversation_id, order_id, customer_name, order_type, status, followup_count, started_at, completed_at FROM extractions ORDER BY id DESC LIMIT ?"
-            ).all(limit) as unknown[];
+            rows = db
+              .prepare(
+                "SELECT id, conversation_id, order_id, customer_name, order_type, status, followup_count, started_at, completed_at FROM extractions ORDER BY id DESC LIMIT ?",
+              )
+              .all(limit) as unknown[];
           }
 
           return jsonResult({ ok: true, count: rows.length, sessions: rows });
