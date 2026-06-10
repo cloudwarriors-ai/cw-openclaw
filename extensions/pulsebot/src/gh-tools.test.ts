@@ -1,188 +1,285 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AuditLogger } from "./audit.js";
+// Mock the process boundary so no real `gh` command ever runs and we can assert
+// exactly when (stage vs confirm) a mutation fires AND that LLM-controlled values
+// reach gh as literal argv elements (execFileSync = no shell), never a shell string.
+const execFileSyncMock = vi.fn();
+vi.mock("child_process", () => ({
+  execFileSync: (...args: unknown[]) => execFileSyncMock(...args),
+}));
+
+vi.mock("./pp-api.js", () => ({
+  jsonResult: (data: unknown) => ({ content: [{ type: "text", text: JSON.stringify(data) }] }),
+  errorResult: (err: unknown) => ({
+    content: [{ type: "text", text: JSON.stringify({ ok: false, error: String(err) }) }],
+  }),
+}));
+
+const sendPulseTextMock = vi.fn();
+vi.mock("./comfort.js", () => ({
+  sendPulseText: (...args: unknown[]) => sendPulseTextMock(...args),
+  getChannelThreadAnchor: () => "MSG-ANCHOR",
+  rememberChannelThreadAnchor: () => {},
+  sendComfortMessage: () => {},
+  PULSEBOT_CHANNEL: "pulsebot-default@conference.xmpp.zoom.us",
+}));
+
+// Stakeholder/DM helpers are not under test here — stub to no-ops.
+vi.mock("./stakeholders.js", () => ({
+  buildStakeholderWorkPrefix: () => "",
+  extractStakeholdersFromIssue: () => ({ stakeholders: [], reporter: undefined }),
+  formatStakeholderBlock: () => "",
+  parseIssueNumberFromUrl: () => 77,
+  resolveStakeholderDmTarget: () => undefined,
+  upsertStakeholderBlock: (body: string) => body,
+}));
+vi.mock("./zoom-dm.js", () => ({ sendStakeholderZoomDm: async () => ({ ok: true }) }));
+
+import { tryExecuteConfirm } from "./confirm.js";
 import { registerGhTools } from "./gh-tools.js";
 
-const { execSyncMock } = vi.hoisted(() => ({ execSyncMock: vi.fn() }));
-
-vi.mock("child_process", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("child_process")>();
-  return {
-    ...actual,
-    execSync: execSyncMock,
-  };
-});
-
-type TextToolResult = {
-  content: Array<{ type: "text"; text: string }>;
-};
-
-type RegisteredTool = {
+type ToolDef = {
   name: string;
-  execute: (id: string, params: Record<string, unknown>) => Promise<TextToolResult>;
+  execute: (
+    id: string,
+    params: Record<string, unknown>,
+  ) => Promise<{ content: { text: string }[] }>;
 };
 
-function createMockApi() {
-  const tools: RegisteredTool[] = [];
+const noopLogger = () => {};
+const CHANNEL = "pulsebot@conference.xmpp.zoom.us";
+const REPO = "cloudwarriors-ai/project-pulse";
+
+function buildTools(): Record<string, ToolDef> {
+  const tools: Record<string, ToolDef> = {};
   const api = {
-    registerTool(factory: () => RegisteredTool) {
-      tools.push(factory());
+    registerTool: (factory: () => ToolDef) => {
+      const t = factory();
+      tools[t.name] = t;
     },
-  };
-  return { api, tools };
+  } as never;
+  registerGhTools(api, noopLogger as never, { ppRepos: [REPO] });
+  return tools;
 }
 
-function parseToolJson(result: TextToolResult) {
-  const raw = result.content[0]?.text ?? "{}";
-  return JSON.parse(raw) as Record<string, unknown>;
+function parse(res: { content: { text: string }[] }) {
+  return JSON.parse(res.content[0].text);
 }
 
-describe("pulsebot gh tools", () => {
-  const logger: AuditLogger = vi.fn();
+function codeFromDelivery(): string | undefined {
+  const text = sendPulseTextMock.mock.calls.at(-1)?.[1];
+  return String(text ?? "").match(/CONFIRM (\d{4})/)?.[1];
+}
 
+// All gh invocations go through execFileSync("gh", argv, opts). Find the call whose
+// argv contains a given subcommand token.
+function ghArgvContaining(token: string): string[] | undefined {
+  const call = execFileSyncMock.mock.calls.find(
+    (c) => Array.isArray(c[1]) && (c[1] as string[]).includes(token),
+  );
+  return call?.[1] as string[] | undefined;
+}
+
+describe("pulsebot gh reads", () => {
   beforeEach(() => {
-    execSyncMock.mockReset();
-    vi.unstubAllGlobals();
+    execFileSyncMock.mockReset();
+    sendPulseTextMock.mockReset();
   });
 
-  it("returns issue data when gh is available", async () => {
-    const { api, tools } = createMockApi();
-    registerGhTools(api as never, logger, { ppRepos: ["cloudwarriors-ai/project-pulse"] });
-
-    execSyncMock.mockReturnValue(
+  it("list_issues returns parsed issue data (no staging)", async () => {
+    const tools = buildTools();
+    execFileSyncMock.mockReturnValue(
       JSON.stringify([{ number: 42, title: "OAuth login fails", state: "open" }]),
     );
-
-    const tool = tools.find((entry) => entry.name === "gh_list_issues");
-    expect(tool).toBeDefined();
-
-    const result = await tool!.execute("call1", { state: "open", limit: 1 });
-    const payload = parseToolJson(result);
-
+    const payload = parse(await tools.gh_list_issues.execute("t", { state: "open", limit: 1 }));
     expect(payload.ok).toBe(true);
-    expect(Array.isArray(payload.data)).toBe(true);
     expect((payload.data as Array<Record<string, unknown>>)[0]?.number).toBe(42);
-    expect(execSyncMock).toHaveBeenCalledOnce();
-    expect(String(execSyncMock.mock.calls[0]?.[0])).toContain("gh issue list");
+    const argv = ghArgvContaining("list");
+    expect(argv).toBeDefined();
+    expect(argv).toContain("issue");
+    expect(sendPulseTextMock).not.toHaveBeenCalled();
   });
 
   it("surfaces gh-not-found errors without throwing", async () => {
-    const { api, tools } = createMockApi();
-    registerGhTools(api as never, logger, { ppRepos: ["cloudwarriors-ai/project-pulse"] });
-
-    execSyncMock.mockImplementation(() => {
+    const tools = buildTools();
+    execFileSyncMock.mockImplementation(() => {
       throw new Error("/bin/sh: 1: gh: not found");
     });
-
-    const tool = tools.find((entry) => entry.name === "gh_search_issues");
-    expect(tool).toBeDefined();
-
-    const result = await tool!.execute("call2", { query: "oauth timeout" });
-    const payload = parseToolJson(result);
-
+    const payload = parse(await tools.gh_search_issues.execute("t", { query: "oauth timeout" }));
     expect(payload.ok).toBe(false);
     expect(String(payload.error)).toContain("gh: not found");
-    expect(execSyncMock).toHaveBeenCalledOnce();
   });
 
   it("blocks repositories outside the allowlist", async () => {
-    const { api, tools } = createMockApi();
-    registerGhTools(api as never, logger, { ppRepos: ["cloudwarriors-ai/project-pulse"] });
-
-    const tool = tools.find((entry) => entry.name === "gh_list_issues");
-    expect(tool).toBeDefined();
-
-    const result = await tool!.execute("call3", { repo: "other-org/other-repo" });
-    const payload = parseToolJson(result);
-
+    const tools = buildTools();
+    const payload = parse(
+      await tools.gh_list_issues.execute("t", { repo: "other-org/other-repo" }),
+    );
     expect(payload.ok).toBe(false);
     expect(String(payload.error)).toContain("not in allowed list");
-    expect(execSyncMock).not.toHaveBeenCalled();
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("pulsebot gh writes are confirm-gated", () => {
+  beforeEach(() => {
+    execFileSyncMock.mockReset();
+    sendPulseTextMock.mockReset();
+    process.env.PULSEBOT_ZOOM_CHANNEL = CHANNEL;
+  });
+  afterEach(() => {
+    delete process.env.PULSEBOT_ZOOM_CHANNEL;
   });
 
-  it("persists stakeholder metadata on issue creation", async () => {
-    const { api, tools } = createMockApi();
-    registerGhTools(api as never, logger, { ppRepos: ["cloudwarriors-ai/project-pulse"] });
+  it("create_issue stages — no gh shell-out, code-free result, prompt to channel", async () => {
+    const tools = buildTools();
+    const staged = parse(
+      await tools.gh_create_issue.execute("t", { title: "Crash on boot", body: "details" }),
+    );
 
-    execSyncMock
-      .mockReturnValueOnce("https://github.com/cloudwarriors-ai/project-pulse/issues/77")
-      .mockReturnValueOnce("https://github.com/cloudwarriors-ai/project-pulse/issues/77#issuecomment-1");
-
-    const tool = tools.find((entry) => entry.name === "gh_create_issue");
-    expect(tool).toBeDefined();
-
-    const result = await tool!.execute("call4", {
-      title: "Webhook timeout",
-      body: "Customer reported a timeout while saving.",
-      reporter: "doug.ruby@cloudwarriors.ai",
-      stakeholders: ["@voipin", "trent.mitchell@cloudwarriors.ai"],
-    });
-    const payload = parseToolJson(result);
-
-    expect(payload.ok).toBe(true);
-    expect(payload.issueNumber).toBe(77);
-    expect(execSyncMock).toHaveBeenCalledTimes(2);
-    expect(String(execSyncMock.mock.calls[1]?.[0])).toContain("gh issue comment 77");
-    const commentInput = String(execSyncMock.mock.calls[1]?.[1]?.input ?? "");
-    expect(commentInput).toContain("Reporter: doug.ruby@cloudwarriors.ai");
-    expect(commentInput).toContain("Stakeholders:");
+    expect(staged.staged).toBe(true);
+    expect(staged.awaiting_confirmation).toBe(true);
+    expect(JSON.stringify(staged)).not.toMatch(/CONFIRM \d{4}/);
+    expect(execFileSyncMock).not.toHaveBeenCalled(); // no mutation at stage time
+    expect(sendPulseTextMock).toHaveBeenCalledTimes(1);
+    expect(sendPulseTextMock.mock.calls[0][1]).toMatch(/CONFIRM \d{4}/);
   });
 
-  it("closes issues, comments with stakeholders, and reports dm notifications", async () => {
-    const { api, tools } = createMockApi();
-    registerGhTools(api as never, logger, { ppRepos: ["cloudwarriors-ai/project-pulse"] });
+  it("create_issue runs `gh issue create` only after CONFIRM", async () => {
+    const tools = buildTools();
+    execFileSyncMock.mockReturnValue("https://github.com/cloudwarriors-ai/project-pulse/issues/77");
+    await tools.gh_create_issue.execute("t", { title: "Crash", body: "x" });
+    expect(execFileSyncMock).not.toHaveBeenCalled();
 
-    execSyncMock
-      .mockReturnValueOnce(
-        JSON.stringify({
-          number: 88,
-          title: "Fix DM delivery",
-          body: [
-            "<!-- pulsebot:stakeholders:start -->",
-            "Reporter: doug.ruby@cloudwarriors.ai",
-            "Stakeholders: @voipin, trent.mitchell@cloudwarriors.ai",
-            "<!-- pulsebot:stakeholders:end -->",
-          ].join("\n"),
-          comments: [],
-          assignees: [],
-        }),
-      )
-      .mockReturnValueOnce("commented")
-      .mockReturnValueOnce("closed");
-
-    const fetchMock = vi.fn(async (url: string) => {
-      if (url.includes("/oauth/token")) {
-        return {
-          ok: true,
-          json: async () => ({ access_token: "token", expires_in: 3600 }),
-        } as Response;
-      }
-      return {
-        ok: true,
-        text: async () => "",
-      } as Response;
+    const code = codeFromDelivery();
+    const reply = await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: CHANNEL,
+      logger: noopLogger as never,
     });
-    vi.stubGlobal("fetch", fetchMock);
 
-    process.env.ZOOM_REPORT_CLIENT_ID = "cid";
-    process.env.ZOOM_REPORT_CLIENT_SECRET = "secret";
-    process.env.ZOOM_REPORT_ACCOUNT_ID = "acct";
-    process.env.ZOOM_REPORT_USER = "doug.ruby@cloudwarriors.ai";
-    process.env.PULSEBOT_STAKEHOLDER_MAP = "voipin=doug.ruby@cloudwarriors.ai";
+    expect(ghArgvContaining("create")).toBeDefined();
+    expect(reply).toMatch(/✅ Done/);
+    expect(reply).toContain("https://github.com/cloudwarriors-ai/project-pulse/issues/77");
+  });
 
-    const tool = tools.find((entry) => entry.name === "gh_close_issue");
-    expect(tool).toBeDefined();
+  it("close_issue stages and does not close until CONFIRM", async () => {
+    const tools = buildTools();
+    execFileSyncMock.mockReturnValue("closed");
+    await tools.gh_close_issue.execute("t", { number: 7 });
+    // Stage time: nothing shells out (not even the issue-view read inside the closure).
+    expect(execFileSyncMock).not.toHaveBeenCalled();
 
-    const result = await tool!.execute("call5", {
-      number: 88,
-      comment: "Fix deployed to production.",
+    const code = codeFromDelivery();
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: CHANNEL,
+      logger: noopLogger as never,
     });
-    const payload = parseToolJson(result);
+    expect(ghArgvContaining("close")).toBeDefined();
+  });
 
-    expect(payload.ok).toBe(true);
-    expect(Array.isArray(payload.notified)).toBe(true);
-    expect((payload.notified as string[]).length).toBeGreaterThan(0);
-    expect(execSyncMock).toHaveBeenCalledTimes(3);
-    expect(String(execSyncMock.mock.calls[2]?.[0])).toContain("gh issue close 88");
+  it("an unknown repo is rejected at stage time (no staging, no prompt)", async () => {
+    const tools = buildTools();
+    const res = parse(
+      await tools.gh_create_issue.execute("t", { repo: "evil/repo", title: "x", body: "y" }),
+    );
+    expect(res.ok).toBe(false);
+    expect(sendPulseTextMock).not.toHaveBeenCalled();
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("a CONFIRM from a DIFFERENT channel cannot fire the staged write", async () => {
+    const tools = buildTools();
+    execFileSyncMock.mockReturnValue("https://github.com/cloudwarriors-ai/project-pulse/issues/77");
+    await tools.gh_create_issue.execute("t", { title: "Crash", body: "x" });
+    const code = codeFromDelivery();
+
+    // Wrong channel: must be refused and must NOT consume the pending action.
+    const wrong = await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "attacker",
+      conversationId: "someone-elses-channel@conference.xmpp.zoom.us",
+      logger: noopLogger as never,
+    });
+    expect(wrong).toMatch(/different channel|expired|already been used/);
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+
+    // Right channel: the action is still there and fires.
+    const right = await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: CHANNEL,
+      logger: noopLogger as never,
+    });
+    expect(right).toMatch(/✅ Done/);
+    expect(ghArgvContaining("create")).toBeDefined();
+  });
+});
+
+describe("pulsebot gh tools are injection-safe (execFileSync, no shell)", () => {
+  beforeEach(() => {
+    execFileSyncMock.mockReset();
+    sendPulseTextMock.mockReset();
+    process.env.PULSEBOT_ZOOM_CHANNEL = CHANNEL;
+  });
+  afterEach(() => {
+    delete process.env.PULSEBOT_ZOOM_CHANNEL;
+  });
+
+  it("every gh call passes argv to execFileSync, not a shell string", async () => {
+    const tools = buildTools();
+    execFileSyncMock.mockReturnValue("[]");
+    await tools.gh_list_issues.execute("t", {});
+    expect(execFileSyncMock).toHaveBeenCalledTimes(1);
+    const [bin, argv] = execFileSyncMock.mock.calls[0];
+    expect(bin).toBe("gh");
+    expect(Array.isArray(argv)).toBe(true);
+    expect((argv as unknown[]).every((a) => typeof a === "string")).toBe(true);
+  });
+
+  it("search passes a shell-metachar query as ONE verbatim argv element", async () => {
+    const tools = buildTools();
+    execFileSyncMock.mockReturnValue("[]");
+    const malicious = '"; rm -rf / #$(whoami)`id`';
+    await tools.gh_search_issues.execute("t", { query: malicious });
+    const argv = ghArgvContaining("issues");
+    expect(argv).toBeDefined();
+    // The query is a single argv element, passed verbatim — not escaped, not split,
+    // not quote-wrapped. execFileSync gives it no shell, so it cannot be expanded.
+    expect(argv).toContain(malicious);
+  });
+
+  it("get_issue rejects a non-integer issue number and never shells out", async () => {
+    const tools = buildTools();
+    const res = parse(await tools.gh_get_issue.execute("t", { number: "7 $(whoami)" }));
+    expect(res.ok).toBe(false);
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("list_issues rejects an invalid state value", async () => {
+    const tools = buildTools();
+    const res = parse(await tools.gh_list_issues.execute("t", { state: "open; rm -rf /" }));
+    expect(res.ok).toBe(false);
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("create passes a metachar title as a verbatim argv element after CONFIRM", async () => {
+    const tools = buildTools();
+    execFileSyncMock.mockReturnValue("https://github.com/cloudwarriors-ai/project-pulse/issues/77");
+    const title = 'Crash "$(rm -rf /)" `id`';
+    await tools.gh_create_issue.execute("t", { title, body: "x" });
+    const code = codeFromDelivery();
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: CHANNEL,
+      logger: noopLogger as never,
+    });
+    const argv = ghArgvContaining("create");
+    expect(argv).toBeDefined();
+    expect(argv).toContain(title); // verbatim, unescaped
   });
 });

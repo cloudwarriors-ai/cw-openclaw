@@ -1,4 +1,4 @@
-import { execSync } from "child_process";
+import { execFileSync } from "node:child_process";
 import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
@@ -82,9 +82,21 @@ export function registerCorrelationTools(
             let ghMatches: unknown = [];
             try {
               const repo = (config.scopelyRepos ?? ["cloudwarriors-ai/scopely"])[0];
-              const query = pattern.replace(/"/g, '\\"').slice(0, 100);
-              const result = execSync(
-                `gh search issues "${query}" --repo ${repo} --limit 10 --json number,title,state,labels,createdAt`,
+              const query = pattern.slice(0, 100);
+              // Explicit argv (NO shell): the LLM-controlled query is passed literally.
+              const result = execFileSync(
+                "gh",
+                [
+                  "search",
+                  "issues",
+                  query,
+                  "--repo",
+                  repo,
+                  "--limit",
+                  "10",
+                  "--json",
+                  "number,title,state,labels,createdAt",
+                ],
                 {
                   encoding: "utf-8",
                   timeout: 15000,

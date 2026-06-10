@@ -1,7 +1,8 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { registerAdminTools } from "./src/admin-tools.js";
 import { createAuditLogger } from "./src/audit.js";
-import { sendComfortMessage, sendScopelyText } from "./src/comfort.js";
+import { rememberChannelThreadAnchor, sendComfortMessage } from "./src/comfort.js";
+import { tryExecuteConfirm } from "./src/confirm.js";
 import { registerCorrelationTools } from "./src/correlation-tools.js";
 import { registerDeploymentConfigTools } from "./src/deployment-config-tools.js";
 import { registerGhTools } from "./src/gh-tools.js";
@@ -12,10 +13,14 @@ import { registerPassthroughTools } from "./src/passthrough-tools.js";
 import { registerPricingTools } from "./src/pricing-tools.js";
 import { registerScopelyTools } from "./src/scopely-tools.js";
 import { registerScopingCardTools } from "./src/scoping-card-tools.js";
-import { registerUserMaintenanceTools, tryExecuteConfirm } from "./src/user-maintenance-tools.js";
+import { registerUserMaintenanceTools } from "./src/user-maintenance-tools.js";
 import { registerVendorConfigTools } from "./src/vendor-config-tools.js";
 
 type PluginConfig = { scopelyRepos?: string[] };
+
+// A human confirm reply. Mirrors the matcher in tryExecuteConfirm() so the
+// before_dispatch gate and the comfort-skip use one shape.
+const CONFIRM_RE = /^CONFIRM\s+\d{4}\b/i;
 
 // Default 5 minutes; override with PASSTHROUGH_INTERVAL_MS
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
@@ -70,20 +75,41 @@ const plugin = {
     registerDeploymentConfigTools(optionalApi, logger);
     registerScopingCardTools(optionalApi, logger);
 
-    // Send comfort message when a message arrives in the scopelybot channel
+    // Comfort message + thread-anchor capture on inbound. CONFIRM execution is
+    // NOT handled here: message_received is a fire-and-forget OBSERVE hook (it
+    // cannot suppress the coordinator), and it runs before before_dispatch — if
+    // it consumed the pending action the before_dispatch handler would find
+    // nothing. So here we only (a) skip comfort for a CONFIRM reply and (b) stash
+    // the inbound message id so the confirm gate can thread its prompt.
     api.on("message_received", async (event, ctx) => {
-      if (ctx.channelId === "zoom" && ctx.conversationId) {
-        // User-maintenance confirm gate: a human `CONFIRM <code>` reply executes a staged action.
-        const text = typeof event.content === "string" ? event.content : "";
-        const confirmReply = await tryExecuteConfirm({ text, actor: event.from ?? "", logger });
-        if (confirmReply) {
-          await sendScopelyText(ctx.conversationId, confirmReply);
-          return;
-        }
-        const messageId =
-          typeof event.metadata?.messageId === "string" ? event.metadata.messageId : undefined;
-        void sendComfortMessage(ctx.conversationId, messageId);
-      }
+      if (ctx.channelId !== "zoom" || !ctx.conversationId) return;
+      const text = typeof event.content === "string" ? event.content : "";
+      if (CONFIRM_RE.test(text.trim())) return;
+      const messageId =
+        typeof event.metadata?.messageId === "string" ? event.metadata.messageId : undefined;
+      rememberChannelThreadAnchor(ctx.conversationId, messageId);
+      void sendComfortMessage(ctx.conversationId, messageId);
+    });
+
+    // Confirm gate execution: a human `CONFIRM <code>` reply runs the staged action.
+    // before_dispatch is the awaited pre-dispatch seam that can suppress the agent —
+    // `handled: true` stops the message from reaching the coordinator (no spurious
+    // re-stage), and `text` is delivered by core threaded into the conversation. The
+    // LLM is never in the execution path: it cannot fabricate the inbound CONFIRM.
+    api.on("before_dispatch", async (event, ctx) => {
+      if (ctx.channelId !== "zoom") return;
+      const text = typeof event.content === "string" ? event.content : "";
+      if (!CONFIRM_RE.test(text.trim())) return;
+      const result = await tryExecuteConfirm({
+        text,
+        actor: ctx.senderId ?? "",
+        conversationId: ctx.conversationId ?? "",
+        logger,
+      });
+      // `handled: true` suppresses the coordinator so the CONFIRM cannot re-stage; the
+      // result string (executed / "no pending action") is delivered threaded by core.
+      console.log("[scopelybot] before_dispatch claimed CONFIRM (coordinator suppressed)");
+      return { handled: true, text: result ?? undefined };
     });
 
     // Schedule recurring passthrough test runs.

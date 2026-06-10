@@ -1,0 +1,10 @@
+{
+  "id": "test-capture",
+  "name": "TestCapture",
+  "description": "Test-only harness: capture+suppress Zoom egress and trace hub-and-spoke routing",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

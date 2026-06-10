@@ -1,0 +1,14 @@
+{
+  "name": "@openclaw/test-capture",
+  "version": "0.1.0",
+  "description": "Test-only harness: capture+suppress Zoom egress and trace hub-and-spoke routing",
+  "type": "module",
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

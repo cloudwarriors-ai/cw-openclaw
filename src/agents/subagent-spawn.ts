@@ -1304,11 +1304,19 @@ export async function spawnSubagentDirect(
     }
   };
 
+  // Cross-agent spawns (hub→spoke delegation) target a separately-configured agent that has its
+  // own tool policy. Inheriting the spawner's effective tool allowlist as a ceiling would intersect
+  // the target's tools against it — and a deliberately narrow router-only coordinator would starve
+  // the spoke to zero callable tools. Only same-agent forks inherit the parent allow surface; the
+  // deny inheritance still propagates either way (safety hardening, never widens).
+  const inheritedToolAllowlistForChild =
+    targetAgentId === requesterAgentId ? ctx.inheritedToolAllowlist : undefined;
+
   const initialChildSessionPatch: Record<string, unknown> = {
     spawnDepth: childDepth,
     subagentRole: childCapabilities.role === "main" ? null : childCapabilities.role,
     subagentControlScope: childCapabilities.controlScope,
-    ...inheritedToolAllowPatch(ctx.inheritedToolAllowlist),
+    ...inheritedToolAllowPatch(inheritedToolAllowlistForChild),
     ...inheritedToolDenyPatch(ctx.inheritedToolDenylist),
     ...plan.initialSessionPatch,
   };

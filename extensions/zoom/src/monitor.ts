@@ -1,16 +1,17 @@
+import fs from "node:fs";
+import path from "node:path";
 import type { Request, Response } from "express";
 import type { OpenClawConfig, RuntimeEnv } from "openclaw/plugin-sdk";
 import { createZoomConversationStoreFs } from "./conversation-store-fs.js";
 import type { ZoomConversationStore } from "./conversation-store.js";
-import { formatUnknownError } from "./errors.js";
 import { createZoomMessageHandler } from "./monitor-handler.js";
 import type { ZoomMonitorLogger } from "./monitor-types.js";
 import { getZoomRuntime } from "./runtime.js";
 import { resolveZoomCredentials } from "./token.js";
-import type { ZoomConfig, ZoomCredentials } from "./types.js";
+import type { ZoomConfig, ZoomWebhookEvent } from "./types.js";
 import { createUploadRoutes } from "./upload-handler.js";
-import { resolveZoomUploadDir } from "./upload-path.js";
-import { handleZoomChallenge, verifyZoomWebhook } from "./webhook.js";
+import { isWithinUploadDir, resolveZoomUploadDir, UPLOAD_TTL_MS } from "./upload-path.js";
+import { createZoomWebhookRequestHandler } from "./webhook.js";
 
 export type MonitorZoomOpts = {
   cfg: OpenClawConfig;
@@ -39,6 +40,14 @@ export async function monitorZoomProvider(opts: MonitorZoomOpts): Promise<Monito
   if (!creds) {
     log.error("zoom credentials not configured");
     return { app: null, shutdown: async () => {} };
+  }
+  if (!creds.webhookSecretToken) {
+    // Loud at startup, enforced per-request: the webhook handler is fail-closed
+    // and will 401 everything until the secret is configured.
+    log.error(
+      "ZOOM_WEBHOOK_SECRET_TOKEN is not set — all inbound webhooks will be REJECTED (fail-closed). " +
+        "Set channels.zoom.webhookSecretToken or the env var to accept Zoom traffic.",
+    );
   }
 
   const runtime: RuntimeEnv = opts.runtime ?? {
@@ -99,70 +108,57 @@ export async function monitorZoomProvider(opts: MonitorZoomOpts): Promise<Monito
   expressApp.get("/zoom/file", uploadRoutes.handleGet);
   expressApp.post("/zoom/file", express.json({ limit: "15mb" }), uploadRoutes.handlePost);
 
-  // Serve uploaded files
+  // Serve uploaded files. Gated: path must resolve inside the uploads dir, the
+  // file must be younger than UPLOAD_TTL_MS (a download URL is a bearer secret —
+  // leaked links must expire), and dotfiles are denied.
   const uploadDir = resolveZoomUploadDir();
-  expressApp.use("/zoom/uploads", express.static(uploadDir));
-
-  // Webhook endpoint
-  expressApp.post(webhookPath, async (req: Request, res: Response) => {
-    try {
-      const rawBody = (req as Request & { rawBody?: string }).rawBody ?? JSON.stringify(req.body);
-      const signature = req.headers["x-zm-signature"] as string | undefined;
-      const timestamp = req.headers["x-zm-request-timestamp"] as string | undefined;
-
-      // Handle URL validation challenge
-      if (req.body?.event === "endpoint.url_validation") {
-        const plainToken = req.body.payload?.plainToken;
-        if (plainToken && creds.webhookSecretToken) {
-          const challenge = handleZoomChallenge({
-            plainToken,
-            secret: creds.webhookSecretToken,
-          });
-          log.debug("responding to URL validation challenge");
-          res.status(200).json(challenge);
-          return;
-        }
-        log.warn("URL validation received but missing plainToken or secret");
-        res.status(400).json({ error: "missing challenge data" });
+  expressApp.use(
+    "/zoom/uploads",
+    (req: Request, res: Response, next: () => void) => {
+      let rel: string;
+      try {
+        rel = decodeURIComponent(req.path.replace(/^\/+/, ""));
+      } catch {
+        res.status(404).end();
         return;
       }
-
-      // Verify webhook signature if secret is configured
-      if (creds.webhookSecretToken) {
-        if (!signature || !timestamp) {
-          log.warn("missing webhook signature headers");
-          res.status(401).json({ error: "missing signature" });
-          return;
-        }
-
-        const valid = verifyZoomWebhook({
-          payload: rawBody,
-          signature,
-          timestamp,
-          secret: creds.webhookSecretToken,
-        });
-
-        if (!valid) {
-          log.warn("invalid webhook signature");
-          res.status(401).json({ error: "invalid signature" });
-          return;
-        }
+      const resolved = path.resolve(uploadDir, rel);
+      if (!isWithinUploadDir(resolved)) {
+        res.status(404).end();
+        return;
       }
-
-      // Acknowledge webhook immediately
-      res.status(200).json({ status: "ok" });
-
-      // Process message asynchronously
-      await handleMessage(req.body);
-    } catch (err) {
-      log.error(
-        "webhook handler failed: " +
-          (err instanceof Error ? err.stack || err.message : String(err)),
-      );
-      if (!res.headersSent) {
-        res.status(500).json({ error: "internal error" });
+      let stat: fs.Stats;
+      try {
+        stat = fs.statSync(resolved);
+      } catch {
+        res.status(404).end();
+        return;
       }
-    }
+      if (!stat.isFile() || Date.now() - stat.mtimeMs > UPLOAD_TTL_MS) {
+        res.status(404).end();
+        return;
+      }
+      next();
+    },
+    express.static(uploadDir, { dotfiles: "deny" }),
+  );
+
+  // Webhook endpoint. Fail-closed: rejects everything when no secret is set.
+  const handleWebhookRequest = createZoomWebhookRequestHandler({
+    webhookSecretToken: creds.webhookSecretToken,
+    log,
+    // The factory hands back the signature-verified request body; it is the
+    // Zoom webhook event shape the message handler expects.
+    handleMessage: (body) => handleMessage(body as ZoomWebhookEvent),
+  });
+  // Non-async express handler: handleWebhookRequest never rejects (it owns a
+  // catch-all and answers 500 itself), so void-ing the promise is safe and
+  // avoids the unhandled-rejection hazard of async endpoint handlers.
+  expressApp.post(webhookPath, (req: Request, res: Response) => {
+    void handleWebhookRequest(
+      Object.assign(req, { rawBody: (req as Request & { rawBody?: string }).rawBody }),
+      res,
+    );
   });
 
   // Health check endpoint

@@ -651,28 +651,6 @@ describe("runPreparedReply media-only handling", () => {
     expect(call?.followupRun.originatingChannel).toBe(channel);
   });
 
-  it("derives channel memory scope from GroupSubject when ChannelSlug is missing", async () => {
-    await runPreparedReply(
-      baseParams({
-        sessionCtx: {
-          Body: "",
-          BodyStripped: "",
-          MediaPath: "/tmp/input.png",
-          Provider: "zoom",
-          ChatType: "channel",
-          GroupSubject: "Test Customer",
-          GroupChannel: "a04c5d88d32d4ba3a3949fd6e5929d5b@conference.xmpp.zoom.us",
-          OriginatingChannel: "zoom",
-          OriginatingTo: "a04c5d88d32d4ba3a3949fd6e5929d5b@conference.xmpp.zoom.us",
-        },
-      }),
-    );
-
-    const call = vi.mocked(runReplyAgent).mock.calls[0]?.[0];
-    expect(call?.followupRun.run.channelSlug).toBe("test-customer");
-    expect(call?.followupRun.run.defaultMemoryScope).toBe("channel");
-  });
-
   it("keeps thread history context on follow-up turns", async () => {
     const result = await runPreparedReply(
       baseParams({

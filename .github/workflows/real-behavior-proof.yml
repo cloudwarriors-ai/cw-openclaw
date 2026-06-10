@@ -15,6 +15,9 @@ permissions: {}
 
 jobs:
   real-behavior-proof:
+    # cw-fork (2026-06-10): contributor proof-block parser; this fork's PRs use
+    # the maintainer verification path instead. Upstream-only.
+    if: github.repository == 'openclaw/openclaw'
     name: Real behavior proof
     permissions:
       contents: read

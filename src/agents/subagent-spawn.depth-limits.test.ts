@@ -155,6 +155,43 @@ describe("subagent spawn depth + child limits", () => {
     expect(childSession.inheritedToolDeny).toEqual(["exec", "read"]);
   });
 
+  it("drops the requester tool allowlist ceiling on cross-agent spawns but still propagates denies", async () => {
+    // A router-only coordinator (narrow tools.allow) delegating to a separately-configured
+    // spoke must NOT have its allowlist intersected onto the spoke — that would starve the
+    // spoke to zero callable tools. Only same-agent forks inherit the allow ceiling; cross-agent
+    // targets keep their own tool policy. Deny inheritance still propagates either way (hardening).
+    hoisted.configOverride = createSubagentSpawnTestConfig("/tmp/workspace-main", {
+      agents: {
+        defaults: {
+          workspace: "/tmp/workspace-main",
+          subagents: { maxSpawnDepth: 2, allowAgents: ["writer"] },
+        },
+        list: [{ id: "main" }, { id: "writer" }],
+      },
+    });
+
+    const result = await spawnSubagentDirect(
+      { task: "hello", agentId: "writer" },
+      {
+        agentSessionKey: "agent:main:main",
+        workspaceDir: "/tmp/workspace-main",
+        inheritedToolAllowlist: ["sessions_spawn", "read"],
+        inheritedToolDenylist: ["exec", "read"],
+      },
+    );
+
+    const accepted = expectAccepted(result, "run-1");
+    expect(accepted.childSessionKey).toMatch(/^agent:writer:subagent:/);
+    const childSession = persistedStore?.[accepted.childSessionKey];
+    if (!childSession) {
+      throw new Error("Expected persisted child session");
+    }
+    // Cross-agent target: allowlist ceiling dropped so the spoke is not starved.
+    expect(childSession.inheritedToolAllow).toBeUndefined();
+    // Deny inheritance still flows to the spoke (never widens its surface).
+    expect(childSession.inheritedToolDeny).toEqual(["exec", "read"]);
+  });
+
   it("rejects callers when stored spawn depth is already at the configured max", async () => {
     hoisted.configOverride = createDepthLimitConfig({ maxSpawnDepth: 2 });
     hoisted.depthBySession.set("agent:main:subagent:flat-depth-2", 2);

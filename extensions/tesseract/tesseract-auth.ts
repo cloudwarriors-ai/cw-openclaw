@@ -7,19 +7,33 @@
  * active user session with automatic expiry (default 1 hour).
  */
 
-if (!process.env.TESSERACT_URL) {
-  throw new Error("TESSERACT_URL env var is required. Set it to the internal backend URL (e.g., http://playground-backend:8000).");
-}
-if (!process.env.TESSERACT_EXTERNAL_URL) {
-  throw new Error("TESSERACT_EXTERNAL_URL env var is required. Set it to the browser-accessible backend URL (e.g., http://localhost:8130).");
+// Required env, resolved lazily at call time. A module-level throw here would
+// crash the ENTIRE gateway at plugin load when the var is missing; instead each
+// tool call fails with a clear error (caught by the tools' try/catch) and the
+// rest of the fleet keeps running.
+function tesseractUrl(): string {
+  const url = process.env.TESSERACT_URL;
+  if (!url) {
+    throw new Error(
+      "TESSERACT_URL env var is required. Set it to the internal backend URL (e.g., http://playground-backend:8000).",
+    );
+  }
+  return url;
 }
 
-const TESSERACT_URL = process.env.TESSERACT_URL;
-const TESSERACT_EXTERNAL_URL = process.env.TESSERACT_EXTERNAL_URL;
+function tesseractExternalUrl(): string {
+  const url = process.env.TESSERACT_EXTERNAL_URL;
+  if (!url) {
+    throw new Error(
+      "TESSERACT_EXTERNAL_URL env var is required. Set it to the browser-accessible backend URL (e.g., http://localhost:8130).",
+    );
+  }
+  return url;
+}
 
 /** Rewrite an internal URL to be browser-accessible. */
 export function externalizeUrl(internalUrl: string): string {
-  return internalUrl.replace(TESSERACT_URL, TESSERACT_EXTERNAL_URL);
+  return internalUrl.replace(tesseractUrl(), tesseractExternalUrl());
 }
 
 /** How long a channel session stays active without activity (ms). Default: 24 hours. */
@@ -63,8 +77,8 @@ export function setActiveUser(email: string | null, channel?: string): void {
   if (!channel || INVALID_CHANNEL_KEYS.has(channel)) {
     throw new Error(
       "Channel identifier is required for session management. " +
-      "Cannot store credentials without a specific channel key. " +
-      `Got: ${JSON.stringify(channel)}`
+        "Cannot store credentials without a specific channel key. " +
+        `Got: ${JSON.stringify(channel)}`,
     );
   }
   if (!email) {
@@ -127,7 +141,11 @@ export function getSessionInfo(channel?: string): {
 }
 
 /** List all active (non-expired) sessions. */
-export function listSessions(): Array<{ channel: string; email: string; idleSinceMinutes: number }> {
+export function listSessions(): Array<{
+  channel: string;
+  email: string;
+  idleSinceMinutes: number;
+}> {
   const now = Date.now();
   const active: Array<{ channel: string; email: string; idleSinceMinutes: number }> = [];
   for (const [channel, session] of state.sessions.entries()) {
@@ -156,7 +174,7 @@ export async function tesseractLogin(): Promise<void> {
     throw new Error("TESSERACT_USERNAME and TESSERACT_PASSWORD env vars required");
   }
 
-  const resp = await fetch(`${TESSERACT_URL}/api/auth/login-csrf-free/`, {
+  const resp = await fetch(`${tesseractUrl()}/api/auth/login-csrf-free/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
@@ -182,7 +200,7 @@ export async function tesseractToolCall(
   const asUser = getActiveUser(channel);
 
   const doCall = async (): Promise<Response> =>
-    fetch(`${TESSERACT_URL}/api/chat/tool-proxy/`, {
+    fetch(`${tesseractUrl()}/api/chat/tool-proxy/`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -215,7 +233,7 @@ export async function tesseractToolCall(
 export async function tesseractListTools(): Promise<string[]> {
   if (!state.token) await tesseractLogin();
 
-  const resp = await fetch(`${TESSERACT_URL}/api/chat/tools/`, {
+  const resp = await fetch(`${tesseractUrl()}/api/chat/tools/`, {
     headers: { Authorization: `Bearer ${state.token}` },
   });
 
@@ -234,7 +252,7 @@ export async function tesseractFetch(
   if (!state.token) await tesseractLogin();
 
   const doFetch = async (): Promise<Response> =>
-    fetch(`${TESSERACT_URL}${endpoint}`, {
+    fetch(`${tesseractUrl()}${endpoint}`, {
       ...options,
       headers: {
         "Content-Type": "application/json",
@@ -257,5 +275,5 @@ export async function tesseractFetch(
 }
 
 export function getTesseractUrl(): string {
-  return TESSERACT_URL;
+  return tesseractUrl();
 }

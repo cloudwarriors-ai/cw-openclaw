@@ -1,13 +1,47 @@
+import { execFileSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { Type } from "@sinclair/typebox";
-import * as fs from "fs";
-import * as path from "path";
-import { execSync } from "child_process";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { jsonResult, errorResult } from "./helpers.js";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
+import { jsonResult, errorResult } from "./helpers.js";
 
-const STATE_DIR = "/root/code/external-org-autopilot/.autopilot-state";
+// Env-driven so the deploy host can relocate the checkout/state; defaults match
+// the current production container layout (state lives inside the EOA checkout).
+// `||` (not `??`): compose passes `VAR=${VAR}`, so an unset host var arrives as
+// "" and must still fall through to the default.
+const STATE_DIR = () =>
+  process.env.EOA_STATE_DIR ||
+  path.join(process.env.EOA_ROOT || "/root/code/external-org-autopilot", ".autopilot-state");
+
+// GitHub Actions run IDs are numeric. Validate so the value is a sane argv element.
+function assertRunId(value: unknown): string {
+  const s =
+    typeof value === "string" ? value.trim() : typeof value === "number" ? String(value) : "";
+  if (!/^\d+$/.test(s)) {
+    throw new Error(`Invalid workflow run ID: ${JSON.stringify(value)}`);
+  }
+  return s;
+}
+
+// owner/name. Reject anything that could alter a gh api path (extra slashes, traversal).
+function assertRepoSlug(value: unknown): string {
+  const s = typeof value === "string" ? value.trim() : "";
+  if (!/^[\w.-]+\/[\w.-]+$/.test(s)) {
+    throw new Error(`Invalid repo "${s}": expected owner/name.`);
+  }
+  return s;
+}
+
+// 7-40 char hex commit SHA. Reject anything that could alter the gh api path.
+function assertCommitSha(value: unknown): string {
+  const s = typeof value === "string" ? value.trim() : "";
+  if (!/^[0-9a-fA-F]{7,40}$/.test(s)) {
+    throw new Error(`Invalid commit SHA: ${JSON.stringify(value)}`);
+  }
+  return s;
+}
 
 export function registerEoaStateTools(api: OpenClawPluginApi, logger: AuditLogger) {
   // eoa_list_runs
@@ -17,11 +51,13 @@ export function registerEoaStateTools(api: OpenClawPluginApi, logger: AuditLogge
         name: "eoa_list_runs",
         description: "List all autopilot runs. Optionally filter by mirrorRepoId.",
         parameters: Type.Object({
-          mirrorRepoId: Type.Optional(Type.String({ description: "Filter runs by mirror repo UUID" })),
+          mirrorRepoId: Type.Optional(
+            Type.String({ description: "Filter runs by mirror repo UUID" }),
+          ),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
-            const runsDir = path.join(STATE_DIR, "autopilot-runs");
+            const runsDir = path.join(STATE_DIR(), "autopilot-runs");
             if (!fs.existsSync(runsDir)) {
               return jsonResult({ ok: true, data: [], message: "No runs directory found" });
             }
@@ -59,7 +95,7 @@ export function registerEoaStateTools(api: OpenClawPluginApi, logger: AuditLogge
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
-            const filePath = path.join(STATE_DIR, "autopilot-runs", `${params.runId}.json`);
+            const filePath = path.join(STATE_DIR(), "autopilot-runs", `${params.runId}.json`);
             if (!fs.existsSync(filePath)) {
               return jsonResult({ ok: false, error: `Run ${params.runId} not found` });
             }
@@ -79,15 +115,19 @@ export function registerEoaStateTools(api: OpenClawPluginApi, logger: AuditLogge
     wrapToolWithAudit(
       {
         name: "eoa_get_evidence",
-        description: "Read a full evidence bundle by ID. Contains verdict, validation summary, runtime evidence, worker summary, and artifact links.",
+        description:
+          "Read a full evidence bundle by ID. Contains verdict, validation summary, runtime evidence, worker summary, and artifact links.",
         parameters: Type.Object({
           bundleId: Type.String({ description: "Evidence bundle UUID" }),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
-            const filePath = path.join(STATE_DIR, "evidence-bundles", `${params.bundleId}.json`);
+            const filePath = path.join(STATE_DIR(), "evidence-bundles", `${params.bundleId}.json`);
             if (!fs.existsSync(filePath)) {
-              return jsonResult({ ok: false, error: `Evidence bundle ${params.bundleId} not found` });
+              return jsonResult({
+                ok: false,
+                error: `Evidence bundle ${params.bundleId} not found`,
+              });
             }
             const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
             return jsonResult({ ok: true, data });
@@ -105,19 +145,27 @@ export function registerEoaStateTools(api: OpenClawPluginApi, logger: AuditLogge
     wrapToolWithAudit(
       {
         name: "eoa_get_workflow_status",
-        description: "Check a GitHub Actions workflow run status. Returns status, conclusion, and jobs.",
+        description:
+          "Check a GitHub Actions workflow run status. Returns status, conclusion, and jobs.",
         parameters: Type.Object({
           workflowRunId: Type.String({ description: "GitHub Actions workflow run ID" }),
           repo: Type.String({ description: "Shadow repo (owner/name) from the run JSON." }),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
-            const repo = params.repo as string;
-            if (!repo) {
-              return jsonResult({ ok: false, error: "repo is required (shadow repo from run JSON)" });
-            }
-            const result = execSync(
-              `gh run view ${params.workflowRunId} --repo ${repo} --json status,conclusion,jobs,name,createdAt,updatedAt`,
+            const repo = assertRepoSlug(params.repo);
+            const runId = assertRunId(params.workflowRunId);
+            const result = execFileSync(
+              "gh",
+              [
+                "run",
+                "view",
+                runId,
+                "--repo",
+                repo,
+                "--json",
+                "status,conclusion,jobs,name,createdAt,updatedAt",
+              ],
               {
                 encoding: "utf-8",
                 timeout: 30000,
@@ -147,17 +195,19 @@ export function registerEoaStateTools(api: OpenClawPluginApi, logger: AuditLogge
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
-            const result = execSync(
-              `gh run view ${params.workflowRunId} --repo ${params.repo} --log`,
-              {
-                encoding: "utf-8",
-                timeout: 60000,
-                maxBuffer: 10 * 1024 * 1024,
-                env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1" },
-              },
-            );
+            const repo = assertRepoSlug(params.repo);
+            const runId = assertRunId(params.workflowRunId);
+            const result = execFileSync("gh", ["run", "view", runId, "--repo", repo, "--log"], {
+              encoding: "utf-8",
+              timeout: 60000,
+              maxBuffer: 10 * 1024 * 1024,
+              env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1" },
+            });
             // Truncate if very large
-            const output = result.length > 50000 ? result.slice(-50000) + "\n...[truncated to last 50k chars]" : result;
+            const output =
+              result.length > 50000
+                ? result.slice(-50000) + "\n...[truncated to last 50k chars]"
+                : result;
             return jsonResult({ ok: true, data: output });
           } catch (err) {
             return errorResult(err);
@@ -180,8 +230,18 @@ export function registerEoaStateTools(api: OpenClawPluginApi, logger: AuditLogge
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
-            const result = execSync(
-              `gh api repos/${params.repo}/commits/${params.sha} --jq '.files[] | {filename, status, additions, deletions, patch}'`,
+            const repo = assertRepoSlug(params.repo);
+            const sha = assertCommitSha(params.sha);
+            // argv: the path is one literal element and --jq gets the expression
+            // verbatim (the shell single-quotes were quoting, not part of the value).
+            const result = execFileSync(
+              "gh",
+              [
+                "api",
+                `repos/${repo}/commits/${sha}`,
+                "--jq",
+                ".files[] | {filename, status, additions, deletions, patch}",
+              ],
               {
                 encoding: "utf-8",
                 timeout: 30000,

@@ -2,14 +2,13 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
-import { makeCode, putPending, takePending } from "./pending-confirm.js";
+import { stageWrite } from "./gated.js";
 import { scopelyFetch, jsonResult, errorResult } from "./scopely-api.js";
 
-let codeSeed = 1;
-
-// Each gated tool resolves a target, stages a pending action, and returns the
-// confirm prompt. It does NOT execute — execution happens in tryExecuteConfirm()
-// when a human replies `CONFIRM <code>` in the channel.
+// Each gated tool resolves a target and stages a pending action via stageWrite(),
+// which posts the confirm prompt (with code) to the channel deterministically. It
+// does NOT execute — execution happens in tryExecuteConfirm() when a human replies
+// `CONFIRM <code>`, consumed in the before_dispatch hook (extensions/scopelybot/index.ts).
 export function registerUserMaintenanceTools(api: OpenClawPluginApi, logger: AuditLogger) {
   // 1) Admin password reset
   api.registerTool(() =>
@@ -33,23 +32,13 @@ export function registerUserMaintenanceTools(api: OpenClawPluginApi, logger: Aud
           try {
             const userId = params.user_id as number;
             const email = (params.email as string) || `id ${userId}`;
-            const code = makeCode(codeSeed++ * 7919 + userId);
             const summary = `reset password for ${email} (id ${userId})`;
-            putPending({
-              code,
-              summary,
-              run: () =>
-                scopelyFetch(`/api/auth/users/${userId}/reset-password/`, {
-                  method: "POST",
-                  body: "{}",
-                }),
-            });
-            return jsonResult({
-              staged: true,
-              message:
-                `⚠️ Confirm: ${summary} on PROD.\n` +
-                `Reply \`CONFIRM ${code}\` within 5 minutes to proceed, or ignore to cancel.`,
-            });
+            return await stageWrite(summary, () =>
+              scopelyFetch(`/api/auth/users/${userId}/reset-password/`, {
+                method: "POST",
+                body: "{}",
+              }),
+            );
           } catch (err) {
             return errorResult(err);
           }
@@ -81,23 +70,13 @@ export function registerUserMaintenanceTools(api: OpenClawPluginApi, logger: Aud
             const userId = params.user_id as number;
             const isActive = params.is_active as boolean;
             const email = (params.email as string) || `id ${userId}`;
-            const code = makeCode(codeSeed++ * 7919 + userId);
             const summary = `${isActive ? "ACTIVATE" : "DEACTIVATE"} ${email} (id ${userId})`;
-            putPending({
-              code,
-              summary,
-              run: () =>
-                scopelyFetch(`/api/auth/users/${userId}/`, {
-                  method: "PATCH",
-                  body: JSON.stringify({ is_active: isActive }),
-                }),
-            });
-            return jsonResult({
-              staged: true,
-              message:
-                `⚠️ Confirm: ${summary} on PROD.\n` +
-                `Reply \`CONFIRM ${code}\` within 5 minutes to proceed, or ignore to cancel.`,
-            });
+            return await stageWrite(summary, () =>
+              scopelyFetch(`/api/auth/users/${userId}/`, {
+                method: "PATCH",
+                body: JSON.stringify({ is_active: isActive }),
+              }),
+            );
           } catch (err) {
             return errorResult(err);
           }
@@ -237,23 +216,13 @@ export function registerUserMaintenanceTools(api: OpenClawPluginApi, logger: Aud
             const changes = Object.entries(body)
               .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
               .join(", ");
-            const code = makeCode(codeSeed++ * 7919 + userId);
             const summary = `update user id ${userId}: ${changes}`;
-            putPending({
-              code,
-              summary,
-              run: () =>
-                scopelyFetch(`/api/auth/users/${userId}/`, {
-                  method: "PATCH",
-                  body: JSON.stringify(body),
-                }),
-            });
-            return jsonResult({
-              staged: true,
-              message:
-                `⚠️ Confirm: ${summary} on PROD.\n` +
-                `Reply \`CONFIRM ${code}\` within 5 minutes to proceed, or ignore to cancel.`,
-            });
+            return await stageWrite(summary, () =>
+              scopelyFetch(`/api/auth/users/${userId}/`, {
+                method: "PATCH",
+                body: JSON.stringify(body),
+              }),
+            );
           } catch (err) {
             return errorResult(err);
           }
@@ -297,23 +266,13 @@ export function registerUserMaintenanceTools(api: OpenClawPluginApi, logger: Aud
             }
             const orgPart =
               params.organization !== undefined ? ` into org ${params.organization}` : "";
-            const code = makeCode(codeSeed++ * 7919 + email.length);
             const summary = `invite ${email} as ${role}${orgPart}`;
-            putPending({
-              code,
-              summary,
-              run: () =>
-                scopelyFetch(`/api/auth/invites/create/`, {
-                  method: "POST",
-                  body: JSON.stringify(body),
-                }),
-            });
-            return jsonResult({
-              staged: true,
-              message:
-                `⚠️ Confirm: ${summary} on PROD.\n` +
-                `Reply \`CONFIRM ${code}\` within 5 minutes to proceed, or ignore to cancel.`,
-            });
+            return await stageWrite(summary, () =>
+              scopelyFetch(`/api/auth/invites/create/`, {
+                method: "POST",
+                body: JSON.stringify(body),
+              }),
+            );
           } catch (err) {
             return errorResult(err);
           }
@@ -348,23 +307,13 @@ export function registerUserMaintenanceTools(api: OpenClawPluginApi, logger: Aud
             const requestId = params.request_id as number;
             const organization = params.organization as number;
             const role = (params.role as string) || "user";
-            const code = makeCode(codeSeed++ * 7919 + requestId);
             const summary = `APPROVE access request ${requestId} → org ${organization} as ${role}`;
-            putPending({
-              code,
-              summary,
-              run: () =>
-                scopelyFetch(`/api/auth/access-requests/${requestId}/approve/`, {
-                  method: "POST",
-                  body: JSON.stringify({ organization, role }),
-                }),
-            });
-            return jsonResult({
-              staged: true,
-              message:
-                `⚠️ Confirm: ${summary} on PROD.\n` +
-                `Reply \`CONFIRM ${code}\` within 5 minutes to proceed, or ignore to cancel.`,
-            });
+            return await stageWrite(summary, () =>
+              scopelyFetch(`/api/auth/access-requests/${requestId}/approve/`, {
+                method: "POST",
+                body: JSON.stringify({ organization, role }),
+              }),
+            );
           } catch (err) {
             return errorResult(err);
           }
@@ -392,23 +341,13 @@ export function registerUserMaintenanceTools(api: OpenClawPluginApi, logger: Aud
         async execute(_id: string, params: Record<string, unknown>) {
           try {
             const requestId = params.request_id as number;
-            const code = makeCode(codeSeed++ * 7919 + requestId);
             const summary = `REJECT access request ${requestId}`;
-            putPending({
-              code,
-              summary,
-              run: () =>
-                scopelyFetch(`/api/auth/access-requests/${requestId}/reject/`, {
-                  method: "POST",
-                  body: "{}",
-                }),
-            });
-            return jsonResult({
-              staged: true,
-              message:
-                `⚠️ Confirm: ${summary} on PROD.\n` +
-                `Reply \`CONFIRM ${code}\` within 5 minutes to proceed, or ignore to cancel.`,
-            });
+            return await stageWrite(summary, () =>
+              scopelyFetch(`/api/auth/access-requests/${requestId}/reject/`, {
+                method: "POST",
+                body: "{}",
+              }),
+            );
           } catch (err) {
             return errorResult(err);
           }
@@ -417,47 +356,4 @@ export function registerUserMaintenanceTools(api: OpenClawPluginApi, logger: Aud
       logger,
     ),
   );
-}
-
-// Called from the message_received handler. If the inbound text is `CONFIRM <code>`
-// for a live pending action, execute it and return a human-readable result string.
-// Returns null when the message is not a confirm (so normal handling continues).
-export async function tryExecuteConfirm(params: {
-  text: string;
-  actor: string;
-  logger: AuditLogger;
-}): Promise<string | null> {
-  const m = params.text.trim().match(/^CONFIRM\s+(\d{4})\b/i);
-  if (!m) return null;
-  const action = takePending(m[1]);
-  if (!action) {
-    return `No pending action for code ${m[1]} — it may have expired (5 min) or already been used.`;
-  }
-  const start = Date.now();
-  try {
-    const res = await action.run();
-    params.logger({
-      ts: new Date().toISOString(),
-      tool: "scopely_confirm_execute",
-      actor: params.actor || "unknown",
-      params: { summary: action.summary },
-      resultSummary: res.ok ? "ok" : `error: ${res.status}`,
-      durationMs: Date.now() - start,
-    });
-    return res.ok
-      ? `✅ Done: ${action.summary}.`
-      : `❌ Failed (HTTP ${res.status}): ${action.summary}. ${JSON.stringify(res.data).slice(0, 200)}`;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    params.logger({
-      ts: new Date().toISOString(),
-      tool: "scopely_confirm_execute",
-      actor: params.actor || "unknown",
-      params: { summary: action.summary },
-      resultSummary: "error: exception",
-      error: msg,
-      durationMs: Date.now() - start,
-    });
-    return `❌ Error executing ${action.summary}: ${msg}`;
-  }
 }

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the prod HTTP layer so no real network call is ever made and we can
 // assert exactly which path/method each tool would hit.
@@ -12,7 +12,19 @@ vi.mock("./scopely-api.js", () => ({
   buildQuery: () => "",
 }));
 
-import { registerUserMaintenanceTools, tryExecuteConfirm } from "./user-maintenance-tools.js";
+// Mock the channel sender so staging delivers the confirm prompt to a spy instead
+// of hitting Zoom. This is where the real code now lives — never in the tool's
+// LLM-facing return value.
+const sendScopelyTextMock = vi.fn();
+vi.mock("./comfort.js", () => ({
+  sendScopelyText: (...args: unknown[]) => sendScopelyTextMock(...args),
+  getChannelThreadAnchor: () => "MSG-ANCHOR",
+  rememberChannelThreadAnchor: () => {},
+  sendComfortMessage: () => {},
+}));
+
+import { tryExecuteConfirm } from "./confirm.js";
+import { registerUserMaintenanceTools } from "./user-maintenance-tools.js";
 
 type ToolDef = {
   name: string;
@@ -23,6 +35,7 @@ type ToolDef = {
 };
 
 const noopLogger = () => {};
+const CHANNEL = "vipbot@conference.xmpp.zoom.us";
 
 function buildTools(): Record<string, ToolDef> {
   const tools: Record<string, ToolDef> = {};
@@ -42,9 +55,22 @@ function parse(res: { content: { text: string }[] }) {
   return JSON.parse(res.content[0].text);
 }
 
+// The confirm code now travels ONLY through the deterministic channel send, never
+// through the tool's return value. Pull it from the latest sendScopelyText call.
+function codeFromDelivery(): string | undefined {
+  // sendScopelyText(channel, text, replyTo) — the prompt text is arg index 1.
+  const text = sendScopelyTextMock.mock.calls.at(-1)?.[1];
+  return String(text ?? "").match(/CONFIRM (\d{4})/)?.[1];
+}
+
 describe("user-maintenance-tools", () => {
   beforeEach(() => {
     fetchMock.mockReset();
+    sendScopelyTextMock.mockReset();
+    process.env.SCOPELYBOT_ZOOM_CHANNEL = CHANNEL;
+  });
+  afterEach(() => {
+    delete process.env.SCOPELYBOT_ZOOM_CHANNEL;
   });
 
   it("read-only tools execute immediately against the correct BFF paths", async () => {
@@ -61,6 +87,33 @@ describe("user-maintenance-tools", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/auth/access-requests/");
   });
 
+  it("staging delivers the code to the channel (threaded) and returns NO code to the model", async () => {
+    const tools = buildTools();
+
+    const staged = parse(
+      await tools.scopely_reset_user_password.execute("t", {
+        user_id: 123,
+        email: "matt@example.com",
+      }),
+    );
+
+    // The model-facing result is code-free — it cannot fabricate/relay/duplicate it.
+    expect(staged.staged).toBe(true);
+    expect(staged.awaiting_confirmation).toBe(true);
+    expect(JSON.stringify(staged)).not.toMatch(/CONFIRM \d{4}/);
+    expect(JSON.stringify(staged)).not.toMatch(/\b\d{4}\b/);
+
+    // The real prompt — with the code — was posted to the channel, threaded.
+    expect(sendScopelyTextMock).toHaveBeenCalledTimes(1);
+    const [channel, text, replyTo] = sendScopelyTextMock.mock.calls[0];
+    expect(channel).toBe(CHANNEL);
+    expect(text).toMatch(/CONFIRM \d{4}/);
+    expect(replyTo).toBe("MSG-ANCHOR");
+
+    // Staging must not touch prod until confirmed.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("scopely_update_user stages only the supplied fields and does NOT execute until confirmed", async () => {
     const tools = buildTools();
 
@@ -70,13 +123,14 @@ describe("user-maintenance-tools", () => {
     expect(staged.staged).toBe(true);
     expect(fetchMock).not.toHaveBeenCalled(); // staging must not touch prod
 
-    const code = staged.message.match(/CONFIRM (\d{4})/)?.[1];
+    const code = codeFromDelivery();
     expect(code).toBeTruthy();
 
     fetchMock.mockResolvedValue({ ok: true, status: 200, data: {} });
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "tester",
+      conversationId: CHANNEL,
       logger: noopLogger as never,
     });
 
@@ -92,22 +146,22 @@ describe("user-maintenance-tools", () => {
     const res = parse(await tools.scopely_update_user.execute("t", { user_id: 7 }));
     expect(res.ok).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(sendScopelyTextMock).not.toHaveBeenCalled();
   });
 
   it("scopely_create_invite stages email+role and posts to the invite endpoint on confirm", async () => {
     const tools = buildTools();
-    const staged = parse(
-      await tools.scopely_create_invite.execute("t", {
-        email: "new@example.com",
-        role: "org_admin",
-      }),
-    );
-    const code = staged.message.match(/CONFIRM (\d{4})/)?.[1];
+    await tools.scopely_create_invite.execute("t", {
+      email: "new@example.com",
+      role: "org_admin",
+    });
+    const code = codeFromDelivery();
 
     fetchMock.mockResolvedValue({ ok: true, status: 201, data: {} });
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "tester",
+      conversationId: CHANNEL,
       logger: noopLogger as never,
     });
 
@@ -120,14 +174,13 @@ describe("user-maintenance-tools", () => {
   it("access-request approve/reject stage and hit the right endpoints on confirm", async () => {
     const tools = buildTools();
 
-    const approve = parse(
-      await tools.scopely_approve_access_request.execute("t", { request_id: 3, organization: 9 }),
-    );
-    const approveCode = approve.message.match(/CONFIRM (\d{4})/)?.[1];
+    await tools.scopely_approve_access_request.execute("t", { request_id: 3, organization: 9 });
+    const approveCode = codeFromDelivery();
     fetchMock.mockResolvedValue({ ok: true, status: 200, data: {} });
     await tryExecuteConfirm({
       text: `CONFIRM ${approveCode}`,
       actor: "t",
+      conversationId: CHANNEL,
       logger: noopLogger as never,
     });
     expect(fetchMock).toHaveBeenLastCalledWith(
@@ -139,16 +192,70 @@ describe("user-maintenance-tools", () => {
       role: "user",
     });
 
-    const reject = parse(await tools.scopely_reject_access_request.execute("t", { request_id: 4 }));
-    const rejectCode = reject.message.match(/CONFIRM (\d{4})/)?.[1];
+    await tools.scopely_reject_access_request.execute("t", { request_id: 4 });
+    const rejectCode = codeFromDelivery();
     await tryExecuteConfirm({
       text: `CONFIRM ${rejectCode}`,
       actor: "t",
+      conversationId: CHANNEL,
       logger: noopLogger as never,
     });
     expect(fetchMock).toHaveBeenLastCalledWith(
       "/api/auth/access-requests/4/reject/",
       expect.objectContaining({ method: "POST" }),
     );
+  });
+
+  it("a CONFIRM from a DIFFERENT channel cannot fire the staged write", async () => {
+    const tools = buildTools();
+    await tools.scopely_update_user.execute("t", { user_id: 7, role: "org_admin" });
+    const code = codeFromDelivery();
+
+    // Wrong channel: must be refused and must NOT consume the pending action.
+    fetchMock.mockResolvedValue({ ok: true, status: 200, data: {} });
+    const wrong = await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "attacker",
+      conversationId: "someone-elses-channel@conference.xmpp.zoom.us",
+      logger: noopLogger as never,
+    });
+    expect(wrong).toMatch(/different channel|expired|already been used/);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // Right channel: the action is still there and fires.
+    const right = await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      conversationId: CHANNEL,
+      logger: noopLogger as never,
+    });
+    expect(right).toMatch(/✅ Done/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("staging FAILS CLOSED when SCOPELYBOT_ZOOM_CHANNEL is unset", async () => {
+    delete process.env.SCOPELYBOT_ZOOM_CHANNEL;
+    const tools = buildTools();
+    const res = parse(
+      await tools.scopely_update_user.execute("t", { user_id: 7, role: "org_admin" }),
+    );
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/SCOPELYBOT_ZOOM_CHANNEL/);
+    // Nothing staged, nothing delivered, prod untouched.
+    expect(sendScopelyTextMock).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("a wrong/expired code executes nothing (fail-closed)", async () => {
+    buildTools();
+    fetchMock.mockResolvedValue({ ok: true, status: 200, data: {} });
+    const reply = await tryExecuteConfirm({
+      text: "CONFIRM 0000",
+      actor: "t",
+      conversationId: CHANNEL,
+      logger: noopLogger as never,
+    });
+    expect(reply).toMatch(/No pending action/i);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
