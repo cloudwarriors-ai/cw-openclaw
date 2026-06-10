@@ -39,9 +39,15 @@ const plugin = {
     // scope them: non-optional plugin tools bypass allowlists and become visible
     // to EVERY agent. With this wrapper, only agents whose `tools.allow` includes
     // a tool name, the plugin id ("zoomwarriorssupportbot"), or "group:plugins" see them.
+    // The wrapper also counts registrations so the startup banner can never drift
+    // from the real tool count.
+    let toolCount = 0;
     const optionalApi: OpenClawPluginApi = {
       ...api,
-      registerTool: (tool, opts) => api.registerTool(tool, { ...opts, optional: true }),
+      registerTool: (tool, opts) => {
+        toolCount += 1;
+        return api.registerTool(tool, { ...opts, optional: true });
+      },
     };
 
     registerZwsTools(optionalApi, logger);
@@ -84,7 +90,7 @@ const plugin = {
     });
 
     console.log(
-      "[zoomwarriorssupportbot] Registered 25 tools (11 ZWS + 6 GH + 1 correlation + 7 devtools)",
+      `[zoomwarriorssupportbot] Registered ${toolCount} tools (ZWS + GH + correlation + devtools)`,
     );
   },
 };
