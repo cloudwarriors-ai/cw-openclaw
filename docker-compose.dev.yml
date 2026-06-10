@@ -126,7 +126,10 @@ services:
     - --port
     - '18789'
     - --allow-unconfigured
-    mem_limit: 4g
+    # 2048m mirrors the noob-root box's deliberate cap (memory-pressured host).
+    # Node heap allows 3072m — the cgroup cap wins; OOM-restart is the accepted
+    # tradeoff on the dev box.
+    mem_limit: 2048m
     memswap_limit: 4g
     cpus: '4.0'
     logging:
