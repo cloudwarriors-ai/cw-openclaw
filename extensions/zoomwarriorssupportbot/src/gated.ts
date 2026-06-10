@@ -10,7 +10,7 @@
 // Ported from the proven bigheadbot/scopelybot implementation (see
 // docs/reference/hub-and-spoke-implementation-guide.md §7).
 
-import { ZWS_CHANNEL, getChannelThreadAnchor, sendZwsText } from "./comfort.js";
+import { getChannelThreadAnchor, sendZwsText } from "./comfort.js";
 import { makeCode, putPending } from "./pending-confirm.js";
 import { jsonResult } from "./zws-api.js";
 
@@ -27,9 +27,22 @@ type RunResult = Promise<{ ok: boolean; status: number; data: unknown }>;
 // posted and must stay silent.
 export async function stageWrite(summary: string, run: () => RunResult) {
   // Read the channel at call time (not module load) so env that loads after import
-  // — and test stubbing — both resolve correctly. Fall back to the bot's known
-  // channel constant so production NEVER drops to the inline (LLM-relayed) prompt.
-  const channel = process.env.ZWS_ZOOM_CHANNEL ?? ZWS_CHANNEL;
+  // — and test stubbing — both resolve correctly. `?? ""` + the falsy check below
+  // also catch the compose-injected empty string (`VAR=${VAR}` with VAR unset).
+  const channel = process.env.ZWS_ZOOM_CHANNEL ?? "";
+  if (!channel) {
+    // FAIL CLOSED. Without a channel the CONFIRM prompt would have to travel
+    // inline through the model — codes get fabricated/relayed (observed live
+    // on scopelybot) — and, since pending actions are channel-bound, an inline
+    // staging could never be confirmed anyway. Refuse to stage instead of
+    // silently degrading on a misconfigured deployment.
+    return jsonResult({
+      ok: false,
+      error:
+        "ZWS_ZOOM_CHANNEL is not configured — write staging is disabled (fail-closed). " +
+        "Set the env var to the bot's Zoom channel JID.",
+    });
+  }
   // Bind the staged action to that channel: only a CONFIRM from it can fire the
   // action (takePending enforces the match). Code is unpredictable (crypto).
   const code = makeCode();
@@ -38,19 +51,14 @@ export async function stageWrite(summary: string, run: () => RunResult) {
     `⚠️ Confirm: ${summary} on PROD.\n` +
     `Reply \`CONFIRM ${code}\` within 5 minutes to proceed, or ignore to cancel.`;
 
-  if (channel) {
-    await sendZwsText(channel, prompt, getChannelThreadAnchor(channel));
-    return jsonResult({
-      staged: true,
-      awaiting_confirmation: true,
-      message:
-        "Confirm prompt was posted to the channel for the user. " +
-        "Reply NO_REPLY — do not repeat, relay, or invent the confirmation code.",
-    });
-  }
-  // No channel configured (dev/test only): fall back to returning the prompt
-  // inline so the gate still works outside the live deployment.
-  return jsonResult({ staged: true, message: prompt });
+  await sendZwsText(channel, prompt, getChannelThreadAnchor(channel));
+  return jsonResult({
+    staged: true,
+    awaiting_confirmation: true,
+    message:
+      "Confirm prompt was posted to the channel for the user. " +
+      "Reply NO_REPLY — do not repeat, relay, or invent the confirmation code.",
+  });
 }
 
 // Build a request body from only the fields the caller actually supplied, so we

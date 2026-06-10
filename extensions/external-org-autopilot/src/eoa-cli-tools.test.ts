@@ -144,4 +144,24 @@ describe("eoa-cli-tools confirm gate", () => {
     expect(reply).toMatch(/No pending action/i);
     expect(execFileSyncMock).not.toHaveBeenCalled();
   });
+
+  it("unset or compose-injected empty channel env fails closed (no inline prompt, nothing staged)", async () => {
+    const stageWithBrokenEnv = async () => {
+      const t = buildTools();
+      return parse(await t.eoa_run_execute.execute("x", { issueMirrorId: "mirror-uuid-1" }));
+    };
+    // Compose passes `EOA_ZOOM_CHANNEL=${EOA_ZOOM_CHANNEL}`: an unset host
+    // var arrives as "" in the container. Both "" and unset must refuse to stage.
+    process.env.EOA_ZOOM_CHANNEL = "";
+    const emptyStaged = await stageWithBrokenEnv();
+    delete process.env.EOA_ZOOM_CHANNEL;
+    const unsetStaged = await stageWithBrokenEnv();
+    for (const staged of [emptyStaged, unsetStaged]) {
+      expect(staged.ok).toBe(false);
+      expect(String(staged.error)).toContain("EOA_ZOOM_CHANNEL");
+      expect(JSON.stringify(staged)).not.toMatch(/CONFIRM \d{4}/);
+    }
+    expect(sendEoaTextMock).not.toHaveBeenCalled();
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
 });
