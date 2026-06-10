@@ -20,13 +20,13 @@ spoke execution → outbound reply — and:
 2. **Observe the internal hub-and-spoke behavior** — which spoke the coordinator routed to, which
    tools each agent called — so routing/delegation correctness is assertable, not just final text.
 3. Be **modular / agent-agnostic**: testing pulsebot vs scopelybot vs bigheadbot is a different
-   *profile*, not different code. Test-only; inert in production.
+   _profile_, not different code. Test-only; inert in production.
 
 ## Why the obvious seams don't work (the finding that shapes this)
 
 Every bot ships the **same duplicated raw-POST pattern**: `extensions/<bot>/src/comfort.ts` and
 `zoom-dm.ts` call `fetch("https://api.zoom.us/v2/...messages")` **directly, bypassing core
-outbound**. The coordinator's *final reply* goes through core (and fires the `message_sending`
+outbound**. The coordinator's _final reply_ goes through core (and fires the `message_sending`
 hook), but the comfort message and the confirm prompt — the two messages a confirm-gate test most
 needs — do not.
 
@@ -47,7 +47,8 @@ Likewise, the channel output alone can't prove hub-and-spoke routing — that re
   overkill for the need. Revisit only if multi-channel simulation is later required.
 
 ### Reuse-first record
-- `src/proxy-capture/` — MITM capture **proxy**; it *forwards* traffic, so it can't satisfy "don't
+
+- `src/proxy-capture/` — MITM capture **proxy**; it _forwards_ traffic, so it can't satisfy "don't
   write to channel". **Reuse its SQLite store/schema** (`CaptureDirection: "outbound"`) as the
   record sink. **[chosen]**
 - `message_sending` hook — core-only, misses raw POSTs. Rejected as the egress seam.
@@ -88,17 +89,20 @@ Likewise, the channel output alone can't prove hub-and-spoke routing — that re
 ```
 
 ### 1. Intake injector (external CLI)
+
 Posts a signed `team_chat.channel_message_posted` to `:4000/zoom/webhook`. Signature =
 `v0=HMAC_SHA256(ZOOM_WEBHOOK_SECRET_TOKEN, "v0:<ts>:<rawBody>")`, headers `x-zm-signature` +
 `x-zm-request-timestamp`. Parameterized by `channelJid` (routes to whichever bot is bound),
 message text, operator. One injector → any bot.
 
 ### 2. Egress interceptor (the one in-process, test-only piece)
+
 Env-gated (`OPENCLAW_ZOOM_CAPTURE_CHANNELS=<jid,jid>`). Installed at gateway bootstrap; **wraps**
 the existing `undici-runtime` global dispatcher. For requests to `api.zoom.us` message endpoints
 (`/v2/im/chat/messages`, `/v2/chat/users/*/messages`):
+
 - `to_jid` (or DM target) ∈ capture-set → **record outbound + return synthetic `200
-  {status:"ok", message_id:"<fake>"}`**; no real send.
+{status:"ok", message_id:"<fake>"}`**; no real send.
 - otherwise → **forward to the real dispatcher** (production bots in other channels keep working).
 - all non-Zoom traffic (openrouter model calls, Scopely BFF reads, Zoom token/history) →
   untouched passthrough.
@@ -107,6 +111,7 @@ Catches core sends **and** every bot's raw POSTs in one place, scoped so only th
 test go silent.
 
 ### 3. Tool-trace hook (the hub-and-spoke observability piece)
+
 A `before_tool_call` hook (same test env gate) records each call: `{runId, toolName, params,
 toolCallId, agentAttribution}`. Because it fires for `sessions_spawn` too, the trace shows exactly
 which spoke the coordinator chose (`sessions_spawn` `params.agentId`) and which domain tools each
@@ -117,27 +122,31 @@ spoke then called. Records go to the same capture store, correlated by `runId`.
 > tool-policy boundary. **Open question** — confirm the cleanest attribution source.
 
 ### 4. Session reset (external step)
+
 Before each run, `/reset` the target agent's channel session (parameterized by `sessionKey`) so
 prior-turn contamination cannot poison results. (This is the documented non-channel lever; it also
 prevented the 2026-06-05 "fixated on resetting Matt Keuning" failure mode from recurring.)
 
 ### 5. Assertion runner (external)
+
 Reads outbound + tool-trace records for the run from the capture store and asserts. All assertions
 are payload/trace-level — no screenshots needed.
 
 ## What this lets you assert
 
 **Output fidelity (per-bot, e.g. scopelybot confirm-gate):**
+
 - Confirm prompt was posted to the channel and **contains a real `CONFIRM <code>`**.
 - Coordinator's reply is **code-free** (regex: no `CONFIRM \d{4}`).
 - Result is **in-thread** (`reply_to`/`reply_main_message_id` set to the originating message).
 - Wrong-code CONFIRM is a no-op (fail-closed).
 
 **Hub-and-spoke routing (any bot):**
+
 - **Routing discrimination** — request X spawned spoke Y (assert the `sessions_spawn`
   `params.agentId`); a different-domain request spawns a different spoke.
 - **Router-only coordinator** — the coordinator's tool calls ⊆ `{sessions_spawn, subagents,
-  liveness reads}`; it never calls a domain tool directly.
+liveness reads}`; it never calls a domain tool directly.
 - **Per-spoke tool use** — spoke Y called the expected tools (e.g. `scopely_list_users`), and only
   from its own allowlist.
 - **No cross-spoke reach** — a single in-domain task completed without the spoke needing a tool
@@ -146,12 +155,14 @@ are payload/trace-level — no screenshots needed.
   2026-06-05 "list users → staged password reset" contamination directly).
 
 ## Modularity model
+
 An **agent profile** = `{ agentId, channelJid, sessionKey }`. The harness takes a profile + a test
 message + expected assertions. The capture-set is the profile's `channelJid`, so only that bot's
 channel is silenced. Testing another bot = another profile, zero code change. Profiles can live in
 a small test fixture (one entry per bot) or be passed inline.
 
 ## Test flow (one run)
+
 1. Ensure the gateway is running with the interceptor armed (`OPENCLAW_ZOOM_CAPTURE_CHANNELS`
    includes the profile's `channelJid`).
 2. `/reset` the profile's `sessionKey`.
@@ -162,14 +173,17 @@ a small test fixture (one entry per bot) or be passed inline.
 6. Nothing reached the real channel.
 
 ## Where the in-process pieces live
+
 A small **bundled test-capture extension** (`extensions/test-capture/`, or a test-helper module)
 that on `gateway:startup`, **only when the env flag is set**:
+
 - installs the egress interceptor by composing with `undici-runtime`, and
 - registers the `before_tool_call` trace hook.
-Inert when the flag is unset → safe to ship disabled. This keeps the harness in the
-`extensions/`/test boundary and touches no bot code.
+  Inert when the flag is unset → safe to ship disabled. This keeps the harness in the
+  `extensions/`/test boundary and touches no bot code.
 
 ## Open questions to resolve before building
+
 1. **undici composition point** — confirm `src/infra/net/undici-runtime.ts` exposes a clean way to
    wrap the existing dispatcher (capture-or-forward) without clobbering its custom Agent
    (timeouts/proxy).
@@ -184,11 +198,13 @@ Inert when the flag is unset → safe to ship disabled. This keeps the harness i
    `runId`, or an `agent_end` hook) instead of a fixed sleep.
 
 ## Estimated scope
+
 ~300–400 LOC, almost entirely **test infrastructure**: the test-capture extension (interceptor +
 trace hook + store writer), the injector CLI, and the assertion runner. Net **production-runtime**
 change ≈ the env-gated interceptor/hook install only (off by default).
 
 ## Worthwhile follow-on (not required by this design)
+
 The duplicated `comfort.ts`/`zoom-dm.ts` raw POSTs across 7 bots are the reason a clean hook-level
 egress seam doesn't already exist — they violate the repo's "channels are transport-only; product
 code shouldn't raw-send" guidance. Routing them through core outbound (or a shared SDK send helper)

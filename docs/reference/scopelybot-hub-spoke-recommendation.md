@@ -209,7 +209,7 @@ and silently undoes all scoping work for threaded conversations. Note the audit 
 
 ## Appendix — As-deployed configuration snapshot (2026-06-08)
 
-> **Why this is here.** The hub-and-spoke *wiring* (agent definitions, allowlists, router/worker
+> **Why this is here.** The hub-and-spoke _wiring_ (agent definitions, allowlists, router/worker
 > personas, plugin enablement) lives in **gitignored runtime state** — `~/.openclaw/openclaw.json`
 > (`agents.list[]`, `plugins.entries`, `bindings`) and `~/.openclaw/workspace-*/IDENTITY.md` — so it
 > is **not otherwise reviewable from this branch**. This appendix snapshots the live config verbatim
@@ -245,16 +245,20 @@ scopely-deploy   (14) create/update/delete {deployment_type, deployment_type_tem
 scopely-github   (6)  gh_add_comment, gh_close_issue, gh_create_issue, gh_get_issue,
                       gh_list_issues, gh_search_issues
 ```
+
 (All tool names carry the `scopely_` prefix. Spokes are **unbound**; only the coordinator is bound.)
 
 ### Plugin enablement + binding
+
 ```
 plugins.entries.scopelybot = { "enabled": true, "config": { "scopelyRepos": ["cloudwarriors-ai/scopely"] } }
 binding: scopelybot <- zoom channel 575b23671d6b4b7f8c22b1924b6177fa@conference.xmpp.zoom.us
 ```
 
 ### Coordinator persona (`workspace-scopelybot/IDENTITY.md`) — router prompt
+
 Key clauses (full text in runtime state):
+
 - "You are a **router**, not a doer ... only liveness checks (`scopely_health_check`,
   `scopely_auth_status`). Classify into **one** domain and delegate to that domain's spoke."
 - "**NEVER answer domain questions from memory** ... immediately spawn the relevant spoke and relay
@@ -267,6 +271,7 @@ Key clauses (full text in runtime state):
   `CONFIRM <code>` line yourself."
 
 ### Spoke persona (`workspace-scopely-users/IDENTITY.md`) — worker prompt (representative)
+
 - "You are a **worker subagent** ... do exactly that task using only your tools, then return the
   result. You do **not** talk to the channel."
 - "If you lack an id/value ... look it up with your read tools first; ... rather than guessing."

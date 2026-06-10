@@ -1,0 +1,130 @@
+# Production compose profile. Same image + same mounted-extensions deploy model
+# as docker-compose.dev.yml so dev and prod "flip a switch": identical SHA, only
+# .env and this profile differ. Deliberate deltas from the dev profile:
+#   - NO published ports: Traefik reaches the container over the shared `proxy`
+#     network; publishing 18789/4000 on a public host would expose the gateway
+#     directly.
+#   - NO claude-mem-chroma service, NO OPENCLAW_TEST_CAPTURE, NO ngrok/2FA env:
+#     claude-mem, slm-*, 2fa-github, and test-capture are excluded from prod
+#     (loader-level plugins.deny — see deploy/prod-plugin-policy.mjs).
+#   - NO baked-in channel JIDs or box IPs: everything host-specific comes from
+#     .env (see .env.prod-template). Missing values fail closed in code.
+#   - NO ./src or ./scripts/tests mounts: the runtime executes the image's dist;
+#     only extensions load as mounted source.
+services:
+  openclaw:
+    build:
+      context: .
+    image: ${OPENCLAW_IMAGE:-openclaw:prod}
+    container_name: openclaw
+    user: root
+    environment:
+    - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+    - OPENAI_API_KEY=${OPENAI_API_KEY}
+    - ZOOM_PREFILTER_MODEL=${ZOOM_PREFILTER_MODEL}
+    - ZOOM_PREFILTER_ENABLED=${ZOOM_PREFILTER_ENABLED}
+    - PROJECT_PULSE_URL=${PROJECT_PULSE_URL}
+    - PROJECT_PULSE_EMAIL=${PROJECT_PULSE_EMAIL}
+    - PROJECT_PULSE_PASSWORD=${PROJECT_PULSE_PASSWORD}
+    # No baked-in credential defaults anywhere below: a missing var must fail
+    # closed in the consuming code, never silently authenticate.
+    - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
+    - CLAWDBOT_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
+    - BIGHEAD_API_URL=${BIGHEAD_API_URL:-http://bighead:8000}
+    - BIGHEAD_GATEWAY_TOKEN=${BIGHEAD_GATEWAY_TOKEN}
+    - ZW2_USERNAME=${ZW2_USERNAME}
+    - ZW2_PASSWORD=${ZW2_PASSWORD}
+    - ZW2_URL=${ZW2_URL}
+    - ZOOM_CLIENT_ID=${ZOOM_CLIENT_ID}
+    - ZOOM_CLIENT_SECRET=${ZOOM_CLIENT_SECRET}
+    - ZOOM_ACCOUNT_ID=${ZOOM_ACCOUNT_ID}
+    - ZOOM_BOT_JID=${ZOOM_BOT_JID}
+    - ZOOM_WEBHOOK_SECRET_TOKEN=${ZOOM_WEBHOOK_SECRET_TOKEN}
+    - ZOOM_REPORT_ACCOUNT_ID=${ZOOM_REPORT_ACCOUNT_ID}
+    - ZOOM_REPORT_CLIENT_ID=${ZOOM_REPORT_CLIENT_ID}
+    - ZOOM_REPORT_CLIENT_SECRET=${ZOOM_REPORT_CLIENT_SECRET}
+    - ZOOM_REPORT_USER=${ZOOM_REPORT_USER}
+    - TESSERACT_URL=${TESSERACT_URL}
+    - TESSERACT_EXTERNAL_URL=${TESSERACT_EXTERNAL_URL}
+    - TESSERACT_USERNAME=${TESSERACT_USERNAME}
+    - TESSERACT_PASSWORD=${TESSERACT_PASSWORD}
+    - ADMIN_DOMAIN=${ADMIN_DOMAIN:-cloudwarriors.ai}
+    - GH_TOKEN=${GITHUB_READ_ACCESS}
+    - DEVTOOLS_API_URL=http://devtools-api:9100
+    - DEV_TOOLS_API=${DEVTOOLS_LOCAL_KEY}
+    - CCMCP_DEVTOOLS_API_URL=http://devtools-api:9100
+    - CCMCP_DEV_TOOLS_API=${DEVTOOLS_LOCAL_KEY}
+    - NODE_OPTIONS=--max-old-space-size=3072
+    - CW_CHAT_RESPONDER_URL=${CW_CHAT_RESPONDER_URL}
+    - CW_CHAT_RESPONDER_TOKEN=${CW_CHAT_RESPONDER_TOKEN}
+    - DEA_ES_URL=${DEA_ES_URL}
+    - DEA_ES_USER=${DEA_ES_USER:-elastic}
+    - DEA_ES_PASSWORD=${DEA_ES_PASSWORD}
+    - DEA_ES_INDEX=${DEA_ES_INDEX:-logs-noobbox.docker-events-default}
+    - DEA_ZOOM_CHANNEL=${DEA_ZOOM_CHANNEL}
+    - PEA_ZOOM_CHANNEL=${PEA_ZOOM_CHANNEL}
+    - PEA_RELAY_TOKEN=${PEA_RELAY_TOKEN}
+    - PEA_RELAY_URL=${PEA_RELAY_URL}
+    - ZKE_DEVTOOLS_API_URL=http://devtools-api:9100
+    - ZKE_DEV_TOOLS_API=${DEVTOOLS_LOCAL_KEY}
+    - SCOPELY_BASE_URL=${SCOPELY_BASE_URL}
+    - SCOPELY_URL=${SCOPELY_URL:-${SCOPELY_BASE_URL}}
+    - SCOPELY_EMAIL=${SCOPELY_EMAIL}
+    - SCOPELY_PASSWORD=${SCOPELY_PASSWORD}
+    - SCOPELY_CONTAINER=${SCOPELY_CONTAINER}
+    - SCOPELY_DEVTOOLS_API_URL=${SCOPELY_DEVTOOLS_API_URL}
+    - SCOPELY_DEV_TOOLS_API=${SCOPELY_DEV_TOOLS_API}
+    - SCOPELY_REPO_PATH=${SCOPELY_REPO_PATH:-/app/code/scopely}
+    # Confirm-gate channel bindings: each bot's staged writes post their CONFIRM
+    # prompt here and only a reply FROM this channel can fire them. Unset =
+    # write staging is disabled (fail-closed) for that bot.
+    - SCOPELYBOT_ZOOM_CHANNEL=${SCOPELYBOT_ZOOM_CHANNEL}
+    - BIGHEADBOT_ZOOM_CHANNEL=${BIGHEADBOT_ZOOM_CHANNEL}
+    - PULSEBOT_ZOOM_CHANNEL=${PULSEBOT_ZOOM_CHANNEL}
+    - ZWS_ZOOM_CHANNEL=${ZWS_ZOOM_CHANNEL}
+    - CF_ZOOM_CHANNEL=${CF_ZOOM_CHANNEL}
+    - EOA_ZOOM_CHANNEL=${EOA_ZOOM_CHANNEL}
+    - EOA_ROOT=${EOA_ROOT}
+    - EOA_STATE_DIR=${EOA_STATE_DIR}
+    - OPENCLAW_BUNDLED_PLUGINS_DIR=/app/extensions
+    volumes:
+    - ./extensions:/app/extensions
+    - ./.data/openclaw:/root/.openclaw
+    - ./code:/app/code
+    command:
+    - node
+    - --max-old-space-size=3072
+    - dist/entry.js
+    - gateway
+    - --bind
+    - lan
+    - --port
+    - '18789'
+    - --allow-unconfigured
+    mem_limit: 4g
+    memswap_limit: 4g
+    cpus: '4.0'
+    logging:
+      driver: json-file
+      options:
+        max-size: 25m
+        max-file: '3'
+    restart: unless-stopped
+    labels:
+    - traefik.enable=true
+    - traefik.http.routers.openclaw.rule=Host(`${OPENCLAW_PUBLIC_DOMAIN}`)
+    - traefik.http.routers.openclaw.entrypoints=websecure
+    - traefik.http.routers.openclaw.tls.certresolver=letsencrypt
+    - traefik.http.services.openclaw.loadbalancer.server.port=18789
+    - traefik.http.routers.openclaw-zoom.rule=Host(`${OPENCLAW_PUBLIC_DOMAIN}`) &&
+      PathPrefix(`/zoom/`)
+    - traefik.http.routers.openclaw-zoom.priority=100
+    - traefik.http.routers.openclaw-zoom.entrypoints=websecure
+    - traefik.http.routers.openclaw-zoom.tls.certresolver=letsencrypt
+    - traefik.http.routers.openclaw-zoom.service=openclaw-zoom
+    - traefik.http.services.openclaw-zoom.loadbalancer.server.port=4000
+networks:
+  default:
+    name: proxy
+    external: true

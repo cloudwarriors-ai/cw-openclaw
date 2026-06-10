@@ -33,7 +33,7 @@ scopely-github    GitHub issues        (6)
 
 **Tools were grouped by action-class (listing, summaries, CRUD, telemetry) instead of by the
 domain noun the coordinator actually routes on.** The coordinator routes on the noun in the request
-("users", "vendors", "scoping cards"). When a *read* or *dependency-resolution* tool for that noun
+("users", "vendors", "scoping cards"). When a _read_ or _dependency-resolution_ tool for that noun
 lives in a different spoke, the spoke that receives the question cannot answer it.
 
 This is not a one-off; it is a **structural mismatch** between the routing axis (domain noun) and
@@ -58,11 +58,12 @@ that are each individually "just add a tool" but collectively signal the split i
 3. **Cross-cutting overlap (open).** `scopely-admin` ("summaries") and `scopely-observe`
    ("telemetry") cut **across every domain**: `scopely_session_pricing` and `scopely_vendor_config`
    live in `admin`; `scopely_active_users`/`scopely_user_activity` live in `observe`. So
-   "vendor config" could plausibly route to `vendors` *or* `admin`; "active users" to `users` *or*
+   "vendor config" could plausibly route to `vendors` _or_ `admin`; "active users" to `users` _or_
    `observe`. This is **routing ambiguity by construction** — the coordinator has to guess which
    spoke owns a tool, and a weak model guesses wrong.
 
 ### Symptoms this produces
+
 - Spokes that **cannot answer in-domain questions** because a needed read/lookup tool is elsewhere.
 - Spokes **brute-forcing or approximating** (guessing ids, deriving counts from proxy data) instead
   of calling the right tool — which then looks like a model failure but is a missing-tool failure.
@@ -94,7 +95,7 @@ has." Nothing prevents the table and the allowlists from disagreeing.
 
 ## What a good split must achieve (success criteria, not a design)
 
-Any future rework should be judged against these — the *how* is out of scope for this doc:
+Any future rework should be judged against these — the _how_ is out of scope for this doc:
 
 1. **Routing axis == partitioning axis.** A request classified to a domain noun must land on a
    spoke that holds the full surface needed to answer it (read + write + the lookups those depend
