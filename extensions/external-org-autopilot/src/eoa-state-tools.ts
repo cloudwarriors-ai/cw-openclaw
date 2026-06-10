@@ -9,9 +9,11 @@ import { jsonResult, errorResult } from "./helpers.js";
 
 // Env-driven so the deploy host can relocate the checkout/state; defaults match
 // the current production container layout (state lives inside the EOA checkout).
+// `||` (not `??`): compose passes `VAR=${VAR}`, so an unset host var arrives as
+// "" and must still fall through to the default.
 const STATE_DIR = () =>
-  process.env.EOA_STATE_DIR ??
-  path.join(process.env.EOA_ROOT ?? "/root/code/external-org-autopilot", ".autopilot-state");
+  process.env.EOA_STATE_DIR ||
+  path.join(process.env.EOA_ROOT || "/root/code/external-org-autopilot", ".autopilot-state");
 
 // GitHub Actions run IDs are numeric. Validate so the value is a sane argv element.
 function assertRunId(value: unknown): string {

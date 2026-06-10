@@ -29,9 +29,9 @@ the prod compose; dev's `claude-mem-chroma` service is also absent).
    There are no fallbacks: missing secrets fail closed — the gateway boots, but
    that feature errors or stays disabled. Pay attention to:
    - `ZOOM_WEBHOOK_SECRET_TOKEN` — unset means **all** Zoom webhooks are 401'd.
-   - the six `*_ZOOM_CHANNEL` JIDs — must be **prod** channels (the in-code
-     fallback constants are dev channels); unset disables that bot's write
-     staging (fail-closed).
+   - the six `*_ZOOM_CHANNEL` JIDs — must be **prod** channels; unset or empty
+     disables that bot's write staging (fail-closed). There are no in-code
+     channel fallbacks.
    - `OPENCLAW_PUBLIC_DOMAIN` — the Zoom marketplace app's event subscription
      URL must be `https://$OPENCLAW_PUBLIC_DOMAIN/zoom/webhook`.
 2. **Build.** `docker compose -f docker-compose.prod.yml build`

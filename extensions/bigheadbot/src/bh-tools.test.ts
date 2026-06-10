@@ -146,18 +146,23 @@ describe("bigheadbot confirm-gated writes", () => {
     );
   });
 
-  it("without the env override, still delivers to the channel constant (never an inline LLM prompt)", async () => {
+  it("unset or compose-injected empty channel env fails closed (no inline prompt, nothing staged)", async () => {
+    const stageWithBrokenEnv = async () => {
+      const tools = buildTools();
+      return parse(await tools.bh_create_ticket.execute("t", { title: "Boom", projectId: "p1" }));
+    };
+    // Compose passes `BIGHEADBOT_ZOOM_CHANNEL=${BIGHEADBOT_ZOOM_CHANNEL}`: an unset host
+    // var arrives as "" in the container. Both "" and unset must refuse to stage.
+    process.env.BIGHEADBOT_ZOOM_CHANNEL = "";
+    const emptyStaged = await stageWithBrokenEnv();
     delete process.env.BIGHEADBOT_ZOOM_CHANNEL;
-    const tools = buildTools();
-    const staged = parse(
-      await tools.bh_create_ticket.execute("t", { title: "Boom", projectId: "p1" }),
-    );
-    // The production-safety fix: env unset must NOT degrade to the inline prompt.
-    expect(staged.awaiting_confirmation).toBe(true);
-    expect(JSON.stringify(staged)).not.toMatch(/CONFIRM \d{4}/);
-    expect(sendBigheadTextMock).toHaveBeenCalledTimes(1);
-    expect(sendBigheadTextMock.mock.calls[0][0]).toBe(FALLBACK_CHANNEL);
-    expect(sendBigheadTextMock.mock.calls[0][1]).toMatch(/CONFIRM \d{4}/);
+    const unsetStaged = await stageWithBrokenEnv();
+    for (const staged of [emptyStaged, unsetStaged]) {
+      expect(staged.ok).toBe(false);
+      expect(String(staged.error)).toContain("BIGHEADBOT_ZOOM_CHANNEL");
+      expect(JSON.stringify(staged)).not.toMatch(/CONFIRM \d{4}/);
+    }
+    expect(sendBigheadTextMock).not.toHaveBeenCalled();
   });
 
   it("a wrong/expired code executes nothing (fail-closed)", async () => {

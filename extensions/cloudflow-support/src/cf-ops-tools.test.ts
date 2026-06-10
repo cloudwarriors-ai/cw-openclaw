@@ -122,16 +122,25 @@ describe("cloudflow cf_execute_op is confirm-gated", () => {
     expect(reply).toMatch(/✅ Done/);
   });
 
-  it("without the env override, still delivers to the channel constant", async () => {
+  it("unset or compose-injected empty channel env fails closed (no inline prompt, nothing staged)", async () => {
+    const stageWithBrokenEnv = async () => {
+      const tools = buildTools();
+      return parse(
+        await tools.cf_execute_op.execute("t", { operationId: "resetTenant", payload: {} }),
+      );
+    };
+    // Compose passes `CF_ZOOM_CHANNEL=${CF_ZOOM_CHANNEL}`: an unset host
+    // var arrives as "" in the container. Both "" and unset must refuse to stage.
+    process.env.CF_ZOOM_CHANNEL = "";
+    const emptyStaged = await stageWithBrokenEnv();
     delete process.env.CF_ZOOM_CHANNEL;
-    const tools = buildTools();
-    const staged = parse(
-      await tools.cf_execute_op.execute("t", { operationId: "resetTenant", payload: {} }),
-    );
-    expect(staged.awaiting_confirmation).toBe(true);
-    expect(sendCfTextMock).toHaveBeenCalledTimes(1);
-    expect(sendCfTextMock.mock.calls[0][0]).toBe(FALLBACK_CHANNEL);
-    expect(sendCfTextMock.mock.calls[0][1]).toMatch(/CONFIRM \d{4}/);
+    const unsetStaged = await stageWithBrokenEnv();
+    for (const staged of [emptyStaged, unsetStaged]) {
+      expect(staged.ok).toBe(false);
+      expect(String(staged.error)).toContain("CF_ZOOM_CHANNEL");
+      expect(JSON.stringify(staged)).not.toMatch(/CONFIRM \d{4}/);
+    }
+    expect(sendCfTextMock).not.toHaveBeenCalled();
   });
 
   it("a wrong/expired code executes nothing (fail-closed)", async () => {

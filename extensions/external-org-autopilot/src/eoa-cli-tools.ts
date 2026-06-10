@@ -7,8 +7,10 @@ import { stageWrite } from "./gated.js";
 import { jsonResult, errorResult } from "./helpers.js";
 
 // Env-driven so the deploy host can relocate the checkout; the default matches
-// the current production container layout.
-const EOA_ROOT = () => process.env.EOA_ROOT ?? "/root/code/external-org-autopilot";
+// the current production container layout. `||` (not `??`): compose passes
+// `EOA_ROOT=${EOA_ROOT}`, so an unset host var arrives as "" and must still
+// fall through to the default.
+const EOA_ROOT = () => process.env.EOA_ROOT || "/root/code/external-org-autopilot";
 
 // Run the EOA CLI with an explicit argv (NO shell): `npx tsx src/cli.ts <args...>`.
 // Each arg is passed literally, so LLM-controlled paths/ids cannot be interpreted as
