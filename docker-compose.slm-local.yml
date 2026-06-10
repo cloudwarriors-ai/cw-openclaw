@@ -1,5 +1,6 @@
 services:
   pgvector:
+    mem_limit: 256m
     image: pgvector/pgvector:pg16
     container_name: ${SLM_PG_CONTAINER_NAME:-moltbot-pgvector}
     environment:
