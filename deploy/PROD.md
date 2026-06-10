@@ -39,10 +39,13 @@ the prod compose; dev's `claude-mem-chroma` service is also absent).
    bindings). Then run BOTH config scripts (idempotent, backup-first):
    - `node deploy/prod-plugin-policy.mjs ./.data/openclaw/openclaw.json`
      (prod deny list)
-   - `node extensions/test-capture/harness/fix-allow.mjs` against the same file
-     (adds each bot's plugin id to its agent `tools.allow` — REQUIRED before
-     boot: bot tools are registered `optional:true` and an agent without its
-     plugin id in the allowlist loses its own tools).
+   - fix-allow (adds each bot's plugin id to its agent `tools.allow` — REQUIRED
+     before boot: bot tools are registered `optional:true` and an agent without
+     its plugin id in the allowlist loses its own tools). The script hardcodes
+     the in-container path, so either run it via
+     `docker exec openclaw node /app/extensions/test-capture/harness/fix-allow.mjs`
+     after first start, or skip it when provisioning by copying a dev
+     `openclaw.json` whose allowlists already carry the pairings.
 4. **Up.** `docker compose -f docker-compose.prod.yml up -d`
    No host ports are published — Traefik (on the external `proxy` network)
    terminates TLS and routes `/` → 18789 and `/zoom/` → 4000.
