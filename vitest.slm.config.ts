@@ -1,7 +1,7 @@
 import { defineConfig } from "vitest/config";
 import baseConfig from "./vitest.config.ts";
 
-const baseTest = (
+const baseTestWithProjects = (
   baseConfig as {
     test?: {
       testTimeout?: number;
@@ -10,9 +10,14 @@ const baseTest = (
       maxWorkers?: number;
       setupFiles?: string[];
       exclude?: string[];
+      projects?: unknown[];
     };
   }
 ).test ?? { testTimeout: 120_000, hookTimeout: 120_000, pool: "forks", maxWorkers: 4 };
+// Drop the root `projects` matrix (test/vitest/vitest.config.ts) — inheriting it
+// makes vitest ignore `include` below and run the ENTIRE repo suite, which OOMs
+// the slm-gates runner heap. Same drop precedent: test/vitest/vitest.e2e.config.ts.
+const { projects: _projects, ...baseTest } = baseTestWithProjects;
 const isBunRuntime = typeof Bun !== "undefined";
 const include = [
   "extensions/slm-pipeline/**/*.test.ts",
