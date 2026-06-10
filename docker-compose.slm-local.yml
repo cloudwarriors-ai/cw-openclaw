@@ -1,6 +1,9 @@
 services:
   pgvector:
-    mem_limit: 256m
+    # Host-tunable: noob-root sets SLM_PG_MEM_LIMIT=256m in .env (memory-pressured
+    # box). The 1g default keeps the slm-gates CI smoke green — a hard 256m cap
+    # crashed it (node abort, runs 2026-06-10).
+    mem_limit: ${SLM_PG_MEM_LIMIT:-1g}
     image: pgvector/pgvector:pg16
     container_name: ${SLM_PG_CONTAINER_NAME:-moltbot-pgvector}
     environment:
