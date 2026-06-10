@@ -2,13 +2,17 @@ import fs from "node:fs";
 import path from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-
 import { storePendingShare } from "./pending-shares.js";
-import { PREFILTER_CONFIG_PATH, DEFAULT_SYSTEM_PROMPT, DEFAULT_MODEL, readPrefilterConfig } from "./prefilter.js";
-import type { ZoomBodyItem, ZoomConfig } from "./types.js";
-import { createUploadToken } from "./upload-tokens.js";
-import { resolveZoomUploadDir } from "./upload-path.js";
+import {
+  PREFILTER_CONFIG_PATH,
+  DEFAULT_SYSTEM_PROMPT,
+  DEFAULT_MODEL,
+  readPrefilterConfig,
+} from "./prefilter.js";
 import { getRememberedZoomSessionReplyRoot } from "./thread-state.js";
+import type { ZoomBodyItem, ZoomConfig } from "./types.js";
+import { isWithinUploadDir, resolveZoomUploadDir } from "./upload-path.js";
+import { createUploadToken } from "./upload-tokens.js";
 
 function resolveSessionReplyMainMessageId(sessionKey?: string): string | undefined {
   const rememberedReplyRoot = getRememberedZoomSessionReplyRoot(sessionKey);
@@ -114,7 +118,9 @@ export function registerZoomTools(api: OpenClawPluginApi) {
         "Send a direct message to a Zoom user (JID preferred; email/name best-effort). " +
         "Use this to redirect a conversation from a channel to a private DM.",
       parameters: Type.Object({
-        user_jid: Type.String({ description: "Recipient identifier: Zoom user JID (preferred), or email/name" }),
+        user_jid: Type.String({
+          description: "Recipient identifier: Zoom user JID (preferred), or email/name",
+        }),
         message: Type.String({ description: "Message text to send" }),
         heading: Type.Optional(Type.String({ description: "Message heading (default: OpenClaw)" })),
       }),
@@ -187,7 +193,9 @@ export function registerZoomTools(api: OpenClawPluginApi) {
         const { lookupZoomUsers } = await import("./user-directory.js");
         const query = String(params.query ?? "").trim();
         const limitRaw = Number(params.limit ?? 5);
-        const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(20, Math.floor(limitRaw))) : 5;
+        const limit = Number.isFinite(limitRaw)
+          ? Math.max(1, Math.min(20, Math.floor(limitRaw)))
+          : 5;
 
         const hits = await lookupZoomUsers(query);
         const topHits = hits.slice(0, limit);
@@ -227,9 +235,7 @@ export function registerZoomTools(api: OpenClawPluginApi) {
             description: "Sender user email/ID (defaults to ZOOM_REPORT_USER)",
           }),
         ),
-        to_contact: Type.Optional(
-          Type.String({ description: "DM recipient email or JID" }),
-        ),
+        to_contact: Type.Optional(Type.String({ description: "DM recipient email or JID" })),
         to_channel: Type.Optional(
           Type.String({ description: "Channel ID or channel JID (...@conference.xmpp.zoom.us)" }),
         ),
@@ -277,7 +283,9 @@ export function registerZoomTools(api: OpenClawPluginApi) {
           { description: "Users to mention in the message" },
         ),
         message: Type.String({ description: "Message text following mentions" }),
-        mention_all: Type.Optional(Type.Boolean({ description: "Also include @all mention (default: false)" })),
+        mention_all: Type.Optional(
+          Type.Boolean({ description: "Also include @all mention (default: false)" }),
+        ),
         from_user: Type.Optional(
           Type.String({ description: "Sender user email/ID (defaults to ZOOM_REPORT_USER)" }),
         ),
@@ -341,9 +349,7 @@ export function registerZoomTools(api: OpenClawPluginApi) {
       parameters: Type.Object({
         channel_jid: Type.String({ description: "The channel JID to post to" }),
         message: Type.String({ description: "Message text to post" }),
-        heading: Type.Optional(
-          Type.String({ description: "Message heading (default: OpenClaw)" }),
-        ),
+        heading: Type.Optional(Type.String({ description: "Message heading (default: OpenClaw)" })),
         share_button: Type.Optional(
           Type.Boolean({
             description:
@@ -370,7 +376,10 @@ export function registerZoomTools(api: OpenClawPluginApi) {
               content: [
                 {
                   type: "text" as const,
-                  text: JSON.stringify({ ok: false, error: "user_jid required when share_button is true" }),
+                  text: JSON.stringify({
+                    ok: false,
+                    error: "user_jid required when share_button is true",
+                  }),
                 },
               ],
             };
@@ -450,10 +459,20 @@ export function registerZoomTools(api: OpenClawPluginApi) {
         "Send the URL to the user in your reply. Use when the user needs to provide a file.",
       parameters: Type.Object({
         user_jid: Type.String({ description: "The user's JID" }),
-        conversation_id: Type.String({ description: "Current conversation ID for routing the response" }),
-        label: Type.Optional(Type.String({ description: "Context label for the file name, e.g. issue number like 'PROJ-1234'" })),
-        is_direct: Type.Optional(Type.Boolean({ description: "Whether this is a DM conversation (default: true)" })),
-        channel_jid: Type.Optional(Type.String({ description: "Channel JID if in a channel conversation" })),
+        conversation_id: Type.String({
+          description: "Current conversation ID for routing the response",
+        }),
+        label: Type.Optional(
+          Type.String({
+            description: "Context label for the file name, e.g. issue number like 'PROJ-1234'",
+          }),
+        ),
+        is_direct: Type.Optional(
+          Type.Boolean({ description: "Whether this is a DM conversation (default: true)" }),
+        ),
+        channel_jid: Type.Optional(
+          Type.String({ description: "Channel JID if in a channel conversation" }),
+        ),
       }),
       async execute(_id: string, params: Record<string, unknown>) {
         const userJid = params.user_jid as string;
@@ -482,7 +501,12 @@ export function registerZoomTools(api: OpenClawPluginApi) {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify({ ok: true, uploadUrl, token, hint: "Send the link as plain text or [Upload File](url) — do NOT wrap in bold **. Zoom breaks URLs inside **bold**." }),
+              text: JSON.stringify({
+                ok: true,
+                uploadUrl,
+                token,
+                hint: "Send the link as plain text or [Upload File](url) — do NOT wrap in bold **. Zoom breaks URLs inside **bold**.",
+              }),
             },
           ],
         };
@@ -501,16 +525,18 @@ export function registerZoomTools(api: OpenClawPluginApi) {
     async execute() {
       const config = readPrefilterConfig();
       return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            ok: true,
-            configPath: PREFILTER_CONFIG_PATH,
-            systemPrompt: config.systemPrompt,
-            model: config.model ?? process.env.ZOOM_PREFILTER_MODEL ?? DEFAULT_MODEL,
-            isDefault: config.systemPrompt === DEFAULT_SYSTEM_PROMPT,
-          }),
-        }],
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              ok: true,
+              configPath: PREFILTER_CONFIG_PATH,
+              systemPrompt: config.systemPrompt,
+              model: config.model ?? process.env.ZOOM_PREFILTER_MODEL ?? DEFAULT_MODEL,
+              isDefault: config.systemPrompt === DEFAULT_SYSTEM_PROMPT,
+            }),
+          },
+        ],
       };
     },
   }));
@@ -523,8 +549,14 @@ export function registerZoomTools(api: OpenClawPluginApi) {
       "in observe mode. Changes take effect immediately on the next message — no restart needed. " +
       "The prompt should instruct the classifier to reply with exactly RESPOND or SKIP.",
     parameters: Type.Object({
-      system_prompt: Type.String({ description: "The new system prompt for message classification" }),
-      model: Type.Optional(Type.String({ description: "Override the LLM model (default: anthropic/claude-haiku-4.5)" })),
+      system_prompt: Type.String({
+        description: "The new system prompt for message classification",
+      }),
+      model: Type.Optional(
+        Type.String({
+          description: "Override the LLM model (default: anthropic/claude-haiku-4.5)",
+        }),
+      ),
     }),
     async execute(_id: string, params: Record<string, unknown>) {
       try {
@@ -536,10 +568,15 @@ export function registerZoomTools(api: OpenClawPluginApi) {
         fs.writeFileSync(PREFILTER_CONFIG_PATH, JSON.stringify(config, null, 2) + "\n", "utf-8");
 
         return {
-          content: [{
-            type: "text" as const,
-            text: JSON.stringify({ ok: true, message: "Prefilter config updated. Changes take effect on the next message." }),
-          }],
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                ok: true,
+                message: "Prefilter config updated. Changes take effect on the next message.",
+              }),
+            },
+          ],
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -563,8 +600,31 @@ export function registerZoomTools(api: OpenClawPluginApi) {
       }),
       async execute(_id: string, params: Record<string, unknown>) {
         const filePath = params.file_path as string;
+        // Confine to the uploads dir (same guard as docx_get_download): these are
+        // model-invoked tools, so an unconfined path means a prompt-injected agent
+        // can read/write arbitrary files on the host.
+        if (!isWithinUploadDir(filePath)) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  ok: false,
+                  error: "File is outside the zoom-uploads directory",
+                }),
+              },
+            ],
+          };
+        }
         if (!fs.existsSync(filePath)) {
-          return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: "File not found" }) }] };
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({ ok: false, error: "File not found" }),
+              },
+            ],
+          };
         }
         const { readDocxParagraphs } = await import("./docx-tools.js");
         const paragraphs = await readDocxParagraphs(filePath);
@@ -595,8 +655,30 @@ export function registerZoomTools(api: OpenClawPluginApi) {
       }),
       async execute(_id: string, params: Record<string, unknown>) {
         const filePath = params.file_path as string;
+        // Confined like docx_read: also keeps the _modified output inside the
+        // uploads dir (destPath derives from the source dir).
+        if (!isWithinUploadDir(filePath)) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  ok: false,
+                  error: "File is outside the zoom-uploads directory",
+                }),
+              },
+            ],
+          };
+        }
         if (!fs.existsSync(filePath)) {
-          return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: "File not found" }) }] };
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({ ok: false, error: "File not found" }),
+              },
+            ],
+          };
         }
         const replacements = params.replacements as Array<{ find: string; replace: string }>;
         const ext = path.extname(filePath);
@@ -607,10 +689,17 @@ export function registerZoomTools(api: OpenClawPluginApi) {
         const { replaceInDocx } = await import("./docx-tools.js");
         const result = await replaceInDocx(filePath, destPath, replacements);
         return {
-          content: [{
-            type: "text" as const,
-            text: JSON.stringify({ ok: true, output_path: destPath, applied: result.applied, skipped: result.skipped }),
-          }],
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                ok: true,
+                output_path: destPath,
+                applied: result.applied,
+                skipped: result.skipped,
+              }),
+            },
+          ],
         };
       },
     };
@@ -630,9 +719,19 @@ export function registerZoomTools(api: OpenClawPluginApi) {
       async execute(_id: string, params: Record<string, unknown>) {
         const filePath = params.file_path as string;
         const uploadDir = resolveZoomUploadDir();
-        if (!filePath.startsWith(uploadDir) || !fs.existsSync(filePath)) {
+        // isWithinUploadDir (not startsWith): a prefix test would accept sibling
+        // dirs like "zoom-uploads-evil".
+        if (!isWithinUploadDir(filePath) || !fs.existsSync(filePath)) {
           return {
-            content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: "File not found or outside uploads directory" }) }],
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  ok: false,
+                  error: "File not found or outside uploads directory",
+                }),
+              },
+            ],
           };
         }
         const relative = path.relative(uploadDir, filePath);
@@ -640,7 +739,12 @@ export function registerZoomTools(api: OpenClawPluginApi) {
         const publicUrl = zoomCfg?.publicUrl ?? "https://molty-dev.cloudwarriors.ai";
         const downloadUrl = `${publicUrl}/zoom/uploads/${relative}`;
         return {
-          content: [{ type: "text" as const, text: JSON.stringify({ ok: true, download_url: downloadUrl }) }],
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({ ok: true, download_url: downloadUrl }),
+            },
+          ],
         };
       },
     };
