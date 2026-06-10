@@ -48,28 +48,31 @@ REAL stagings (spoke putPending)     RELAYED to channel (coordinator reply)
 ```
 
 ### D1 — Coordinator fabricates confirm codes (highest severity)
+
 At 19:04:00 the coordinator relayed `CONFIRM 7951`, a code that was **never staged** (the real
 code `5799` did not exist until 19:04:02). `gpt-5.4-mini` invented a plausible 4-digit code, in
-direct violation of its own persona (`IDENTITY.md`: *"Relay the CONFIRM code exactly,
-character-for-character… never invent a code"*). It also **re-relayed a stale code** (`9042` at
+direct violation of its own persona (`IDENTITY.md`: _"Relay the CONFIRM code exactly,
+character-for-character… never invent a code"_). It also **re-relayed a stale code** (`9042` at
 18:39 with no staging behind it).
 
 - **Why it matters:** the user cannot tell the real code from the invented one. A fabricated code
-  *fails closed* (it matches no pending action, so nothing executes) — so this is not a
+  _fails closed_ (it matches no pending action, so nothing executes) — so this is not a
   security hole — but it is a **trust and usability hole**: it directly caused the operator to type
   wrong codes (`1001`, `9042`-expired) and conclude the gate was broken.
 - **Root cause:** the exact code passes **through the LLM** on its way to the channel. Any model —
   especially a small one — can mangle, re-emit, or invent it.
 
 ### D2 — Duplicate confirm prompt
+
 The same real code is relayed twice for one staging (`9042` at 18:29:48 & :52; `5799`-class double
 relays observed). This is the coordinator double-delivering a reply — the same intermittent
 double-reply pattern that the `NO_REPLY`-on-spawn persona rule reduced for normal answers but does
 not fully eliminate under `gpt-5.4-mini`.
 
 ### D3 — `CONFIRM` message re-triggers the coordinator → spurious re-stage
+
 The `message_received` confirm hook is **observe-only**: it executes the confirm but does **not**
-suppress the message from reaching the coordinator. So `CONFIRM <code>` is *also* dispatched to the
+suppress the message from reaching the coordinator. So `CONFIRM <code>` is _also_ dispatched to the
 coordinator, which sometimes interprets it as a new request and **re-stages**:
 
 ```
@@ -84,6 +87,7 @@ coordinator, which sometimes interprets it as a new request and **re-stages**:
   it depends on whether the mini model decides to act on the `CONFIRM` text.
 
 ### D4 — Confirm result delivered out-of-thread
+
 The confirm execution result (and the `No pending action…` errors) are sent via `sendScopelyText`
 (`src/comfort.ts:84`), which POSTs to the channel JID with **no `reply_to`** — unlike
 `sendComfortMessage`, which supports threading. So results land at **channel root**, detached from
@@ -123,8 +127,8 @@ observe hook with a non-threaded sender.
   suppresses the coordinator (fixes D3); `text` is delivered via the core's threaded
   `sendFinalPayload` (fixes D4). Remove `tryExecuteConfirm` from `message_received` to avoid
   double-consuming the single-use code.
-- **Defense-in-depth:** persona line — *"never emit a `CONFIRM <code>` line yourself; if a message
-  is `CONFIRM <code>`, reply `NO_REPLY`."* Covers any path the deterministic delivery misses.
+- **Defense-in-depth:** persona line — _"never emit a `CONFIRM <code>` line yourself; if a message
+  is `CONFIRM <code>`, reply `NO_REPLY`."_ Covers any path the deterministic delivery misses.
 
 ## Open questions / to verify before building
 
