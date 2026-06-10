@@ -7,7 +7,11 @@ import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
 import { jsonResult, errorResult } from "./helpers.js";
 
-const STATE_DIR = "/root/code/external-org-autopilot/.autopilot-state";
+// Env-driven so the deploy host can relocate the checkout/state; defaults match
+// the current production container layout (state lives inside the EOA checkout).
+const STATE_DIR = () =>
+  process.env.EOA_STATE_DIR ??
+  path.join(process.env.EOA_ROOT ?? "/root/code/external-org-autopilot", ".autopilot-state");
 
 // GitHub Actions run IDs are numeric. Validate so the value is a sane argv element.
 function assertRunId(value: unknown): string {
@@ -51,7 +55,7 @@ export function registerEoaStateTools(api: OpenClawPluginApi, logger: AuditLogge
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
-            const runsDir = path.join(STATE_DIR, "autopilot-runs");
+            const runsDir = path.join(STATE_DIR(), "autopilot-runs");
             if (!fs.existsSync(runsDir)) {
               return jsonResult({ ok: true, data: [], message: "No runs directory found" });
             }
@@ -89,7 +93,7 @@ export function registerEoaStateTools(api: OpenClawPluginApi, logger: AuditLogge
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
-            const filePath = path.join(STATE_DIR, "autopilot-runs", `${params.runId}.json`);
+            const filePath = path.join(STATE_DIR(), "autopilot-runs", `${params.runId}.json`);
             if (!fs.existsSync(filePath)) {
               return jsonResult({ ok: false, error: `Run ${params.runId} not found` });
             }
@@ -116,7 +120,7 @@ export function registerEoaStateTools(api: OpenClawPluginApi, logger: AuditLogge
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
-            const filePath = path.join(STATE_DIR, "evidence-bundles", `${params.bundleId}.json`);
+            const filePath = path.join(STATE_DIR(), "evidence-bundles", `${params.bundleId}.json`);
             if (!fs.existsSync(filePath)) {
               return jsonResult({
                 ok: false,

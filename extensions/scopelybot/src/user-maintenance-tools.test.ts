@@ -232,6 +232,19 @@ describe("user-maintenance-tools", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("staging FAILS CLOSED when SCOPELYBOT_ZOOM_CHANNEL is unset", async () => {
+    delete process.env.SCOPELYBOT_ZOOM_CHANNEL;
+    const tools = buildTools();
+    const res = parse(
+      await tools.scopely_update_user.execute("t", { user_id: 7, role: "org_admin" }),
+    );
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/SCOPELYBOT_ZOOM_CHANNEL/);
+    // Nothing staged, nothing delivered, prod untouched.
+    expect(sendScopelyTextMock).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("a wrong/expired code executes nothing (fail-closed)", async () => {
     buildTools();
     fetchMock.mockResolvedValue({ ok: true, status: 200, data: {} });
