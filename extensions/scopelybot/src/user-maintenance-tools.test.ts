@@ -114,6 +114,29 @@ describe("user-maintenance-tools", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("confirm prompt labels the target from SCOPELY_BASE_URL (defaults to PROD)", async () => {
+    const tools = buildTools();
+    const savedBase = process.env.SCOPELY_BASE_URL;
+    const savedUrl = process.env.SCOPELY_URL;
+    delete process.env.SCOPELY_BASE_URL;
+    delete process.env.SCOPELY_URL;
+    try {
+      // Unknown/unset backend -> cautious PROD label.
+      await tools.scopely_reset_user_password.execute("t", { user_id: 1, email: "a@example.com" });
+      expect(sendScopelyTextMock.mock.calls.at(-1)?.[1]).toMatch(/ on PROD\./);
+
+      // Dev backend -> DEV label so the confirm warning names the real environment.
+      process.env.SCOPELY_BASE_URL = "https://dev.vip.pscx.ai";
+      await tools.scopely_reset_user_password.execute("t", { user_id: 2, email: "b@example.com" });
+      expect(sendScopelyTextMock.mock.calls.at(-1)?.[1]).toMatch(/ on DEV\./);
+    } finally {
+      if (savedBase === undefined) delete process.env.SCOPELY_BASE_URL;
+      else process.env.SCOPELY_BASE_URL = savedBase;
+      if (savedUrl === undefined) delete process.env.SCOPELY_URL;
+      else process.env.SCOPELY_URL = savedUrl;
+    }
+  });
+
   it("scopely_update_user stages only the supplied fields and does NOT execute until confirmed", async () => {
     const tools = buildTools();
 
