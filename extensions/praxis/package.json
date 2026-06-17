@@ -1,0 +1,14 @@
+{
+  "name": "@openclaw/praxis",
+  "version": "0.1.0",
+  "description": "Praxis issue-orchestrator support tools (read-only diagnostics)",
+  "type": "module",
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
