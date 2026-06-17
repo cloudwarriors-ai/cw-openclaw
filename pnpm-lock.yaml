@@ -1358,6 +1358,12 @@ importers:
         specifier: 2026.5.28
         version: 2026.5.28
 
+  extensions/praxis:
+    devDependencies:
+      openclaw:
+        specifier: workspace:*
+        version: link:../..
+
   extensions/pulsebot:
     devDependencies:
       openclaw:

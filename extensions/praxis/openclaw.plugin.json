@@ -1,0 +1,19 @@
+{
+  "id": "praxis",
+  "name": "Praxis",
+  "description": "Praxis issue-orchestrator support tools - diagnose stuck issues, list/inspect issues and their event trace (read-only)",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "contracts": {
+    "tools": [
+      "praxis_diagnose_issue",
+      "praxis_get_issue",
+      "praxis_health",
+      "praxis_list_events",
+      "praxis_list_issues"
+    ]
+  }
+}
