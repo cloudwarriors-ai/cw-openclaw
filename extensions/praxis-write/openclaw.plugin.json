@@ -1,0 +1,27 @@
+{
+  "id": "praxis-write",
+  "name": "Praxis Write",
+  "description": "Praxis operator write tools (hardened): unblock or cancel a stuck issue. Default-disabled; each call is allowlist-gated, requires a reason, and runs a two-step dry-run/confirm. Authorization binds to the server-side operator; the chat requester is recorded as audit context only.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "allowedUsers": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Chat sender ids permitted to issue write commands. Each configured dimension (users/channels) must match; an empty allowlist authorizes nobody (fail closed)."
+      },
+      "allowedChannels": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Channel ids in which write commands are permitted. Each configured dimension (users/channels) must match; an empty allowlist authorizes nobody (fail closed)."
+      }
+    }
+  },
+  "contracts": {
+    "tools": [
+      "praxis_cancel",
+      "praxis_unblock"
+    ]
+  }
+}

@@ -1364,6 +1364,12 @@ importers:
         specifier: workspace:*
         version: link:../..
 
+  extensions/praxis-write:
+    devDependencies:
+      openclaw:
+        specifier: workspace:*
+        version: link:../..
+
   extensions/pulsebot:
     devDependencies:
       openclaw:
