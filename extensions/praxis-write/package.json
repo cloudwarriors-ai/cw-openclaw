@@ -1,0 +1,14 @@
+{
+  "name": "@openclaw/praxis-write",
+  "version": "0.1.0",
+  "description": "Praxis operator write tools (hardened, default-disabled): unblock / cancel a stuck issue",
+  "type": "module",
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
