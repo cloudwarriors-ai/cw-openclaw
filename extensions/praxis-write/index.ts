@@ -16,14 +16,23 @@ import {
 import {
   getApiToken,
   getIssue,
+  mapStateToUatKindPrefix,
   type PraxisIssueState,
+  startGithubLink,
   submitCommand,
+  submitVerdict,
+  type UatVerdictKind,
 } from "./praxis-write-client.js";
 
 // The cancel-family kinds Praxis accepts off-band. `manual_override` is deliberately
 // NOT here: it is too broad / terminal-state risky for a chat surface (spar MED) and is
 // rejected server-side too. `unblock` is its own tool.
 const CANCEL_KINDS = ["cancelled", "duplicate", "superseded", "source_closed"] as const;
+
+// The verdict values the model may supply; the tool maps them to the full kind
+// (uat1_pass / uat2_pass etc.) after reading the issue state.
+const VERDICT_VALUES = ["pass", "fail"] as const;
+type VerdictValue = (typeof VERDICT_VALUES)[number];
 
 const PraxisWriteConfigSchema = z.strictObject({
   allowedUsers: z.array(z.string()).optional(),
@@ -121,8 +130,9 @@ const plugin = {
   id: "praxis-write",
   name: "Praxis Write",
   description:
-    "Praxis operator write tools (hardened): unblock or cancel a stuck issue. Default-disabled, " +
-    "allowlist-gated, two-step dry-run/confirm.",
+    "Praxis operator write tools (hardened): unblock or cancel a stuck issue, submit UAT verdicts " +
+    "on behalf of the chat user, or start GitHub account linking. Default-disabled, " +
+    "allowlist-gated, two-step dry-run/confirm for destructive ops.",
   configSchema: buildPluginConfigSchema(PraxisWriteConfigSchema, {
     safeParse(value) {
       if (value === undefined) {
@@ -219,6 +229,202 @@ const plugin = {
           issueId: params.issue_id,
           actor,
           config,
+        });
+      },
+    }));
+
+    optionalApi.registerTool((toolContext) => ({
+      name: "praxis_submit_verdict",
+      description:
+        "Submit a UAT verdict (pass or fail) on a Praxis issue on behalf of the chat user. The " +
+        "tool reads the issue's current state to determine the right UAT stage (dev_uat → uat1, " +
+        "user_uat → uat2) and rejects the call if the issue is not awaiting a verdict. The " +
+        "requester's verified Zoom identity is forwarded as channel_user_id — the server enforces " +
+        "that the identity is linked to a GitHub account with the reporter/owner role. If the " +
+        "identity is not linked, instruct the user to run praxis_link_github first. " +
+        "Allowlist-gated; no dry-run/confirm step (UAT states only exit on a human verdict, so " +
+        "the read→submit is race-safe). Deferred: needs_info answers (not wired server-side yet).",
+      parameters: Type.Object({
+        issue_id: Type.Number({ description: "The Praxis issue id (not the GitHub issue number)" }),
+        verdict: Type.String({
+          description:
+            "pass — UAT succeeded; fail — UAT failed and the issue should return for fixes",
+        }),
+        reason: Type.String({
+          description: "Human-readable UAT verdict rationale (required, recorded for audit)",
+        }),
+      }),
+      async execute(toolCallId: string, params: Record<string, unknown>) {
+        const actor = deriveActorContext(toolContext, toolCallId);
+
+        // Policy gate: identity + allowlist
+        const decision = checkPolicy(actor, config);
+        if (!decision.allowed) {
+          return jsonResult({ ok: false, denied: decision.reason });
+        }
+
+        // The verified Zoom sender id is the trusted identity we forward. Fail
+        // closed if the runtime didn't supply one (model cannot inject this).
+        const channelUserId = actor.requestedBy;
+        if (!channelUserId) {
+          return jsonResult({ ok: false, denied: "no_requester_identity" });
+        }
+
+        const verdictValue = typeof params.verdict === "string" ? params.verdict.trim() : "";
+        if (!(VERDICT_VALUES as readonly string[]).includes(verdictValue)) {
+          return jsonResult({
+            ok: false,
+            error: "unsupported_verdict",
+            allowed: VERDICT_VALUES,
+          });
+        }
+
+        const reason = typeof params.reason === "string" ? params.reason.trim() : "";
+        if (!reason) {
+          return jsonResult({ ok: false, error: "reason_required" });
+        }
+
+        const issueId = Number(params.issue_id);
+        if (!Number.isInteger(issueId) || issueId <= 0) {
+          return jsonResult({ ok: false, error: "invalid_issue_id" });
+        }
+
+        // Read the issue state to determine the UAT kind prefix (uat1 or uat2).
+        // UAT states only exit on a human verdict, so reading then submitting is
+        // race-safe for this surface.
+        let issue: PraxisIssueState;
+        try {
+          issue = await getIssue(issueId);
+        } catch (err) {
+          return errorResult(err);
+        }
+
+        const kindPrefix = mapStateToUatKindPrefix(issue.state);
+        if (!kindPrefix) {
+          return jsonResult({
+            ok: false,
+            error: "issue_not_awaiting_verdict",
+            state: issue.state,
+            message: `Issue #${issueId} is not awaiting a UAT verdict (state=${issue.state}). Only issues in dev_uat or user_uat can receive a verdict.`,
+          });
+        }
+
+        const kind: UatVerdictKind = `${kindPrefix}_${verdictValue as VerdictValue}`;
+
+        let res: Awaited<ReturnType<typeof submitVerdict>>;
+        try {
+          res = await submitVerdict(issueId, {
+            kind,
+            reason,
+            requested_by: channelUserId,
+            channel: "zoom",
+            channel_user_id: channelUserId,
+          });
+        } catch (err) {
+          return errorResult(err);
+        }
+
+        // Surface structured Praxis errors as user-friendly messages.
+        if (!res.ok) {
+          const body = res.data as Record<string, unknown>;
+          if (body.error === "identity_not_linked") {
+            return jsonResult({
+              ok: false,
+              error: "identity_not_linked",
+              message:
+                "Your Zoom identity is not yet linked to a GitHub account. " +
+                "Run praxis_link_github to get a link URL, tap it to authorize GitHub, then try again.",
+            });
+          }
+          if (res.status === 403) {
+            return jsonResult({
+              ok: false,
+              error: "unauthorized",
+              message:
+                "Your linked GitHub account does not have the reporter or owner role for this verdict. " +
+                "Contact an admin if you believe this is an error.",
+            });
+          }
+          if (body.error === "identity_required") {
+            return jsonResult({
+              ok: false,
+              error: "identity_required",
+              message:
+                "No verified identity was forwarded to Praxis. This is a configuration error.",
+            });
+          }
+        }
+
+        return jsonResult({ ok: res.ok, status: res.status, ...res.data });
+      },
+    }));
+
+    optionalApi.registerTool((toolContext) => ({
+      name: "praxis_link_github",
+      description:
+        "Start a GitHub account linking flow for the chat user. Sends the user's verified Zoom " +
+        "identity to Praxis, which returns a URL the user must tap to authorize their GitHub account. " +
+        "Once linked, the user can submit UAT verdicts via praxis_submit_verdict. Takes no " +
+        "model-supplied identity arguments — the verified sender from the runtime context is used. " +
+        "Allowlist-gated.",
+      parameters: Type.Object({}),
+      async execute(toolCallId: string, _params: Record<string, unknown>) {
+        const actor = deriveActorContext(toolContext, toolCallId);
+
+        // Policy gate: identity + allowlist
+        const decision = checkPolicy(actor, config);
+        if (!decision.allowed) {
+          return jsonResult({ ok: false, denied: decision.reason });
+        }
+
+        const channelUserId = actor.requestedBy;
+        if (!channelUserId) {
+          return jsonResult({ ok: false, denied: "no_requester_identity" });
+        }
+
+        let res: Awaited<ReturnType<typeof startGithubLink>>;
+        try {
+          res = await startGithubLink({ channel: "zoom", channel_user_id: channelUserId });
+        } catch (err) {
+          return errorResult(err);
+        }
+
+        if (!res.ok) {
+          const body = res.data as Record<string, unknown>;
+          if (body.error === "linking_not_configured") {
+            return jsonResult({
+              ok: false,
+              error: "linking_not_configured",
+              message:
+                "GitHub linking is not configured on the Praxis server. " +
+                "Contact an admin to set up the GitHub OAuth app.",
+            });
+          }
+          if (body.error === "identity_required") {
+            return jsonResult({
+              ok: false,
+              error: "identity_required",
+              message:
+                "No verified identity was forwarded to Praxis. This is a configuration error.",
+            });
+          }
+        }
+
+        const body = res.data as Record<string, unknown>;
+        const url = typeof body.url === "string" ? body.url : undefined;
+        if (!url) {
+          return jsonResult({
+            ok: false,
+            error: "unexpected_response",
+            message: "Praxis did not return a linking URL. Contact an admin.",
+          });
+        }
+
+        return jsonResult({
+          ok: true,
+          status: res.status,
+          url,
+          message: `Tap this link to connect your GitHub account: ${url}`,
         });
       },
     }));

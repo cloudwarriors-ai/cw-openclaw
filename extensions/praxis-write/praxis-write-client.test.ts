@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getApiToken, getIssue, praxisFetch, submitCommand } from "./praxis-write-client.js";
+import {
+  getApiToken,
+  getIssue,
+  mapStateToUatKindPrefix,
+  praxisFetch,
+  startGithubLink,
+  submitCommand,
+  submitVerdict,
+} from "./praxis-write-client.js";
 
 const BASE = "http://praxis:8000";
 
@@ -104,5 +112,96 @@ describe("submitCommand", () => {
     // No client-supplied payload or actor_id: the server derives + binds those.
     expect(sent.payload).toBeUndefined();
     expect(sent.actor_id).toBeUndefined();
+  });
+});
+
+describe("mapStateToUatKindPrefix", () => {
+  it("maps dev_uat to uat1", () => {
+    expect(mapStateToUatKindPrefix("dev_uat")).toBe("uat1");
+  });
+
+  it("maps user_uat to uat2", () => {
+    expect(mapStateToUatKindPrefix("user_uat")).toBe("uat2");
+  });
+
+  it("returns undefined for non-UAT states", () => {
+    expect(mapStateToUatKindPrefix("blocked")).toBeUndefined();
+    expect(mapStateToUatKindPrefix("in_progress")).toBeUndefined();
+    expect(mapStateToUatKindPrefix("done")).toBeUndefined();
+    expect(mapStateToUatKindPrefix("")).toBeUndefined();
+  });
+});
+
+describe("submitVerdict", () => {
+  it("POSTs the verdict body with channel_user_id and returns the raw result", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({ ok: true, status: 200, body: { applied: true, state: "done" } }),
+    );
+    const res = await submitVerdict(7, {
+      kind: "uat1_pass",
+      reason: "feature verified",
+      requested_by: "alice",
+      channel: "zoom",
+      channel_user_id: "alice",
+    });
+    expect(res).toEqual({ ok: true, status: 200, data: { applied: true, state: "done" } });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${BASE}/api/v1/issues/7/events`);
+    expect(init.method).toBe("POST");
+    const sent = JSON.parse(init.body as string);
+    expect(sent).toEqual({
+      kind: "uat1_pass",
+      reason: "feature verified",
+      requested_by: "alice",
+      channel: "zoom",
+      channel_user_id: "alice",
+    });
+  });
+
+  it("returns structured 403 on identity_not_linked without throwing", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({ ok: false, status: 403, body: { error: "identity_not_linked" } }),
+    );
+    const res = await submitVerdict(7, {
+      kind: "uat2_fail",
+      reason: "broken",
+      requested_by: "alice",
+      channel: "zoom",
+      channel_user_id: "alice",
+    });
+    expect(res.ok).toBe(false);
+    expect(res.status).toBe(403);
+    expect((res.data as Record<string, unknown>).error).toBe("identity_not_linked");
+  });
+});
+
+describe("startGithubLink", () => {
+  it("POSTs channel + channel_user_id and returns the url", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({
+        ok: true,
+        status: 200,
+        body: { url: "https://github.com/login/oauth/authorize?state=abc" },
+      }),
+    );
+    const res = await startGithubLink({ channel: "zoom", channel_user_id: "alice" });
+    expect(res.ok).toBe(true);
+    expect((res.data as Record<string, unknown>).url).toBe(
+      "https://github.com/login/oauth/authorize?state=abc",
+    );
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${BASE}/api/v1/identity/link`);
+    expect(init.method).toBe("POST");
+    const sent = JSON.parse(init.body as string);
+    expect(sent).toEqual({ channel: "zoom", channel_user_id: "alice" });
+  });
+
+  it("returns 400 linking_not_configured without throwing", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({ ok: false, status: 400, body: { error: "linking_not_configured" } }),
+    );
+    const res = await startGithubLink({ channel: "zoom", channel_user_id: "alice" });
+    expect(res.ok).toBe(false);
+    expect((res.data as Record<string, unknown>).error).toBe("linking_not_configured");
   });
 });

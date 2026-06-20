@@ -97,3 +97,51 @@ export async function submitCommand(
     body: JSON.stringify(command),
   });
 }
+
+/** The UAT verdict kinds accepted by the events endpoint. uat1 = dev_uat stage,
+ * uat2 = user_uat stage. The correct kind is determined from the issue's current
+ * state, not passed by the model. */
+export type UatVerdictKind = "uat1_pass" | "uat1_fail" | "uat2_pass" | "uat2_fail";
+
+/** Map a Praxis issue state to its UAT kind prefix, or undefined when the issue
+ * is not currently awaiting a UAT verdict. Exported for testing. */
+export function mapStateToUatKindPrefix(state: string): "uat1" | "uat2" | undefined {
+  if (state === "dev_uat") {
+    return "uat1";
+  }
+  if (state === "user_uat") {
+    return "uat2";
+  }
+  return undefined;
+}
+
+/** Submit a UAT verdict event. `channel_user_id` is the verified Zoom sender id
+ * from the trusted runtime context — the server uses it for identity binding. */
+export async function submitVerdict(
+  issueId: number,
+  body: {
+    kind: UatVerdictKind;
+    reason: string;
+    requested_by: string;
+    channel: string;
+    channel_user_id: string;
+  },
+): Promise<PraxisResponse<Record<string, unknown>>> {
+  return praxisFetch<Record<string, unknown>>(`/api/v1/issues/${issueId}/events`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Start a GitHub identity link flow for the given Zoom user. Returns the OAuth
+ * redirect URL the user must tap to authorize. The server binds the pending link
+ * to the channel_user_id so it resolves back to the right Zoom identity. */
+export async function startGithubLink(body: {
+  channel: string;
+  channel_user_id: string;
+}): Promise<PraxisResponse<Record<string, unknown>>> {
+  return praxisFetch<Record<string, unknown>>("/api/v1/identity/link", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
