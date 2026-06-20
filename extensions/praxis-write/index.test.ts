@@ -11,6 +11,8 @@ type ToolDef = {
 };
 
 const ISSUE = { id: 5, state: "blocked", state_reason: "no_response", version: 12 };
+const ISSUE_DEV_UAT = { id: 7, state: "dev_uat", state_reason: "", version: 3 };
+const ISSUE_USER_UAT = { id: 8, state: "user_uat", state_reason: "", version: 5 };
 
 function mockResponse(opts: { ok: boolean; status: number; body: unknown }): Response {
   return {
@@ -70,10 +72,15 @@ afterEach(() => {
 });
 
 describe("praxis-write registration", () => {
-  it("registers exactly the two write tools, both optional", () => {
+  it("registers exactly the four write tools, all optional", () => {
     const { tools, registerOpts } = buildTools();
-    expect(Object.keys(tools).toSorted()).toEqual(["praxis_cancel", "praxis_unblock"]);
-    expect(registerOpts).toHaveLength(2);
+    expect(Object.keys(tools).toSorted()).toEqual([
+      "praxis_cancel",
+      "praxis_link_github",
+      "praxis_submit_verdict",
+      "praxis_unblock",
+    ]);
+    expect(registerOpts).toHaveLength(4);
     expect(registerOpts.every((o) => o.optional === true)).toBe(true);
   });
 });
@@ -214,5 +221,251 @@ describe("praxis_cancel", () => {
     expect(out.preview).toBe(true);
     expect(out.action).toBe("duplicate");
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("praxis_submit_verdict", () => {
+  it("fails policy gate when unconfigured", async () => {
+    const { tools } = buildTools({ pluginConfig: undefined });
+    const out = parse(
+      await tools.praxis_submit_verdict.execute("c1", {
+        issue_id: 7,
+        verdict: "pass",
+        reason: "looks good",
+      }),
+    );
+    expect(out).toEqual({ ok: false, denied: "write_policy_unconfigured" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unsupported verdict value before any fetch", async () => {
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_submit_verdict.execute("c1", {
+        issue_id: 7,
+        verdict: "maybe",
+        reason: "not sure",
+      }),
+    );
+    expect(out.error).toBe("unsupported_verdict");
+    expect(out.allowed).toContain("pass");
+    expect(out.allowed).toContain("fail");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a missing reason before any fetch", async () => {
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_submit_verdict.execute("c1", {
+        issue_id: 7,
+        verdict: "pass",
+        reason: "  ",
+      }),
+    );
+    expect(out).toEqual({ ok: false, error: "reason_required" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns issue_not_awaiting_verdict when the issue state is not dev_uat or user_uat", async () => {
+    fetchMock.mockResolvedValue(mockResponse({ ok: true, status: 200, body: ISSUE }));
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_submit_verdict.execute("c1", {
+        issue_id: 5,
+        verdict: "pass",
+        reason: "looks good",
+      }),
+    );
+    expect(out.error).toBe("issue_not_awaiting_verdict");
+    expect(out.state).toBe("blocked");
+    expect(fetchMock).toHaveBeenCalledTimes(1); // only the GET
+    // No POST was sent
+    expect(
+      fetchMock.mock.calls.every(
+        (c: unknown[]) => (c[1] as RequestInit | undefined)?.method !== "POST",
+      ),
+    ).toBe(true);
+  });
+
+  it("submits uat1_pass for a dev_uat issue with verified Zoom identity", async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: ISSUE_DEV_UAT }))
+      .mockResolvedValueOnce(
+        mockResponse({ ok: true, status: 200, body: { applied: true, state: "done" } }),
+      );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_submit_verdict.execute("c2", {
+        issue_id: 7,
+        verdict: "pass",
+        reason: "UAT complete, feature verified",
+      }),
+    );
+    expect(out).toEqual({ ok: true, status: 200, applied: true, state: "done" });
+
+    const post = fetchMock.mock.calls.find(
+      (c: unknown[]) => (c[1] as RequestInit | undefined)?.method === "POST",
+    );
+    if (!post) {
+      throw new Error("expected a POST call");
+    }
+    expect(post[0]).toBe("http://praxis:8000/api/v1/issues/7/events");
+    const body = JSON.parse((post[1] as RequestInit).body as string);
+    expect(body).toEqual({
+      kind: "uat1_pass",
+      reason: "UAT complete, feature verified",
+      requested_by: "alice",
+      channel: "zoom",
+      channel_user_id: "alice",
+    });
+  });
+
+  it("submits uat2_fail for a user_uat issue", async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: ISSUE_USER_UAT }))
+      .mockResolvedValueOnce(
+        mockResponse({ ok: true, status: 200, body: { applied: true, state: "in_progress" } }),
+      );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_submit_verdict.execute("c3", {
+        issue_id: 8,
+        verdict: "fail",
+        reason: "button still broken",
+      }),
+    );
+    expect(out.ok).toBe(true);
+
+    const post = fetchMock.mock.calls.find(
+      (c: unknown[]) => (c[1] as RequestInit | undefined)?.method === "POST",
+    );
+    if (!post) {
+      throw new Error("expected a POST call");
+    }
+    const body = JSON.parse((post[1] as RequestInit).body as string);
+    expect(body.kind).toBe("uat2_fail");
+    expect(body.channel).toBe("zoom");
+    expect(body.channel_user_id).toBe("alice");
+  });
+
+  it("surfaces identity_not_linked with a link instruction", async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: ISSUE_DEV_UAT }))
+      .mockResolvedValueOnce(
+        mockResponse({
+          ok: false,
+          status: 403,
+          body: { error: "identity_not_linked" },
+        }),
+      );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_submit_verdict.execute("c4", {
+        issue_id: 7,
+        verdict: "pass",
+        reason: "looks good",
+      }),
+    );
+    expect(out.error).toBe("identity_not_linked");
+    expect(out.message).toMatch(/praxis_link_github/);
+  });
+
+  it("surfaces 403 unauthorized with a clear message", async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: ISSUE_DEV_UAT }))
+      .mockResolvedValueOnce(
+        mockResponse({
+          ok: false,
+          status: 403,
+          body: { reason: "unauthorized" },
+        }),
+      );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_submit_verdict.execute("c5", {
+        issue_id: 7,
+        verdict: "pass",
+        reason: "looks good",
+      }),
+    );
+    expect(out.error).toBe("unauthorized");
+    expect(out.message).toMatch(/reporter or owner/);
+  });
+
+  it("denies when no requester identity in runtime context", async () => {
+    const { tools } = buildTools({
+      pluginConfig: ALLOW_ALICE,
+      toolContext: { deliveryContext: { channel: "dev_praxis" } },
+    });
+    const out = parse(
+      await tools.praxis_submit_verdict.execute("c6", {
+        issue_id: 7,
+        verdict: "pass",
+        reason: "ok",
+        channel_user_id: "injected-by-model", // should be ignored
+      }),
+    );
+    expect(out.denied).toBe("no_requester_identity");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("praxis_link_github", () => {
+  it("fails policy gate when unconfigured", async () => {
+    const { tools } = buildTools({ pluginConfig: undefined });
+    const out = parse(await tools.praxis_link_github.execute("c1", {}));
+    expect(out).toEqual({ ok: false, denied: "write_policy_unconfigured" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("denies when no requester identity in runtime context", async () => {
+    const { tools } = buildTools({
+      pluginConfig: ALLOW_ALICE,
+      toolContext: { deliveryContext: { channel: "dev_praxis" } },
+    });
+    const out = parse(await tools.praxis_link_github.execute("c2", {}));
+    expect(out.denied).toBe("no_requester_identity");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("posts channel=zoom and channel_user_id from trusted context, returns the url", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({
+        ok: true,
+        status: 200,
+        body: { url: "https://github.com/login/oauth/authorize?state=xyz" },
+      }),
+    );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(await tools.praxis_link_github.execute("c3", {}));
+    expect(out.ok).toBe(true);
+    expect(out.url).toBe("https://github.com/login/oauth/authorize?state=xyz");
+    expect(out.message).toContain("https://github.com/login/oauth/authorize?state=xyz");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://praxis:8000/api/v1/identity/link");
+    expect((init as RequestInit).method).toBe("POST");
+    const sent = JSON.parse((init as RequestInit).body as string);
+    expect(sent).toEqual({ channel: "zoom", channel_user_id: "alice" });
+  });
+
+  it("surfaces linking_not_configured with a clear message", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({ ok: false, status: 400, body: { error: "linking_not_configured" } }),
+    );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(await tools.praxis_link_github.execute("c4", {}));
+    expect(out.error).toBe("linking_not_configured");
+    expect(out.message).toMatch(/not configured/);
+  });
+
+  it("surfaces identity_required as a configuration error", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({ ok: false, status: 400, body: { error: "identity_required" } }),
+    );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(await tools.praxis_link_github.execute("c5", {}));
+    expect(out.error).toBe("identity_required");
+    expect(out.message).toMatch(/configuration error/);
   });
 });
