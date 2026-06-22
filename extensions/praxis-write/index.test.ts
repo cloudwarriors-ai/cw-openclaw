@@ -72,15 +72,16 @@ afterEach(() => {
 });
 
 describe("praxis-write registration", () => {
-  it("registers exactly the four write tools, all optional", () => {
+  it("registers exactly the five write tools, all optional", () => {
     const { tools, registerOpts } = buildTools();
     expect(Object.keys(tools).toSorted()).toEqual([
       "praxis_cancel",
       "praxis_link_github",
+      "praxis_link_status",
       "praxis_submit_verdict",
       "praxis_unblock",
     ]);
-    expect(registerOpts).toHaveLength(4);
+    expect(registerOpts).toHaveLength(5);
     expect(registerOpts.every((o) => o.optional === true)).toBe(true);
   });
 });
@@ -467,5 +468,47 @@ describe("praxis_link_github", () => {
     const out = parse(await tools.praxis_link_github.execute("c5", {}));
     expect(out.error).toBe("identity_required");
     expect(out.message).toMatch(/configuration error/);
+  });
+});
+
+describe("praxis_link_status", () => {
+  it("denies when no requester identity in runtime context", async () => {
+    const { tools } = buildTools({
+      pluginConfig: ALLOW_ALICE,
+      toolContext: { deliveryContext: { channel: "dev_praxis" } },
+    });
+    const out = parse(await tools.praxis_link_status.execute("c1", {}));
+    expect(out.denied).toBe("no_requester_identity");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("reports linked with the github login, GETting the verified identity", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({ ok: true, status: 200, body: { linked: true, github_login: "alice-gh" } }),
+    );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(await tools.praxis_link_status.execute("c2", {}));
+    expect(out).toEqual({
+      ok: true,
+      linked: true,
+      github_login: "alice-gh",
+      message: "Your Zoom identity is linked to GitHub as alice-gh.",
+    });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(
+      "http://praxis:8000/api/v1/identity/status?channel=zoom&channel_user_id=alice",
+    );
+    expect((init as RequestInit | undefined)?.method ?? "GET").toBe("GET");
+  });
+
+  it("reports not linked and points the user at praxis_link_github", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({ ok: true, status: 200, body: { linked: false, github_login: null } }),
+    );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(await tools.praxis_link_status.execute("c3", {}));
+    expect(out.ok).toBe(true);
+    expect(out.linked).toBe(false);
+    expect(out.message).toMatch(/praxis_link_github/);
   });
 });

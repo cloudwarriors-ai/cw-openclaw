@@ -145,3 +145,17 @@ export async function startGithubLink(body: {
     body: JSON.stringify(body),
   });
 }
+
+/** Check whether a verified Zoom identity is linked to a GitHub account. The server
+ * resolves the caller's OWN forwarded channel_user_id, so it only ever returns that
+ * user's mapping. Returns { linked, github_login }. */
+export async function getLinkStatus(params: {
+  channel: string;
+  channel_user_id: string;
+}): Promise<PraxisResponse<Record<string, unknown>>> {
+  const qs = new URLSearchParams({
+    channel: params.channel,
+    channel_user_id: params.channel_user_id,
+  }).toString();
+  return praxisFetch<Record<string, unknown>>(`/api/v1/identity/status?${qs}`);
+}

@@ -16,6 +16,7 @@ import {
 import {
   getApiToken,
   getIssue,
+  getLinkStatus,
   mapStateToUatKindPrefix,
   type PraxisIssueState,
   startGithubLink,
@@ -425,6 +426,56 @@ const plugin = {
           status: res.status,
           url,
           message: `Tap this link to connect your GitHub account: ${url}`,
+        });
+      },
+    }));
+
+    optionalApi.registerTool((toolContext) => ({
+      name: "praxis_link_status",
+      description:
+        "Check whether the chat user's verified identity is already linked to a GitHub account in " +
+        "Praxis. Uses the verified runtime identity (no model-supplied arguments) and returns whether " +
+        "they are linked and, if linked, the GitHub login. Use this to confirm a link succeeded or to " +
+        "decide whether to prompt the user to run praxis_link_github. Allowlist-gated.",
+      parameters: Type.Object({}),
+      async execute(toolCallId: string, _params: Record<string, unknown>) {
+        const actor = deriveActorContext(toolContext, toolCallId);
+
+        // Policy gate: identity + allowlist
+        const decision = checkPolicy(actor, config);
+        if (!decision.allowed) {
+          return jsonResult({ ok: false, denied: decision.reason });
+        }
+
+        const channelUserId = actor.requestedBy;
+        if (!channelUserId) {
+          return jsonResult({ ok: false, denied: "no_requester_identity" });
+        }
+
+        let res: Awaited<ReturnType<typeof getLinkStatus>>;
+        try {
+          res = await getLinkStatus({ channel: "zoom", channel_user_id: channelUserId });
+        } catch (err) {
+          return errorResult(err);
+        }
+        if (!res.ok) {
+          return jsonResult({
+            ok: false,
+            status: res.status,
+            ...(res.data as Record<string, unknown>),
+          });
+        }
+
+        const body = res.data as Record<string, unknown>;
+        const linked = body.linked === true;
+        const githubLogin = typeof body.github_login === "string" ? body.github_login : undefined;
+        return jsonResult({
+          ok: true,
+          linked,
+          github_login: githubLogin,
+          message: linked
+            ? `Your Zoom identity is linked to GitHub as ${githubLogin}.`
+            : "Your Zoom identity is not linked to a GitHub account yet. Run praxis_link_github to link it.",
         });
       },
     }));

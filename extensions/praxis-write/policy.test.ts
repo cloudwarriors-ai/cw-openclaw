@@ -116,6 +116,18 @@ describe("deriveActorContext", () => {
       toolCallId: "call-8",
     });
   });
+
+  it("gates on the room (deliveryContext.to), not the platform channel", () => {
+    // The runtime sets deliveryContext.channel to the PLATFORM ("zoom") and puts the specific
+    // room (the Zoom channel JID) in deliveryContext.to. The allowlist gates on the room, so `to`
+    // wins — gating on the platform would (wrongly) allow every Zoom channel. Regression guard.
+    const ctx = {
+      requesterSenderId: "alice",
+      messageChannel: "zoom",
+      deliveryContext: { channel: "zoom", to: "room-jid@conference.xmpp.zoom.us", threadId: 1 },
+    };
+    expect(deriveActorContext(ctx, "call-9").channel).toBe("room-jid@conference.xmpp.zoom.us");
+  });
 });
 
 describe("confirm token", () => {

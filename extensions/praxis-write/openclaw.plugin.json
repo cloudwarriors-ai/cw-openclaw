@@ -22,6 +22,7 @@
     "tools": [
       "praxis_cancel",
       "praxis_link_github",
+      "praxis_link_status",
       "praxis_submit_verdict",
       "praxis_unblock"
     ]
