@@ -20,7 +20,7 @@ import type { PraxisIssueState } from "./praxis-write-client.js";
 export interface ToolRequestContext {
   requesterSenderId?: string;
   messageChannel?: string;
-  deliveryContext?: { channel?: string; threadId?: string | number };
+  deliveryContext?: { channel?: string; to?: string; threadId?: string | number };
   sessionId?: string;
 }
 
@@ -58,7 +58,11 @@ export function resolveWritePolicyConfig(raw: unknown): WritePolicyConfig {
 /** Build the actor context from the TRUSTED runtime context, not tool args. The
  * model can pick the issue + reason, but never who/where the request came from. */
 export function deriveActorContext(ctx: ToolRequestContext, toolCallId: string): ActorContext {
-  const channel = ctx.deliveryContext?.channel ?? ctx.messageChannel ?? "";
+  // The room/peer is the gating identity for allowedChannels — the runtime puts the specific room
+  // (e.g. a Zoom channel JID) in deliveryContext.to, while deliveryContext.channel is the PLATFORM
+  // ("zoom"). Gate on the room; fall back to platform only when no peer is present.
+  const channel =
+    ctx.deliveryContext?.to ?? ctx.deliveryContext?.channel ?? ctx.messageChannel ?? "";
   const threadId = ctx.deliveryContext?.threadId;
   const messageId =
     threadId !== undefined && threadId !== null ? String(threadId) : (ctx.sessionId ?? "");
