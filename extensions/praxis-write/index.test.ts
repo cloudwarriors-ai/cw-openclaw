@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import plugin from "./index.js";
-import { mintConfirmToken } from "./policy.js";
+import { mintConfirmToken, mintRepoConfirmToken } from "./policy.js";
 
 type ToolDef = {
   name: string;
@@ -72,16 +72,17 @@ afterEach(() => {
 });
 
 describe("praxis-write registration", () => {
-  it("registers exactly the five write tools, all optional", () => {
+  it("registers exactly the six write tools, all optional", () => {
     const { tools, registerOpts } = buildTools();
     expect(Object.keys(tools).toSorted()).toEqual([
       "praxis_cancel",
       "praxis_link_github",
       "praxis_link_status",
+      "praxis_onboard",
       "praxis_submit_verdict",
       "praxis_unblock",
     ]);
-    expect(registerOpts).toHaveLength(5);
+    expect(registerOpts).toHaveLength(6);
     expect(registerOpts.every((o) => o.optional === true)).toBe(true);
   });
 });
@@ -510,5 +511,103 @@ describe("praxis_link_status", () => {
     expect(out.ok).toBe(true);
     expect(out.linked).toBe(false);
     expect(out.message).toMatch(/praxis_link_github/);
+  });
+});
+
+describe("praxis_onboard", () => {
+  const REPO = "cloudwarriors-ai/foo";
+
+  it("fails closed when the allowlist is unconfigured (no fetch)", async () => {
+    const { tools } = buildTools({ pluginConfig: undefined });
+    const out = parse(
+      await tools.praxis_onboard.execute("c1", { full_name: REPO, reason: "track it" }),
+    );
+    expect(out).toEqual({ ok: false, denied: "write_policy_unconfigured" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("requires a reason", async () => {
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(await tools.praxis_onboard.execute("c1", { full_name: REPO, reason: " " }));
+    expect(out).toEqual({ ok: false, error: "reason_required" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a full_name without owner/name", async () => {
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_onboard.execute("c1", { full_name: "no-slash", reason: "track it" }),
+    );
+    expect(out).toEqual({ ok: false, error: "invalid_full_name" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("dry-run previews and makes no HTTP call at all", async () => {
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_onboard.execute("c1", { full_name: REPO, reason: "track it" }),
+    );
+    expect(out.preview).toBe(true);
+    expect(out.action).toBe("onboard");
+    expect(out.repo).toBe(REPO);
+    expect(out.backfill).toBe(true);
+    expect(typeof out.confirm_token).toBe("string");
+    // The onboard token is bound to repo+backfill (no issue GET), so a preview hits nothing.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("a wrong confirm token re-previews instead of executing", async () => {
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_onboard.execute("c1", {
+        full_name: REPO,
+        reason: "track it",
+        confirm: "deadbeefdeadbeef",
+      }),
+    );
+    expect(out.preview).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("executes on a valid confirm token, POSTing the onboard request", async () => {
+    const result = {
+      repo_id: 3,
+      full_name: REPO,
+      created: true,
+      backfilled: [{ source_issue: 1, state: "assessing" }],
+      state_counts: { assessing: 1 },
+      webhook: {
+        required: true,
+        url: "",
+        events: ["issues", "issue_comment"],
+        instructions: "...",
+      },
+    };
+    fetchMock.mockResolvedValue(mockResponse({ ok: true, status: 200, body: result }));
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const token = mintRepoConfirmToken({ secret: "test-token", fullName: REPO, backfill: true });
+
+    const out = parse(
+      await tools.praxis_onboard.execute("c1", {
+        full_name: REPO,
+        maintainers: ["ann"],
+        reason: "track it",
+        confirm: token,
+      }),
+    );
+
+    expect(out.ok).toBe(true);
+    expect(out.webhook.required).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain("/api/v1/repos/onboard");
+    expect(init?.method).toBe("POST");
+    const sent = JSON.parse(init?.body as string);
+    expect(sent).toEqual({
+      full_name: REPO,
+      maintainers: ["ann"],
+      owns_dispatch: false,
+      backfill: true,
+    });
   });
 });
