@@ -10,6 +10,7 @@ import {
   deriveActorContext,
   idempotencyKey,
   mintConfirmToken,
+  mintRepoConfirmToken,
   resolveWritePolicyConfig,
   type WritePolicyConfig,
 } from "./policy.js";
@@ -18,6 +19,7 @@ import {
   getIssue,
   getLinkStatus,
   mapStateToUatKindPrefix,
+  onboardRepo,
   type PraxisIssueState,
   startGithubLink,
   submitCommand,
@@ -190,6 +192,107 @@ const plugin = {
           actor,
           config,
         });
+      },
+    }));
+
+    optionalApi.registerTool((toolContext) => ({
+      name: "praxis_onboard",
+      description:
+        "Onboard an EXISTING GitHub repo into Praxis so its issues are tracked: registers the repo " +
+        "and (by default) backfills its current open issues through intake. Two steps: call first " +
+        "with full_name (+ optional maintainers / owns_dispatch / backfill) and a reason to get a " +
+        "dry-run preview and a confirm_token, then call again passing that token in `confirm` to " +
+        "execute. Does NOT create the GitHub webhook (that needs repo-admin Praxis lacks) — the " +
+        "result returns a webhook instruction for a repo admin to finish. Allowlist-gated; the " +
+        "human you are acting for is recorded for audit. If denied, surface the reason; do not retry.",
+      parameters: Type.Object({
+        full_name: Type.String({ description: "owner/name, e.g. cloudwarriors-ai/foo" }),
+        maintainers: Type.Optional(
+          Type.Array(Type.String(), {
+            description: "Repo-wide maintainer GitHub logins (optional)",
+          }),
+        ),
+        owns_dispatch: Type.Optional(
+          Type.Boolean({
+            description: "Praxis writes the dispatch label for this repo (default false)",
+          }),
+        ),
+        backfill: Type.Optional(
+          Type.Boolean({
+            description: "Ingest the repo's existing open issues through intake (default true)",
+          }),
+        ),
+        reason: Type.String({
+          description: "Operator justification for onboarding (required, audited)",
+        }),
+        confirm: Type.Optional(
+          Type.String({
+            description:
+              "Confirmation token from the dry-run preview. Omit on the first call to preview; " +
+              "pass the returned confirm_token to execute.",
+          }),
+        ),
+      }),
+      async execute(toolCallId: string, params: Record<string, unknown>) {
+        const actor = deriveActorContext(toolContext, toolCallId);
+        const decision = checkPolicy(actor, config);
+        if (!decision.allowed) {
+          return jsonResult({ ok: false, denied: decision.reason });
+        }
+        const reason = typeof params.reason === "string" ? params.reason.trim() : "";
+        if (!reason) {
+          return jsonResult({ ok: false, error: "reason_required" });
+        }
+        const fullName = typeof params.full_name === "string" ? params.full_name.trim() : "";
+        if (!fullName.includes("/")) {
+          return jsonResult({ ok: false, error: "invalid_full_name" });
+        }
+        const backfill = params.backfill === undefined ? true : params.backfill === true;
+        const ownsDispatch = params.owns_dispatch === true;
+        const maintainers = Array.isArray(params.maintainers)
+          ? params.maintainers.filter((m): m is string => typeof m === "string")
+          : [];
+
+        let token: string;
+        try {
+          token = getApiToken();
+        } catch (err) {
+          return errorResult(err);
+        }
+
+        const expected = mintRepoConfirmToken({ secret: token, fullName, backfill });
+        const confirm = typeof params.confirm === "string" ? params.confirm : "";
+        if (!confirm || !confirmTokenMatches(confirm, expected)) {
+          return jsonResult({
+            ok: true,
+            preview: true,
+            action: "onboard",
+            repo: fullName,
+            backfill,
+            owns_dispatch: ownsDispatch,
+            maintainers,
+            requested_by: actor.requestedBy,
+            confirm_token: expected,
+            message:
+              `Dry run only — nothing changed. Re-call this tool with confirm="${expected}" to ` +
+              `onboard ${fullName}` +
+              (backfill ? " and backfill its open issues." : ".") +
+              " A repo admin must still create the GitHub webhook (instructions returned in the result).",
+          });
+        }
+
+        let res: Awaited<ReturnType<typeof onboardRepo>>;
+        try {
+          res = await onboardRepo({
+            full_name: fullName,
+            maintainers,
+            owns_dispatch: ownsDispatch,
+            backfill,
+          });
+        } catch (err) {
+          return errorResult(err);
+        }
+        return jsonResult({ ok: res.ok, status: res.status, ...res.data });
       },
     }));
 

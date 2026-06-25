@@ -159,3 +159,19 @@ export async function getLinkStatus(params: {
   }).toString();
   return praxisFetch<Record<string, unknown>>(`/api/v1/identity/status?${qs}`);
 }
+
+/** Onboard an EXISTING repo into Praxis: register it and (by default) backfill its open
+ * issues through the live intake path. The server does NOT create the GitHub webhook (that
+ * needs repo-admin the Praxis token lacks) — the result carries a `webhook` instruction for a
+ * repo admin to finish. Returns the raw result + HTTP status so the tool surfaces it verbatim. */
+export async function onboardRepo(body: {
+  full_name: string;
+  maintainers?: string[];
+  owns_dispatch?: boolean;
+  backfill?: boolean;
+}): Promise<PraxisResponse<Record<string, unknown>>> {
+  return praxisFetch<Record<string, unknown>>("/api/v1/repos/onboard", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}

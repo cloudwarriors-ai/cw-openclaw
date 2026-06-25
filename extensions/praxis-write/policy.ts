@@ -107,6 +107,19 @@ export function mintConfirmToken(params: {
   return createHmac("sha256", secret).update(msg).digest("hex").slice(0, 16);
 }
 
+/** Confirm token for repo onboarding. There is no issue state to bind to, so it binds to the
+ * repo + backfill flag. Derived from the API token secret, so the model cannot forge it without
+ * first calling the dry-run that returns it. */
+export function mintRepoConfirmToken(params: {
+  secret: string;
+  fullName: string;
+  backfill: boolean;
+}): string {
+  const { secret, fullName, backfill } = params;
+  const msg = `onboard:${fullName}:${backfill}`;
+  return createHmac("sha256", secret).update(msg).digest("hex").slice(0, 16);
+}
+
 /** Constant-time compare of a presented confirm token against the expected one. */
 export function confirmTokenMatches(presented: string, expected: string): boolean {
   const a = Buffer.from(presented);
