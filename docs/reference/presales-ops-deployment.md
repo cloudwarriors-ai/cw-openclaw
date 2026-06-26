@@ -165,7 +165,3 @@ Only the two hubs are bound to channels. Spokes are spawned by their hub via
   masked inside free-text/phone-named fields only (ids and timestamps survive).
 - This pass is pull-only: the bots fetch on request and post only into their
   support channel. No event/debug-channel dispatch yet (Phase 2).
-
-```
-
-```
