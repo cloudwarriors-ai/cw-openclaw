@@ -6,6 +6,7 @@ import { tryExecuteConfirm } from "./src/confirm.js";
 import { registerCorrelationTools } from "./src/correlation-tools.js";
 import { registerDevtoolsTools } from "./src/devtools-tools.js";
 import { registerGhTools } from "./src/gh-tools.js";
+import { registerPresalesOpsTools } from "./src/presales-ops-tools.js";
 
 type PluginConfig = { bhRepos?: string[] };
 
@@ -54,6 +55,7 @@ const plugin = {
     registerGhTools(optionalApi, logger, pluginConfig);
     registerCorrelationTools(optionalApi, logger, pluginConfig);
     registerDevtoolsTools(optionalApi, logger);
+    registerPresalesOpsTools(optionalApi, logger);
 
     // Comfort message + thread-anchor capture on inbound. CONFIRM execution is
     // NOT handled here: message_received is a fire-and-forget OBSERVE hook (it
@@ -89,7 +91,9 @@ const plugin = {
       return { handled: true, text: result ?? undefined };
     });
 
-    console.log(`[bigheadbot] Registered ${toolCount} tools (BH + GH + correlation + devtools)`);
+    console.log(
+      `[bigheadbot] Registered ${toolCount} tools (BH + GH + correlation + devtools + presales ops)`,
+    );
   },
 };
 

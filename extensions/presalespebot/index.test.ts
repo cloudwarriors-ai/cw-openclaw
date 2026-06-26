@@ -1,0 +1,20 @@
+import os from "node:os";
+import { describe, expect, it, vi } from "vitest";
+import plugin from "./index.js";
+
+describe("presalespebot tool scoping", () => {
+  it("registers every tool as optional so per-agent allowlists can scope them", () => {
+    process.env.OPENCLAW_WORKSPACE = os.tmpdir();
+    const optionalFlags: Array<boolean | undefined> = [];
+    const api = {
+      registerTool: vi.fn((_tool: unknown, opts?: { optional?: boolean }) => {
+        optionalFlags.push(opts?.optional);
+      }),
+    } as never;
+
+    plugin.register(api, undefined);
+
+    expect(optionalFlags.length).toBeGreaterThan(0);
+    expect(optionalFlags.every((flag) => flag === true)).toBe(true);
+  });
+});
