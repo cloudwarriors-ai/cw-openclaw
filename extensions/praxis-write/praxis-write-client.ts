@@ -175,3 +175,17 @@ export async function onboardRepo(body: {
     body: JSON.stringify(body),
   });
 }
+
+export async function runSelfHeal(body: {
+  repo?: string;
+  mode?: string;
+  since_minutes?: number;
+  min_occurrences?: number;
+  notify?: boolean;
+  note?: string;
+}): Promise<PraxisResponse<Record<string, unknown>>> {
+  return praxisFetch<Record<string, unknown>>("/api/v1/self-heal/run", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}

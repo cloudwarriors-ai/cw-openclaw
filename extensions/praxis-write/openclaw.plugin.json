@@ -1,7 +1,7 @@
 {
   "id": "praxis-write",
   "name": "Praxis Write",
-  "description": "Praxis operator write tools (hardened): onboard a repo, unblock or cancel a stuck issue, submit UAT verdicts on behalf of the chat user, or start GitHub account linking. Default-disabled; each call is allowlist-gated, requires a reason, and onboarding/destructive ops run a two-step dry-run/confirm. Authorization binds to the server-side operator; the chat requester is recorded as audit context only.",
+  "description": "Praxis operator write tools (hardened): onboard a repo, run a self-heal scan that files deduped GitHub issues, unblock or cancel a stuck issue, submit UAT verdicts on behalf of the chat user, or start GitHub account linking. Default-disabled; each call is allowlist-gated, requires a reason, and onboarding/self-heal/destructive ops run a two-step dry-run/confirm. Authorization binds to the server-side operator; the chat requester is recorded as audit context only.",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -24,6 +24,7 @@
       "praxis_link_github",
       "praxis_link_status",
       "praxis_onboard",
+      "praxis_self_heal",
       "praxis_submit_verdict",
       "praxis_unblock"
     ]

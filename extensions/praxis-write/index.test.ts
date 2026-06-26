@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import plugin from "./index.js";
-import { mintConfirmToken, mintRepoConfirmToken } from "./policy.js";
+import { mintConfirmToken, mintRepoConfirmToken, mintSelfHealConfirmToken } from "./policy.js";
 
 type ToolDef = {
   name: string;
@@ -72,17 +72,18 @@ afterEach(() => {
 });
 
 describe("praxis-write registration", () => {
-  it("registers exactly the six write tools, all optional", () => {
+  it("registers exactly the seven write tools, all optional", () => {
     const { tools, registerOpts } = buildTools();
     expect(Object.keys(tools).toSorted()).toEqual([
       "praxis_cancel",
       "praxis_link_github",
       "praxis_link_status",
       "praxis_onboard",
+      "praxis_self_heal",
       "praxis_submit_verdict",
       "praxis_unblock",
     ]);
-    expect(registerOpts).toHaveLength(6);
+    expect(registerOpts).toHaveLength(7);
     expect(registerOpts.every((o) => o.optional === true)).toBe(true);
   });
 });
@@ -608,6 +609,88 @@ describe("praxis_onboard", () => {
       maintainers: ["ann"],
       owns_dispatch: false,
       backfill: true,
+    });
+  });
+});
+
+describe("praxis_self_heal", () => {
+  const REPO = "cloudwarriors-ai/foo";
+
+  it("fails closed when the allowlist is unconfigured (no fetch)", async () => {
+    const { tools } = buildTools({ pluginConfig: undefined });
+    const out = parse(await tools.praxis_self_heal.execute("c1", { reason: "scan" }));
+    expect(out).toEqual({ ok: false, denied: "write_policy_unconfigured" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("requires a reason", async () => {
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(await tools.praxis_self_heal.execute("c1", { reason: " " }));
+    expect(out).toEqual({ ok: false, error: "reason_required" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown mode", async () => {
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_self_heal.execute("c1", { mode: "explode", reason: "scan" }),
+    );
+    expect(out).toEqual({ ok: false, error: "invalid_mode" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("dry-run previews and makes no HTTP call at all", async () => {
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(await tools.praxis_self_heal.execute("c1", { repo: REPO, reason: "scan" }));
+    expect(out.preview).toBe(true);
+    expect(out.action).toBe("self_heal");
+    expect(out.repo).toBe(REPO);
+    expect(out.mode).toBe("create-issues");
+    expect(typeof out.confirm_token).toBe("string");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("executes on a valid confirm token, POSTing the self-heal run", async () => {
+    const result = {
+      mode: "create-issues",
+      target_repo: REPO,
+      findings_detected: 2,
+      issues_created: 1,
+      issues_updated: 1,
+      errors: [],
+    };
+    fetchMock.mockResolvedValue(mockResponse({ ok: true, status: 200, body: result }));
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const token = mintSelfHealConfirmToken({
+      secret: "test-token",
+      repo: REPO,
+      mode: "create-issues",
+    });
+
+    const out = parse(
+      await tools.praxis_self_heal.execute("c1", {
+        repo: REPO,
+        mode: "create-issues",
+        since_minutes: 90,
+        note: "Reporter flagged this after the deploy.",
+        reason: "scan",
+        confirm: token,
+      }),
+    );
+
+    expect(out.ok).toBe(true);
+    expect(out.issues_created).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain("/api/v1/self-heal/run");
+    expect(init?.method).toBe("POST");
+    const sent = JSON.parse(init?.body as string);
+    expect(sent).toEqual({
+      repo: REPO,
+      mode: "create-issues",
+      since_minutes: 90,
+      notify: false,
+      note: "Reporter flagged this after the deploy.",
     });
   });
 });
