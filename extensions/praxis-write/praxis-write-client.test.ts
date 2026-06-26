@@ -4,6 +4,7 @@ import {
   getIssue,
   mapStateToUatKindPrefix,
   praxisFetch,
+  runSelfHeal,
   startGithubLink,
   submitCommand,
   submitVerdict,
@@ -203,5 +204,25 @@ describe("startGithubLink", () => {
     const res = await startGithubLink({ channel: "zoom", channel_user_id: "alice" });
     expect(res.ok).toBe(false);
     expect((res.data as Record<string, unknown>).error).toBe("linking_not_configured");
+  });
+});
+
+describe("runSelfHeal", () => {
+  it("POSTs the self-heal run body and returns the result", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({
+        ok: true,
+        status: 200,
+        body: { mode: "create-issues", target_repo: "cw/foo", issues_created: 1 },
+      }),
+    );
+    const res = await runSelfHeal({ repo: "cw/foo", mode: "create-issues", since_minutes: 90 });
+    expect(res.ok).toBe(true);
+    expect((res.data as Record<string, unknown>).issues_created).toBe(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${BASE}/api/v1/self-heal/run`);
+    expect(init.method).toBe("POST");
+    const sent = JSON.parse(init.body as string);
+    expect(sent).toEqual({ repo: "cw/foo", mode: "create-issues", since_minutes: 90 });
   });
 });

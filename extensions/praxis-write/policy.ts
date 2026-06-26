@@ -120,6 +120,18 @@ export function mintRepoConfirmToken(params: {
   return createHmac("sha256", secret).update(msg).digest("hex").slice(0, 16);
 }
 
+/** Confirm token for a self-heal run, bound to the target repo + mode so a dry-run preview can't be
+ * replayed against a different repo or a more destructive mode. */
+export function mintSelfHealConfirmToken(params: {
+  secret: string;
+  repo: string;
+  mode: string;
+}): string {
+  const { secret, repo, mode } = params;
+  const msg = `self-heal:${repo}:${mode}`;
+  return createHmac("sha256", secret).update(msg).digest("hex").slice(0, 16);
+}
+
 /** Constant-time compare of a presented confirm token against the expected one. */
 export function confirmTokenMatches(presented: string, expected: string): boolean {
   const a = Buffer.from(presented);

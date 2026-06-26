@@ -11,6 +11,7 @@ import {
   idempotencyKey,
   mintConfirmToken,
   mintRepoConfirmToken,
+  mintSelfHealConfirmToken,
   resolveWritePolicyConfig,
   type WritePolicyConfig,
 } from "./policy.js";
@@ -21,6 +22,7 @@ import {
   mapStateToUatKindPrefix,
   onboardRepo,
   type PraxisIssueState,
+  runSelfHeal,
   startGithubLink,
   submitCommand,
   submitVerdict,
@@ -133,9 +135,10 @@ const plugin = {
   id: "praxis-write",
   name: "Praxis Write",
   description:
-    "Praxis operator write tools (hardened): unblock or cancel a stuck issue, submit UAT verdicts " +
-    "on behalf of the chat user, or start GitHub account linking. Default-disabled, " +
-    "allowlist-gated, two-step dry-run/confirm for destructive ops.",
+    "Praxis operator write tools (hardened): onboard a repo, run a self-heal scan that files " +
+    "deduped GitHub issues, unblock or cancel a stuck issue, submit UAT verdicts on behalf of the " +
+    "chat user, or start GitHub account linking. Default-disabled, allowlist-gated, two-step " +
+    "dry-run/confirm for onboarding/self-heal/destructive ops.",
   configSchema: buildPluginConfigSchema(PraxisWriteConfigSchema, {
     safeParse(value) {
       if (value === undefined) {
@@ -288,6 +291,120 @@ const plugin = {
             maintainers,
             owns_dispatch: ownsDispatch,
             backfill,
+          });
+        } catch (err) {
+          return errorResult(err);
+        }
+        return jsonResult({ ok: res.ok, status: res.status, ...res.data });
+      },
+    }));
+
+    optionalApi.registerTool((toolContext) => ({
+      name: "praxis_self_heal",
+      description:
+        "Run a Praxis self-heal scan: detect recurring runtime failures from Praxis's own trace and " +
+        "(in create-issues mode, the default) file deduped GitHub issues into a repo. Two steps: " +
+        "call first with an optional repo/mode/since_minutes/min_occurrences and a reason to get a " +
+        "dry-run preview and a confirm_token, then call again passing that token in `confirm` to " +
+        "execute. mode create-issues writes GitHub issues; dry-run/record do not. Allowlist-gated; " +
+        "the human you are acting for is recorded for audit. If denied, surface the reason; do not retry.",
+      parameters: Type.Object({
+        repo: Type.Optional(
+          Type.String({
+            description:
+              "owner/name to file self-heal issues into (defaults to the configured " +
+              "self-heal repo)",
+          }),
+        ),
+        mode: Type.Optional(
+          Type.String({
+            description: "dry-run | record | create-issues (default create-issues)",
+          }),
+        ),
+        since_minutes: Type.Optional(
+          Type.Number({ description: "Trace window to scan, in minutes (default 60)" }),
+        ),
+        min_occurrences: Type.Optional(
+          Type.Number({ description: "Minimum recurrences before a finding is published" }),
+        ),
+        notify: Type.Optional(
+          Type.Boolean({ description: "Post a status update to the Praxis Zoom channel" }),
+        ),
+        note: Type.Optional(
+          Type.String({
+            description:
+              "Extra context to append to the filed issue(s) as an 'Operator Context' section " +
+              "(e.g. your analysis or the relevant chat detail). Optional but recommended.",
+          }),
+        ),
+        reason: Type.String({
+          description: "Operator justification for the self-heal run (required, audited)",
+        }),
+        confirm: Type.Optional(
+          Type.String({
+            description:
+              "Confirmation token from the dry-run preview. Omit on the first call to preview; " +
+              "pass the returned confirm_token to execute.",
+          }),
+        ),
+      }),
+      async execute(toolCallId: string, params: Record<string, unknown>) {
+        const actor = deriveActorContext(toolContext, toolCallId);
+        const decision = checkPolicy(actor, config);
+        if (!decision.allowed) {
+          return jsonResult({ ok: false, denied: decision.reason });
+        }
+        const reason = typeof params.reason === "string" ? params.reason.trim() : "";
+        if (!reason) {
+          return jsonResult({ ok: false, error: "reason_required" });
+        }
+        const repo = typeof params.repo === "string" ? params.repo.trim() : "";
+        const mode = typeof params.mode === "string" ? params.mode.trim() : "create-issues";
+        if (!["dry-run", "record", "create-issues"].includes(mode)) {
+          return jsonResult({ ok: false, error: "invalid_mode" });
+        }
+        const sinceMinutes =
+          typeof params.since_minutes === "number" ? params.since_minutes : undefined;
+        const minOccurrences =
+          typeof params.min_occurrences === "number" ? params.min_occurrences : undefined;
+        const notify = params.notify === true;
+        const note = typeof params.note === "string" ? params.note.trim() : "";
+
+        let token: string;
+        try {
+          token = getApiToken();
+        } catch (err) {
+          return errorResult(err);
+        }
+
+        // Bind the confirm token to the repo+mode actually requested (empty repo => server default).
+        const expected = mintSelfHealConfirmToken({ secret: token, repo, mode });
+        const confirm = typeof params.confirm === "string" ? params.confirm : "";
+        if (!confirm || !confirmTokenMatches(confirm, expected)) {
+          return jsonResult({
+            ok: true,
+            preview: true,
+            action: "self_heal",
+            repo: repo || "(server default self-heal repo)",
+            mode,
+            requested_by: actor.requestedBy,
+            confirm_token: expected,
+            message:
+              `Dry run only — nothing changed. Re-call this tool with confirm="${expected}" to run ` +
+              `self-heal (mode=${mode})` +
+              (mode === "create-issues" ? " and file GitHub issues for recurring findings." : "."),
+          });
+        }
+
+        let res: Awaited<ReturnType<typeof runSelfHeal>>;
+        try {
+          res = await runSelfHeal({
+            ...(repo ? { repo } : {}),
+            mode,
+            ...(sinceMinutes !== undefined ? { since_minutes: sinceMinutes } : {}),
+            ...(minOccurrences !== undefined ? { min_occurrences: minOccurrences } : {}),
+            notify,
+            ...(note ? { note } : {}),
           });
         } catch (err) {
           return errorResult(err);
