@@ -30,9 +30,16 @@ template to copy.
 | `PRESALES_PE_OPS_TOKEN`                                     | Bearer token for PE      | Must equal PE's `CWKB_SERVICE_BEARER_TOKEN`.                                                                                                                                   |
 | `BIGHEAD_OPS_FIXTURE_MODE` / `PRESALES_PE_OPS_FIXTURE_MODE` | Force canned fixtures    | **Local dev only.** Set to `1` to run the bots without a backend. **Never set in prod** — it would mask outages with healthy-looking data.                                     |
 
-On the backends: set `OPENCLAW_ENFORCE_GATEWAY_TOKEN=true` on Bighead so the
-gateway-token check is enforced (it is a no-op when unset), and ensure
-`CWKB_SERVICE_BEARER_TOKEN` is set on PE.
+> **Required on Bighead: `OPENCLAW_ENFORCE_GATEWAY_TOKEN=true`.** Bighead's
+> `/internal/*` auth helper **fails open** — if this flag is unset/false (or the
+> token is empty) it returns without checking, so the ops endpoints, including
+> `transcript/text` (raw customer meeting speech), become readable **with no
+> auth**. This is the repo-wide `/internal` posture, not specific to these
+> routes, but because the ops surface exposes customer transcript data, treat
+> enforcement as a hard prerequisite anywhere the backend is reachable beyond
+> localhost. The validation gate below checks it explicitly.
+
+On PE: ensure `CWKB_SERVICE_BEARER_TOKEN` is set (PE always enforces — no flag).
 
 ## Agent definitions (`agents.list`)
 
@@ -146,14 +153,40 @@ Only the two hubs are bound to channels. Spokes are spawned by their hub via
 
 ## Validation gate (run before trusting it)
 
-1. **Backend reachability + shapes:** run `presales_ops_smoke.py` (cw-code root)
-   against the running backends — expects 28/28, exercises every endpoint plus
-   redaction and the transcript-text view.
-2. **Hub routing:** ask the bighead hub one session question; confirm it calls
+1. **Auth fails closed (Bighead):** with enforcement on, a no-token request must
+   be rejected. This is the check that catches a misconfigured (fail-open)
+   deployment:
+
+   ```bash
+   # expect HTTP 401
+   curl -s -o /dev/null -w '%{http_code}\n' "$BIGHEAD_OPS_BASE_URL/internal/ops/health"
+   # expect HTTP 200
+   curl -s -o /dev/null -w '%{http_code}\n' \
+     -H "Authorization: Bearer $BIGHEAD_OPS_TOKEN" "$BIGHEAD_OPS_BASE_URL/internal/ops/health"
+   ```
+
+   If the first call returns 200, auth is **not enforced** — set
+   `OPENCLAW_ENFORCE_GATEWAY_TOKEN=true` and a non-empty `OPENCLAW_GATEWAY_TOKEN`
+   on the backend before exposing it.
+
+2. **Backend reachability + shapes:** exercise every endpoint and confirm
+   redaction. A cross-repo workspace helper, `presales_ops_smoke.py`, lives in
+   the local `cw-code` workspace root (it spans the PE, Bighead, and OpenClaw
+   repos, so it is **not** shipped inside this repo); it seeds a Bighead session
+   and asserts all 19 endpoints (28 checks). Without it, validate by hand:
+
+   ```bash
+   curl -s -H "Authorization: Bearer $BIGHEAD_OPS_TOKEN" "$BIGHEAD_OPS_BASE_URL/internal/ops/active"
+   curl -s -H "Authorization: Bearer $BIGHEAD_OPS_TOKEN" \
+     "$BIGHEAD_OPS_BASE_URL/internal/ops/session/<id>/transcript/text"   # complaint visible, phone masked, ids intact
+   curl -s -H "Authorization: Bearer $PRESALES_PE_OPS_TOKEN" "$PRESALES_PE_OPS_BASE_URL/internal/ops/active"
+   ```
+
+3. **Hub routing:** ask the bighead hub one session question; confirm it calls
    only `sessions_spawn` and the `bighead-meeting` spoke runs only its tools.
-3. **Wrong-domain routing:** ask a transcript question; confirm it lands on
+4. **Wrong-domain routing:** ask a transcript question; confirm it lands on
    `bighead-audio`, not `bighead-meeting`.
-4. **No-leak:** confirm no spoke posts into a customer channel; replies stay in
+5. **No-leak:** confirm no spoke posts into a customer channel; replies stay in
    the support channel.
 
 ## Safety notes

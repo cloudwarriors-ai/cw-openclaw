@@ -76,6 +76,7 @@ bighead-meeting
 bighead-audio
   bh_presales_audio_status
   bh_presales_transcript_status
+  bh_presales_transcript_text
 
 bighead-writeback
   bh_presales_writeback_status
@@ -85,7 +86,7 @@ Routing intent:
 
 - `bighead-observe`: fleet health, active sessions, stuck sessions, broad triage.
 - `bighead-meeting`: one session or Zoom meeting, join state, current question, timeline.
-- `bighead-audio`: mute state, audio input/output, transcript health.
+- `bighead-audio`: mute state, audio input/output, transcript health, and reading recent transcript lines (what the customer actually said) via `bh_presales_transcript_text`.
 - `bighead-writeback`: Scopely writeback state and field patch failures.
 
 ## Coordinator Rules
@@ -140,7 +141,11 @@ Validate with real channel traffic before trusting the setup:
 
 ## Open Followups
 
-- Add the PE and Bighead internal ops endpoints that these tools call.
+- ~~Add the PE and Bighead internal ops endpoints that these tools call.~~ Done —
+  PE `codex/pe-presales-ops` and Bighead `codex/bighead-presales-ops` serve the
+  read-only `/internal/ops/*` routes (see `presales-ops-deployment.md`).
 - Create the runtime agent definitions and identity prompts for the two hubs and eight spokes.
 - Add support-channel bindings only after the new local and dev Zoom app credentials are isolated.
+- Enforce Bighead gateway-token auth (`OPENCLAW_ENFORCE_GATEWAY_TOKEN=true`) wherever the
+  ops endpoints are reachable — they expose customer transcript data and fail open otherwise.
 - Revisit the split once live support traffic shows which requests operators actually ask.
