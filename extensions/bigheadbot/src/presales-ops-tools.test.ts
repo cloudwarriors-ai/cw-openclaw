@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { redactForSupport } from "./presales-ops-api.js";
 import { BIGHEAD_PRESALES_TOOL_GROUPS, registerPresalesOpsTools } from "./presales-ops-tools.js";
 
@@ -66,6 +66,27 @@ describe("bigheadbot presales ops tools", () => {
     expect(result.ok).toBe(false);
     expect(result.source).toBe("api");
     expect(JSON.stringify(result.data)).toContain("not configured");
+  });
+
+  it("refuses to call Bighead ops without a bearer token", async () => {
+    process.env.BIGHEAD_OPS_BASE_URL = "http://bighead.test";
+    delete process.env.BIGHEAD_OPS_TOKEN;
+    delete process.env.BIGHEAD_GATEWAY_TOKEN;
+    delete process.env.OPENCLAW_GATEWAY_TOKEN;
+    delete process.env.BIGHEAD_OPS_FIXTURE_MODE;
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const tools = buildTools();
+      const result = parse(await tools.bh_presales_ops_health.execute("t", {}));
+      expect(result.ok).toBe(false);
+      expect(result.source).toBe("api");
+      expect(JSON.stringify(result.data)).toContain("not configured");
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      delete process.env.BIGHEAD_OPS_BASE_URL;
+    }
   });
 
   it("returns transcript lines and builds a /transcript/text path with limit", async () => {

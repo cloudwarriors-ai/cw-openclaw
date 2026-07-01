@@ -146,6 +146,9 @@ Validate with real channel traffic before trusting the setup:
   read-only `/internal/ops/*` routes (see `presales-ops-deployment.md`).
 - Create the runtime agent definitions and identity prompts for the two hubs and eight spokes.
 - Add support-channel bindings only after the new local and dev Zoom app credentials are isolated.
-- Enforce Bighead gateway-token auth (`OPENCLAW_ENFORCE_GATEWAY_TOKEN=true`) wherever the
-  ops endpoints are reachable — they expose customer transcript data and fail open otherwise.
+- Set a non-empty Bighead `OPENCLAW_GATEWAY_TOKEN` wherever the ops endpoints are
+  reachable, and set matching OpenClaw `BIGHEAD_OPS_TOKEN`. Bighead now enforces
+  the bearer token whenever configured; `OPENCLAW_ENFORCE_GATEWAY_TOKEN=true`
+  remains a useful fail-closed assertion, but a missing token is a deployment
+  misconfiguration, not a valid public mode.
 - Revisit the split once live support traffic shows which requests operators actually ask.

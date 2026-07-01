@@ -127,9 +127,19 @@ export async function bigheadOpsFetch(path: string): Promise<BigheadOpsFetchResu
 
   const headers: Record<string, string> = {};
   const token = BIGHEAD_OPS_TOKEN().trim();
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
+  if (!token) {
+    return {
+      ok: false,
+      status: 0,
+      data: {
+        ok: false,
+        error:
+          "BIGHEAD_OPS_TOKEN (or BIGHEAD_GATEWAY_TOKEN / OPENCLAW_GATEWAY_TOKEN) is not configured; refusing to call Bighead ops without a bearer token.",
+      },
+      source: "api",
+    };
   }
+  headers.Authorization = `Bearer ${token}`;
   const resp = await fetch(`${BIGHEAD_OPS_BASE_URL().replace(/\/$/, "")}${path}`, { headers });
   const data = resp.headers.get("content-type")?.includes("application/json")
     ? await resp.json()

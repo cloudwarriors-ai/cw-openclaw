@@ -25,19 +25,21 @@ template to copy.
 | Var                                                         | Meaning                  | Notes                                                                                                                                                                          |
 | ----------------------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `BIGHEAD_OPS_BASE_URL`                                      | Bighead backend base URL | e.g. `http://bighead:8000` (container) / `http://localhost:8015` (local). **Required in prod** — if unset, the tools return a "not configured" error rather than fixture data. |
-| `BIGHEAD_OPS_TOKEN`                                         | Bearer token for Bighead | Must equal the backend's `OPENCLAW_GATEWAY_TOKEN`. Falls back to `BIGHEAD_GATEWAY_TOKEN` / `OPENCLAW_GATEWAY_TOKEN` if unset.                                                  |
+| `BIGHEAD_OPS_TOKEN`                                         | Bearer token for Bighead | Must equal the backend's `OPENCLAW_GATEWAY_TOKEN`. Falls back to `BIGHEAD_GATEWAY_TOKEN` / `OPENCLAW_GATEWAY_TOKEN` if unset, but production should set it explicitly.         |
 | `PRESALES_PE_OPS_BASE_URL`                                  | PE backend base URL      | e.g. `http://presales-knowledge-expert:8007` / `http://localhost:28010`.                                                                                                       |
 | `PRESALES_PE_OPS_TOKEN`                                     | Bearer token for PE      | Must equal PE's `CWKB_SERVICE_BEARER_TOKEN`.                                                                                                                                   |
 | `BIGHEAD_OPS_FIXTURE_MODE` / `PRESALES_PE_OPS_FIXTURE_MODE` | Force canned fixtures    | **Local dev only.** Set to `1` to run the bots without a backend. **Never set in prod** — it would mask outages with healthy-looking data.                                     |
 
-> **Required on Bighead: `OPENCLAW_ENFORCE_GATEWAY_TOKEN=true`.** Bighead's
-> `/internal/*` auth helper **fails open** — if this flag is unset/false (or the
-> token is empty) it returns without checking, so the ops endpoints, including
-> `transcript/text` (raw customer meeting speech), become readable **with no
-> auth**. This is the repo-wide `/internal` posture, not specific to these
-> routes, but because the ops surface exposes customer transcript data, treat
-> enforcement as a hard prerequisite anywhere the backend is reachable beyond
-> localhost. The validation gate below checks it explicitly.
+> **Required on Bighead: non-empty `OPENCLAW_GATEWAY_TOKEN`.** Bighead enforces
+> the bearer token whenever this token is configured, even if
+> `OPENCLAW_ENFORCE_GATEWAY_TOKEN` is unset. Setting
+> `OPENCLAW_ENFORCE_GATEWAY_TOKEN=true` is still recommended as a fail-closed
+> assertion: with the flag true and no token configured, Bighead returns a
+> service-misconfigured error instead of exposing `/internal/ops/*`. Never expose
+> the ops surface publicly without a token; it includes `transcript/text`, which
+> returns customer meeting speech.
+> `OPENCLAW_ALLOW_LOCALHOST_WITHOUT_GATEWAY_TOKEN=true` exists only for explicit
+> local development with no token and must stay unset on dev/prod.
 
 On PE: ensure `CWKB_SERVICE_BEARER_TOKEN` is set (PE always enforces — no flag).
 
@@ -165,9 +167,11 @@ Only the two hubs are bound to channels. Spokes are spawned by their hub via
      -H "Authorization: Bearer $BIGHEAD_OPS_TOKEN" "$BIGHEAD_OPS_BASE_URL/internal/ops/health"
    ```
 
-   If the first call returns 200, auth is **not enforced** — set
-   `OPENCLAW_ENFORCE_GATEWAY_TOKEN=true` and a non-empty `OPENCLAW_GATEWAY_TOKEN`
-   on the backend before exposing it.
+   If the first call returns 200 from a non-local client, auth is **not enforced**.
+   Set a non-empty `OPENCLAW_GATEWAY_TOKEN` on the backend, set
+   `BIGHEAD_OPS_TOKEN` to the same value on OpenClaw, and leave
+   `OPENCLAW_ENFORCE_GATEWAY_TOKEN=true` on the backend as an additional
+   misconfiguration guard.
 
 2. **Backend reachability + shapes:** exercise every endpoint and confirm
    redaction. A cross-repo workspace helper, `presales_ops_smoke.py`, lives in
