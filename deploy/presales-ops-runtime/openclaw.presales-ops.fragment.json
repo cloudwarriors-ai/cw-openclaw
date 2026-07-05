@@ -1,0 +1,85 @@
+{
+  "agents": [
+    {
+      "id": "presales-pebot",
+      "name": "Presales PE Bot",
+      "workspace": "~/.openclaw/workspace-presales-pebot",
+      "tools": { "allow": ["sessions_spawn", "subagents", "pe_ops_health"] },
+      "subagents": { "allowAgents": ["pe-observe", "pe-channel", "pe-schema", "pe-sms"] }
+    },
+    {
+      "id": "pe-observe",
+      "name": "PE Observe",
+      "workspace": "~/.openclaw/workspace-pe-observe",
+      "tools": { "allow": ["pe_ops_health", "pe_ops_active_engagements", "pe_ops_stuck_engagements"] }
+    },
+    {
+      "id": "pe-channel",
+      "name": "PE Channel",
+      "workspace": "~/.openclaw/workspace-pe-channel",
+      "tools": { "allow": ["pe_ops_engagement_status", "pe_ops_channel_status", "pe_ops_engagement_timeline"] }
+    },
+    {
+      "id": "pe-schema",
+      "name": "PE Schema",
+      "workspace": "~/.openclaw/workspace-pe-schema",
+      "tools": { "allow": ["pe_ops_schema_status", "pe_ops_field_summary"] }
+    },
+    {
+      "id": "pe-sms",
+      "name": "PE SMS",
+      "workspace": "~/.openclaw/workspace-pe-sms",
+      "tools": { "allow": ["pe_ops_sms_status"] }
+    },
+    {
+      "id": "bighead-presales",
+      "name": "BigHead Presales",
+      "workspace": "~/.openclaw/workspace-bighead-presales",
+      "tools": { "allow": ["sessions_spawn", "subagents", "bh_presales_ops_health"] },
+      "subagents": {
+        "allowAgents": ["bighead-observe", "bighead-meeting", "bighead-audio", "bighead-writeback"]
+      }
+    },
+    {
+      "id": "bighead-observe",
+      "name": "BigHead Observe",
+      "workspace": "~/.openclaw/workspace-bighead-observe",
+      "tools": { "allow": ["bh_presales_ops_health", "bh_presales_active_sessions", "bh_presales_stuck_sessions"] }
+    },
+    {
+      "id": "bighead-meeting",
+      "name": "BigHead Meeting",
+      "workspace": "~/.openclaw/workspace-bighead-meeting",
+      "tools": { "allow": ["bh_presales_session_status", "bh_presales_meeting_status", "bh_presales_session_timeline"] }
+    },
+    {
+      "id": "bighead-audio",
+      "name": "BigHead Audio",
+      "workspace": "~/.openclaw/workspace-bighead-audio",
+      "tools": { "allow": ["bh_presales_audio_status", "bh_presales_transcript_status", "bh_presales_transcript_text"] }
+    },
+    {
+      "id": "bighead-writeback",
+      "name": "BigHead Writeback",
+      "workspace": "~/.openclaw/workspace-bighead-writeback",
+      "tools": { "allow": ["bh_presales_writeback_status"] }
+    }
+  ],
+  "bindings": [
+    {
+      "agentId": "presales-pebot",
+      "match": {
+        "channel": "zoom",
+        "peer": { "kind": "channel", "id": "<PE_SUPPORT_ZOOM_CHANNEL_ID>" }
+      }
+    },
+    {
+      "agentId": "bighead-presales",
+      "match": {
+        "channel": "zoom",
+        "peer": { "kind": "channel", "id": "<BIGHEAD_SUPPORT_ZOOM_CHANNEL_ID>" }
+      }
+    }
+  ]
+}
+

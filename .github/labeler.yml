@@ -10,6 +10,10 @@
           - "extensions/file-transfer/**"
           - "docs/nodes/index.md"
           - "docs/plugins/sdk-runtime.md"
+"plugin: presalespebot":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "extensions/presalespebot/**"
 "plugin: pixverse":
   - changed-files:
       - any-glob-to-any-file:

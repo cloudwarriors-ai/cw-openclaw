@@ -1,0 +1,23 @@
+{
+  "id": "presalespebot",
+  "name": "PresalesPEBot",
+  "description": "Presales Knowledge Expert support and observability agent tools",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "contracts": {
+    "tools": [
+      "pe_ops_active_engagements",
+      "pe_ops_channel_status",
+      "pe_ops_engagement_status",
+      "pe_ops_engagement_timeline",
+      "pe_ops_field_summary",
+      "pe_ops_health",
+      "pe_ops_schema_status",
+      "pe_ops_sms_status",
+      "pe_ops_stuck_engagements"
+    ]
+  }
+}

@@ -44,6 +44,16 @@
       "bh_list_tasks",
       "bh_list_tickets",
       "bh_list_users",
+      "bh_presales_active_sessions",
+      "bh_presales_audio_status",
+      "bh_presales_meeting_status",
+      "bh_presales_ops_health",
+      "bh_presales_session_status",
+      "bh_presales_session_timeline",
+      "bh_presales_stuck_sessions",
+      "bh_presales_transcript_status",
+      "bh_presales_transcript_text",
+      "bh_presales_writeback_status",
       "bh_search",
       "bh_update_ticket"
     ]

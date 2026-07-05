@@ -1370,6 +1370,12 @@ importers:
         specifier: workspace:*
         version: link:../..
 
+  extensions/presalespebot:
+    devDependencies:
+      openclaw:
+        specifier: workspace:*
+        version: link:../..
+
   extensions/pulsebot:
     devDependencies:
       openclaw:
