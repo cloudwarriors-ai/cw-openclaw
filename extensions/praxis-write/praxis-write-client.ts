@@ -133,6 +133,40 @@ export async function submitVerdict(
   });
 }
 
+/** Resolve an "owner/repo#N" GitHub ref to the praxis issue id via the issues list
+ * (issue_dict exposes id + repo + source_issue). Returns undefined when not tracked. */
+export async function resolveIssueRef(ref: string): Promise<number | undefined> {
+  const m = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(ref.trim());
+  if (!m) return undefined;
+  const repo = m[1];
+  const number = Number(m[2]);
+  const res = await praxisGet<{ issues: Array<{ id: number; source_issue: number }> }>(
+    `/api/v1/issues?repo=${encodeURIComponent(repo)}`,
+  );
+  const hit = (res.issues ?? []).find((i) => i.source_issue === number);
+  return hit?.id;
+}
+
+/** Submit a needs-info answer on behalf of a verified Zoom user. The server resolves
+ * the identity, verifies reporter/maintainer authz, consumes the OPEN question, and applies
+ * info_provided with the question's stored field — the caller supplies only the answer text
+ * (kind/reason contract of POST /issues/{id}/events). */
+export async function submitNeedsInfoAnswer(
+  issueId: number,
+  body: {
+    reason: string;
+    requested_by: string;
+    channel: string;
+    channel_user_id: string;
+    idempotency_key?: string;
+  },
+): Promise<PraxisResponse<Record<string, unknown>>> {
+  return praxisFetch<Record<string, unknown>>(`/api/v1/issues/${issueId}/events`, {
+    method: "POST",
+    body: JSON.stringify({ kind: "info_provided", ...body }),
+  });
+}
+
 /** Start a GitHub identity link flow for the given Zoom user. Returns the OAuth
  * redirect URL the user must tap to authorize. The server binds the pending link
  * to the channel_user_id so it resolves back to the right Zoom identity. */
@@ -185,6 +219,46 @@ export async function runSelfHeal(body: {
   note?: string;
 }): Promise<PraxisResponse<Record<string, unknown>>> {
   return praxisFetch<Record<string, unknown>>("/api/v1/self-heal/run", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Force-ingest a single GitHub issue into an already-onboarded repo through Praxis's live intake
+ * path — the per-issue complement to onboardRepo's bulk backfill. The server resolves the repo,
+ * fetches the one open issue, and runs the same intake bridge (idempotent). Returns the raw result
+ * + HTTP status so the tool surfaces Praxis's outcome (ingested / repo_not_onboarded /
+ * issue_not_open) verbatim. The requester + channel travel as audit context the server records. */
+export async function ingestIssue(body: {
+  full_name: string;
+  number: number;
+  requested_by: string;
+  channel: string;
+  message_id: string;
+  idempotency_key: string;
+}): Promise<PraxisResponse<Record<string, unknown>>> {
+  return praxisFetch<Record<string, unknown>>("/api/v1/issues/ingest", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Author and file a single GitHub issue into a repo (default: the Praxis self-heal repo) — the
+ * direct, agent-authored complement to runSelfHeal's scan-detected issues. Lets the agent seed a
+ * self-healing / self-improvement issue Praxis can then work. `labels` is omitted from the body
+ * when undefined so the server applies its default self-improvement marker. Returns the raw result
+ * + HTTP status ({filed, full_name, number, url, labels}) verbatim. */
+export async function fileIssue(body: {
+  full_name: string;
+  title: string;
+  body: string;
+  labels?: string[];
+  requested_by: string;
+  channel: string;
+  message_id: string;
+  idempotency_key: string;
+}): Promise<PraxisResponse<Record<string, unknown>>> {
+  return praxisFetch<Record<string, unknown>>("/api/v1/issues/file", {
     method: "POST",
     body: JSON.stringify(body),
   });

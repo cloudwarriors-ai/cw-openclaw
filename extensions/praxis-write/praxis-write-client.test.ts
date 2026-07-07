@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  fileIssue,
   getApiToken,
   getIssue,
+  ingestIssue,
   mapStateToUatKindPrefix,
   praxisFetch,
   runSelfHeal,
@@ -224,5 +226,104 @@ describe("runSelfHeal", () => {
     expect(init.method).toBe("POST");
     const sent = JSON.parse(init.body as string);
     expect(sent).toEqual({ repo: "cw/foo", mode: "create-issues", since_minutes: 90 });
+  });
+});
+
+describe("ingestIssue", () => {
+  it("POSTs the ingest body with audit context and returns the raw result", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({
+        ok: true,
+        status: 200,
+        body: { ingested: true, source_issue: 1015, state: "assessing", already_tracked: false },
+      }),
+    );
+    const res = await ingestIssue({
+      full_name: "cw/foo",
+      number: 1015,
+      requested_by: "john",
+      channel: "zoom:room",
+      message_id: "m-9",
+      idempotency_key: "ingest:cw/foo:1015",
+    });
+    expect(res.ok).toBe(true);
+    expect((res.data as Record<string, unknown>).source_issue).toBe(1015);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${BASE}/api/v1/issues/ingest`);
+    expect(init.method).toBe("POST");
+    const sent = JSON.parse(init.body as string);
+    expect(sent).toEqual({
+      full_name: "cw/foo",
+      number: 1015,
+      requested_by: "john",
+      channel: "zoom:room",
+      message_id: "m-9",
+      idempotency_key: "ingest:cw/foo:1015",
+    });
+  });
+
+  it("returns a structured 404 repo_not_onboarded without throwing", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({ ok: false, status: 404, body: { error: "repo_not_onboarded" } }),
+    );
+    const res = await ingestIssue({
+      full_name: "cw/ghost",
+      number: 5,
+      requested_by: "john",
+      channel: "zoom",
+      message_id: "m-1",
+      idempotency_key: "ingest:cw/ghost:5",
+    });
+    expect(res.ok).toBe(false);
+    expect(res.status).toBe(404);
+    expect((res.data as Record<string, unknown>).error).toBe("repo_not_onboarded");
+  });
+});
+
+describe("fileIssue", () => {
+  it("POSTs the file body (omitting labels when not given) and returns the raw result", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({
+        ok: true,
+        status: 200,
+        body: { filed: true, full_name: "cloudwarriors-ai/praxis", number: 42 },
+      }),
+    );
+    const res = await fileIssue({
+      full_name: "cloudwarriors-ai/praxis",
+      title: "Fix retry",
+      body: "details",
+      requested_by: "john",
+      channel: "zoom:room",
+      message_id: "m-9",
+      idempotency_key: "file-issue:cloudwarriors-ai/praxis:Fix retry",
+    });
+    expect(res.ok).toBe(true);
+    expect((res.data as Record<string, unknown>).number).toBe(42);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${BASE}/api/v1/issues/file`);
+    expect(init.method).toBe("POST");
+    const sent = JSON.parse(init.body as string);
+    expect(sent.full_name).toBe("cloudwarriors-ai/praxis");
+    expect(sent.title).toBe("Fix retry");
+    expect(sent.labels).toBeUndefined();
+  });
+
+  it("includes labels when provided", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({ ok: true, status: 200, body: { filed: true, number: 1 } }),
+    );
+    await fileIssue({
+      full_name: "cw/other",
+      title: "t",
+      body: "",
+      labels: ["bug"],
+      requested_by: "john",
+      channel: "zoom",
+      message_id: "m-1",
+      idempotency_key: "file-issue:cw/other:t",
+    });
+    const sent = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(sent.labels).toEqual(["bug"]);
   });
 });

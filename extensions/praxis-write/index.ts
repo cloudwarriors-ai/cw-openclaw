@@ -10,21 +10,27 @@ import {
   deriveActorContext,
   idempotencyKey,
   mintConfirmToken,
+  mintFileIssueConfirmToken,
+  mintIngestConfirmToken,
   mintRepoConfirmToken,
   mintSelfHealConfirmToken,
   resolveWritePolicyConfig,
   type WritePolicyConfig,
 } from "./policy.js";
 import {
+  fileIssue,
   getApiToken,
   getIssue,
   getLinkStatus,
+  ingestIssue,
   mapStateToUatKindPrefix,
   onboardRepo,
   type PraxisIssueState,
   runSelfHeal,
   startGithubLink,
   submitCommand,
+  resolveIssueRef,
+  submitNeedsInfoAnswer,
   submitVerdict,
   type UatVerdictKind,
 } from "./praxis-write-client.js";
@@ -38,6 +44,11 @@ const CANCEL_KINDS = ["cancelled", "duplicate", "superseded", "source_closed"] a
 // (uat1_pass / uat2_pass etc.) after reading the issue state.
 const VERDICT_VALUES = ["pass", "fail"] as const;
 type VerdictValue = (typeof VERDICT_VALUES)[number];
+
+// Default target for praxis_file_issue: the Praxis repo itself, so a self-improvement issue Praxis
+// can then work lands in its own repo. Mirrors the server's PRAXIS_SELF_HEAL_REPO default; kept
+// concrete here so the dry-run preview + confirm token bind to a real target. Overridable per call.
+const PRAXIS_SELF_IMPROVEMENT_REPO = "cloudwarriors-ai/praxis";
 
 const PraxisWriteConfigSchema = z.strictObject({
   allowedUsers: z.array(z.string()).optional(),
@@ -300,6 +311,239 @@ const plugin = {
     }));
 
     optionalApi.registerTool((toolContext) => ({
+      name: "praxis_ingest",
+      description:
+        "Force-ingest a SINGLE GitHub issue into Praxis when the issue exists on GitHub but Praxis " +
+        "does not know about it yet (its repo is already onboarded, but the issue never got tracked " +
+        "— a missed webhook delivery, or it predates the webhook). Reach for this when a human says " +
+        "an issue isn't showing up / isn't started / 'give it to Praxis' and praxis_get_issue can't " +
+        "find it. Two steps: call first with full_name + number + reason to get a dry-run preview " +
+        "and a confirm_token, then call again passing that token in `confirm` to execute. " +
+        "Idempotent — re-ingesting an already-tracked issue is a no-op. Onboard the repo first with " +
+        "praxis_onboard if this returns repo_not_onboarded. Allowlist-gated; the human you are " +
+        "acting for is recorded for audit. If denied, surface the reason; do not retry.",
+      parameters: Type.Object({
+        full_name: Type.String({ description: "owner/name, e.g. cloudwarriors-ai/scopely" }),
+        number: Type.Number({
+          description: "The GitHub issue NUMBER (e.g. 1015), not the Praxis issue id",
+        }),
+        reason: Type.String({
+          description: "Operator justification for the manual ingest (required, audited)",
+        }),
+        confirm: Type.Optional(
+          Type.String({
+            description:
+              "Confirmation token from the dry-run preview. Omit on the first call to preview; " +
+              "pass the returned confirm_token to execute.",
+          }),
+        ),
+      }),
+      async execute(toolCallId: string, params: Record<string, unknown>) {
+        const actor = deriveActorContext(toolContext, toolCallId);
+        const decision = checkPolicy(actor, config);
+        if (!decision.allowed) {
+          return jsonResult({ ok: false, denied: decision.reason });
+        }
+        const reason = typeof params.reason === "string" ? params.reason.trim() : "";
+        if (!reason) {
+          return jsonResult({ ok: false, error: "reason_required" });
+        }
+        const fullName = typeof params.full_name === "string" ? params.full_name.trim() : "";
+        if (!fullName.includes("/")) {
+          return jsonResult({ ok: false, error: "invalid_full_name" });
+        }
+        const number = Number(params.number);
+        if (!Number.isInteger(number) || number <= 0) {
+          return jsonResult({ ok: false, error: "invalid_issue_number" });
+        }
+
+        let token: string;
+        try {
+          token = getApiToken();
+        } catch (err) {
+          return errorResult(err);
+        }
+
+        // Bind the confirm token to the repo + issue number so a preview can't be replayed against
+        // a different issue. Ingest can post a needs_info comment to GitHub (a real side effect), so
+        // it takes the same two-step dry-run/confirm as the other side-effecting write tools.
+        const expected = mintIngestConfirmToken({ secret: token, fullName, number });
+        const confirm = typeof params.confirm === "string" ? params.confirm : "";
+        if (!confirm || !confirmTokenMatches(confirm, expected)) {
+          return jsonResult({
+            ok: true,
+            preview: true,
+            action: "ingest",
+            repo: fullName,
+            number,
+            requested_by: actor.requestedBy,
+            confirm_token: expected,
+            message:
+              `Dry run only — nothing changed. Re-call this tool with confirm="${expected}" to ` +
+              `ingest ${fullName}#${number} into Praxis. If the repo is not onboarded this returns ` +
+              `repo_not_onboarded — run praxis_onboard first.`,
+          });
+        }
+
+        let res: Awaited<ReturnType<typeof ingestIssue>>;
+        try {
+          res = await ingestIssue({
+            full_name: fullName,
+            number,
+            requested_by: actor.requestedBy,
+            channel: actor.channel,
+            message_id: actor.messageId,
+            // Stable per logical ingest so a double-confirm dedupes the server-side audit row.
+            idempotency_key: `ingest:${fullName}:${number}`,
+          });
+        } catch (err) {
+          return errorResult(err);
+        }
+
+        // Surface Praxis's structured guards as actionable messages.
+        if (!res.ok) {
+          const body = res.data as Record<string, unknown>;
+          if (body.error === "repo_not_onboarded") {
+            return jsonResult({
+              ok: false,
+              error: "repo_not_onboarded",
+              message:
+                `Praxis is not tracking ${fullName} yet. Onboard it first with praxis_onboard, ` +
+                `then re-run this ingest.`,
+            });
+          }
+          if (body.error === "issue_not_open") {
+            return jsonResult({
+              ok: false,
+              error: "issue_not_open",
+              message:
+                `GitHub issue ${fullName}#${number} is not open (closed or missing), so Praxis ` +
+                `won't ingest it. Only open issues enter the intake flow.`,
+            });
+          }
+        }
+
+        return jsonResult({ ok: res.ok, status: res.status, ...res.data });
+      },
+    }));
+
+    optionalApi.registerTool((toolContext) => ({
+      name: "praxis_file_issue",
+      description:
+        "Author and file a single GitHub issue INTO THE PRAXIS REPO ITSELF (the default), so Praxis " +
+        "can then work it — this is how Praxis self-heals and improves itself. Use it to file a " +
+        "specific self-healing fix or self-improvement idea you (or a human) identified, distinct " +
+        "from praxis_self_heal which only files failures its automated trace-scan detects. Two " +
+        "steps: call first with title (+ optional body/labels/repo) and a reason to get a dry-run " +
+        "preview and a confirm_token, then call again passing that token in `confirm` to execute. " +
+        "Defaults to cloudwarriors-ai/praxis; pass `repo` to target another repo. Allowlist-gated; " +
+        "the human you are acting for is recorded for audit. If denied, surface the reason; do not retry.",
+      parameters: Type.Object({
+        title: Type.String({ description: "The GitHub issue title (required)" }),
+        body: Type.Optional(
+          Type.String({
+            description:
+              "The issue body (markdown). Include repro/what-to-fix so Praxis can act on it.",
+          }),
+        ),
+        labels: Type.Optional(
+          Type.Array(Type.String(), {
+            description:
+              "GitHub labels (optional). Omit to apply the default 'praxis:self-improvement' marker.",
+          }),
+        ),
+        repo: Type.Optional(
+          Type.String({
+            description: `Target repo owner/name (default ${PRAXIS_SELF_IMPROVEMENT_REPO})`,
+          }),
+        ),
+        reason: Type.String({
+          description: "Operator justification for filing the issue (required, audited)",
+        }),
+        confirm: Type.Optional(
+          Type.String({
+            description:
+              "Confirmation token from the dry-run preview. Omit on the first call to preview; " +
+              "pass the returned confirm_token to execute.",
+          }),
+        ),
+      }),
+      async execute(toolCallId: string, params: Record<string, unknown>) {
+        const actor = deriveActorContext(toolContext, toolCallId);
+        const decision = checkPolicy(actor, config);
+        if (!decision.allowed) {
+          return jsonResult({ ok: false, denied: decision.reason });
+        }
+        const reason = typeof params.reason === "string" ? params.reason.trim() : "";
+        if (!reason) {
+          return jsonResult({ ok: false, error: "reason_required" });
+        }
+        const title = typeof params.title === "string" ? params.title.trim() : "";
+        if (!title) {
+          return jsonResult({ ok: false, error: "title_required" });
+        }
+        const fullName =
+          typeof params.repo === "string" && params.repo.trim()
+            ? params.repo.trim()
+            : PRAXIS_SELF_IMPROVEMENT_REPO;
+        if (!fullName.includes("/")) {
+          return jsonResult({ ok: false, error: "invalid_repo" });
+        }
+        const issueBody = typeof params.body === "string" ? params.body : "";
+        // Only forward labels when the model supplied them, so the server applies its default
+        // self-improvement marker on omission (an explicit [] would suppress the marker).
+        const labels = Array.isArray(params.labels)
+          ? params.labels.filter((l): l is string => typeof l === "string")
+          : undefined;
+
+        let token: string;
+        try {
+          token = getApiToken();
+        } catch (err) {
+          return errorResult(err);
+        }
+
+        // Bind the confirm token to the repo + title so a preview can't be replayed against a
+        // different target or a different issue. Filing an issue is a real external side effect, so
+        // it takes the same two-step dry-run/confirm as the other side-effecting write tools.
+        const expected = mintFileIssueConfirmToken({ secret: token, fullName, title });
+        const confirm = typeof params.confirm === "string" ? params.confirm : "";
+        if (!confirm || !confirmTokenMatches(confirm, expected)) {
+          return jsonResult({
+            ok: true,
+            preview: true,
+            action: "file_issue",
+            repo: fullName,
+            title,
+            labels: labels ?? ["praxis:self-improvement (default)"],
+            requested_by: actor.requestedBy,
+            confirm_token: expected,
+            message:
+              `Dry run only — nothing filed. Re-call this tool with confirm="${expected}" to file ` +
+              `the issue "${title}" into ${fullName}.`,
+          });
+        }
+
+        let res: Awaited<ReturnType<typeof fileIssue>>;
+        try {
+          res = await fileIssue({
+            full_name: fullName,
+            title,
+            body: issueBody,
+            ...(labels !== undefined ? { labels } : {}),
+            requested_by: actor.requestedBy,
+            channel: actor.channel,
+            message_id: actor.messageId,
+            idempotency_key: `file-issue:${fullName}:${title}`,
+          });
+        } catch (err) {
+          return errorResult(err);
+        }
+        return jsonResult({ ok: res.ok, status: res.status, ...res.data });
+      },
+    }));
+
+    optionalApi.registerTool((toolContext) => ({
       name: "praxis_self_heal",
       description:
         "Run a Praxis self-heal scan: detect recurring runtime failures from Praxis's own trace and " +
@@ -464,7 +708,7 @@ const plugin = {
         "that the identity is linked to a GitHub account with the reporter/owner role. If the " +
         "identity is not linked, instruct the user to run praxis_link_github first. " +
         "Allowlist-gated; no dry-run/confirm step (UAT states only exit on a human verdict, so " +
-        "the read→submit is race-safe). Deferred: needs_info answers (not wired server-side yet).",
+        "the read→submit is race-safe). For needs-info answers use praxis_provide_info.",
       parameters: Type.Object({
         issue_id: Type.Number({ description: "The Praxis issue id (not the GitHub issue number)" }),
         verdict: Type.String({
@@ -572,6 +816,123 @@ const plugin = {
               error: "identity_required",
               message:
                 "No verified identity was forwarded to Praxis. This is a configuration error.",
+            });
+          }
+        }
+
+        return jsonResult({ ok: res.ok, status: res.status, ...res.data });
+      },
+    }));
+
+    optionalApi.registerTool((toolContext) => ({
+      name: "praxis_provide_info",
+      description:
+        "Relay a human's answer to a Praxis needs-info question. Use when a user replies (in the " +
+        "issue's thread or addressed to you) with the detail Praxis asked for on an issue in the " +
+        "needs_info state. The requester's verified Zoom identity is forwarded as " +
+        "channel_user_id — the server verifies it is the asked reporter or a maintainer, consumes " +
+        "the open question, applies the answer to the question's stored field, and mirrors the " +
+        "answer to the GitHub issue. If the identity is not linked, instruct the user to run " +
+        "praxis_link_github first. Allowlist-gated.",
+      parameters: Type.Object({
+        issue: Type.Optional(
+          Type.String({
+            description:
+              'The GitHub issue ref "owner/repo#N" (as shown in the thread root) — preferred',
+          }),
+        ),
+        issue_id: Type.Optional(
+          Type.Number({ description: "The Praxis issue id, if already known" }),
+        ),
+        answer: Type.String({
+          description: "The user's answer text, verbatim (do not paraphrase or embellish)",
+        }),
+      }),
+      async execute(toolCallId: string, params: Record<string, unknown>) {
+        const actor = deriveActorContext(toolContext, toolCallId);
+
+        // Policy gate: identity + allowlist
+        const decision = checkPolicy(actor, config);
+        if (!decision.allowed) {
+          return jsonResult({ ok: false, denied: decision.reason });
+        }
+
+        // The verified Zoom sender id is the trusted identity we forward. Fail
+        // closed if the runtime didn't supply one (model cannot inject this).
+        const channelUserId = actor.requestedBy;
+        if (!channelUserId) {
+          return jsonResult({ ok: false, denied: "no_requester_identity" });
+        }
+
+        const answer = typeof params.answer === "string" ? params.answer.trim() : "";
+        if (!answer) {
+          return jsonResult({ ok: false, error: "answer_required" });
+        }
+
+        // Resolve the issue: prefer the thread-root "owner/repo#N" ref (what humans and the
+        // root card speak); fall back to an explicit praxis id.
+        let issueId = Number(params.issue_id);
+        const ref = typeof params.issue === "string" ? params.issue.trim() : "";
+        if ((!Number.isInteger(issueId) || issueId <= 0) && ref) {
+          let resolved: number | undefined;
+          try {
+            resolved = await resolveIssueRef(ref);
+          } catch (err) {
+            return errorResult(err);
+          }
+          if (!resolved) {
+            return jsonResult({
+              ok: false,
+              error: "issue_not_tracked",
+              message: `Praxis is not tracking ${ref}.`,
+            });
+          }
+          issueId = resolved;
+        }
+        if (!Number.isInteger(issueId) || issueId <= 0) {
+          return jsonResult({ ok: false, error: "invalid_issue_id" });
+        }
+
+        let res: Awaited<ReturnType<typeof submitNeedsInfoAnswer>>;
+        try {
+          // toolCallId as idempotency key: a model retry of the same call never
+          // double-applies the answer.
+          res = await submitNeedsInfoAnswer(issueId, {
+            reason: answer,
+            requested_by: channelUserId,
+            channel: "zoom",
+            channel_user_id: channelUserId,
+            idempotency_key: toolCallId,
+          });
+        } catch (err) {
+          return errorResult(err);
+        }
+
+        if (!res.ok) {
+          const body = res.data as Record<string, unknown>;
+          if (body.error === "identity_not_linked") {
+            return jsonResult({
+              ok: false,
+              error: "identity_not_linked",
+              message:
+                "Your Zoom identity is not yet linked to a GitHub account. " +
+                "Run praxis_link_github to get a link URL, tap it to authorize GitHub, then try again.",
+            });
+          }
+          if (body.error === "issue_not_awaiting_info") {
+            return jsonResult({
+              ok: false,
+              error: "issue_not_awaiting_info",
+              state: body.state,
+              message: `Issue #${issueId} is not waiting for information (state=${String(body.state)}).`,
+            });
+          }
+          if (res.status === 403) {
+            return jsonResult({
+              ok: false,
+              error: "unauthorized",
+              message:
+                "Your linked GitHub account is not the asked reporter or a maintainer for this issue.",
             });
           }
         }

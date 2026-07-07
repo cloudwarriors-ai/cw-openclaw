@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import plugin from "./index.js";
-import { mintConfirmToken, mintRepoConfirmToken, mintSelfHealConfirmToken } from "./policy.js";
+import {
+  mintConfirmToken,
+  mintFileIssueConfirmToken,
+  mintIngestConfirmToken,
+  mintRepoConfirmToken,
+  mintSelfHealConfirmToken,
+} from "./policy.js";
 
 type ToolDef = {
   name: string;
@@ -72,18 +78,21 @@ afterEach(() => {
 });
 
 describe("praxis-write registration", () => {
-  it("registers exactly the seven write tools, all optional", () => {
+  it("registers exactly the nine write tools, all optional", () => {
     const { tools, registerOpts } = buildTools();
     expect(Object.keys(tools).toSorted()).toEqual([
       "praxis_cancel",
+      "praxis_file_issue",
+      "praxis_ingest",
       "praxis_link_github",
       "praxis_link_status",
       "praxis_onboard",
+      "praxis_provide_info",
       "praxis_self_heal",
       "praxis_submit_verdict",
       "praxis_unblock",
     ]);
-    expect(registerOpts).toHaveLength(7);
+    expect(registerOpts).toHaveLength(10);
     expect(registerOpts.every((o) => o.optional === true)).toBe(true);
   });
 });
@@ -613,6 +622,282 @@ describe("praxis_onboard", () => {
   });
 });
 
+describe("praxis_ingest", () => {
+  const REPO = "cloudwarriors-ai/scopely";
+
+  it("fails closed when the allowlist is unconfigured (no fetch)", async () => {
+    const { tools } = buildTools({ pluginConfig: undefined });
+    const out = parse(
+      await tools.praxis_ingest.execute("c1", { full_name: REPO, number: 1015, reason: "track it" }),
+    );
+    expect(out).toEqual({ ok: false, denied: "write_policy_unconfigured" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("requires a reason", async () => {
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_ingest.execute("c1", { full_name: REPO, number: 1015, reason: " " }),
+    );
+    expect(out).toEqual({ ok: false, error: "reason_required" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a full_name without owner/name", async () => {
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_ingest.execute("c1", {
+        full_name: "no-slash",
+        number: 1015,
+        reason: "track it",
+      }),
+    );
+    expect(out).toEqual({ ok: false, error: "invalid_full_name" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-positive / non-integer issue number", async () => {
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const zero = parse(
+      await tools.praxis_ingest.execute("c1", { full_name: REPO, number: 0, reason: "track it" }),
+    );
+    expect(zero).toEqual({ ok: false, error: "invalid_issue_number" });
+    const nan = parse(
+      await tools.praxis_ingest.execute("c1", {
+        full_name: REPO,
+        number: "abc",
+        reason: "track it",
+      }),
+    );
+    expect(nan).toEqual({ ok: false, error: "invalid_issue_number" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("dry-run previews and makes no HTTP call at all", async () => {
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_ingest.execute("c1", { full_name: REPO, number: 1015, reason: "track it" }),
+    );
+    expect(out.preview).toBe(true);
+    expect(out.action).toBe("ingest");
+    expect(out.repo).toBe(REPO);
+    expect(out.number).toBe(1015);
+    expect(typeof out.confirm_token).toBe("string");
+    // The ingest token is bound to repo+number (no issue GET), so a preview hits nothing.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("a wrong confirm token re-previews instead of executing", async () => {
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_ingest.execute("c1", {
+        full_name: REPO,
+        number: 1015,
+        reason: "track it",
+        confirm: "deadbeefdeadbeef",
+      }),
+    );
+    expect(out.preview).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("executes on a valid confirm token, POSTing the ingest request with audit context", async () => {
+    const result = {
+      ingested: true,
+      full_name: REPO,
+      source_issue: 1015,
+      state: "assessing",
+      already_tracked: false,
+    };
+    fetchMock.mockResolvedValue(mockResponse({ ok: true, status: 200, body: result }));
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const token = mintIngestConfirmToken({ secret: "test-token", fullName: REPO, number: 1015 });
+
+    const out = parse(
+      await tools.praxis_ingest.execute("c1", {
+        full_name: REPO,
+        number: 1015,
+        reason: "reporter says it isn't tracked",
+        confirm: token,
+      }),
+    );
+
+    expect(out.ok).toBe(true);
+    expect(out.source_issue).toBe(1015);
+    expect(out.state).toBe("assessing");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain("/api/v1/issues/ingest");
+    expect(init?.method).toBe("POST");
+    const sent = JSON.parse(init?.body as string);
+    expect(sent).toEqual({
+      full_name: REPO,
+      number: 1015,
+      requested_by: "alice",
+      channel: "dev_praxis",
+      message_id: "1",
+      idempotency_key: "ingest:cloudwarriors-ai/scopely:1015",
+    });
+  });
+
+  it("surfaces repo_not_onboarded with a pointer to praxis_onboard", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({ ok: false, status: 404, body: { error: "repo_not_onboarded" } }),
+    );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const token = mintIngestConfirmToken({ secret: "test-token", fullName: REPO, number: 1015 });
+    const out = parse(
+      await tools.praxis_ingest.execute("c1", {
+        full_name: REPO,
+        number: 1015,
+        reason: "track it",
+        confirm: token,
+      }),
+    );
+    expect(out.error).toBe("repo_not_onboarded");
+    expect(out.message).toMatch(/praxis_onboard/);
+  });
+
+  it("surfaces issue_not_open when GitHub says the issue is closed/missing", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({ ok: false, status: 409, body: { error: "issue_not_open" } }),
+    );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const token = mintIngestConfirmToken({ secret: "test-token", fullName: REPO, number: 1015 });
+    const out = parse(
+      await tools.praxis_ingest.execute("c1", {
+        full_name: REPO,
+        number: 1015,
+        reason: "track it",
+        confirm: token,
+      }),
+    );
+    expect(out.error).toBe("issue_not_open");
+    expect(out.message).toMatch(/not open/);
+  });
+});
+
+describe("praxis_file_issue", () => {
+  const PRAXIS_REPO = "cloudwarriors-ai/praxis";
+
+  it("fails closed when the allowlist is unconfigured (no fetch)", async () => {
+    const { tools } = buildTools({ pluginConfig: undefined });
+    const out = parse(
+      await tools.praxis_file_issue.execute("c1", { title: "fix it", reason: "self-improve" }),
+    );
+    expect(out).toEqual({ ok: false, denied: "write_policy_unconfigured" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("requires a reason and a title", async () => {
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const noReason = parse(
+      await tools.praxis_file_issue.execute("c1", { title: "fix it", reason: " " }),
+    );
+    expect(noReason).toEqual({ ok: false, error: "reason_required" });
+    const noTitle = parse(
+      await tools.praxis_file_issue.execute("c1", { title: "  ", reason: "self-improve" }),
+    );
+    expect(noTitle).toEqual({ ok: false, error: "title_required" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("dry-run previews with the Praxis repo as the default target and makes no HTTP call", async () => {
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_file_issue.execute("c1", {
+        title: "Fix flaky outbox retry",
+        reason: "self-improve",
+      }),
+    );
+    expect(out.preview).toBe(true);
+    expect(out.action).toBe("file_issue");
+    expect(out.repo).toBe(PRAXIS_REPO);
+    expect(out.title).toBe("Fix flaky outbox retry");
+    expect(typeof out.confirm_token).toBe("string");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("a wrong confirm token re-previews instead of filing", async () => {
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_file_issue.execute("c1", {
+        title: "t",
+        reason: "self-improve",
+        confirm: "deadbeefdeadbeef",
+      }),
+    );
+    expect(out.preview).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("executes on a valid token, POSTing to the Praxis repo with no labels key (server default)", async () => {
+    const result = {
+      filed: true,
+      full_name: PRAXIS_REPO,
+      number: 101,
+      url: `https://github.com/${PRAXIS_REPO}/issues/101`,
+      labels: ["praxis:self-improvement"],
+    };
+    fetchMock.mockResolvedValue(mockResponse({ ok: true, status: 200, body: result }));
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const token = mintFileIssueConfirmToken({
+      secret: "test-token",
+      fullName: PRAXIS_REPO,
+      title: "Improve reconciler logging",
+    });
+
+    const out = parse(
+      await tools.praxis_file_issue.execute("c1", {
+        title: "Improve reconciler logging",
+        body: "add context to the retry log line",
+        reason: "self-improve",
+        confirm: token,
+      }),
+    );
+
+    expect(out.ok).toBe(true);
+    expect(out.number).toBe(101);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain("/api/v1/issues/file");
+    expect(init?.method).toBe("POST");
+    const sent = JSON.parse(init?.body as string);
+    expect(sent).toEqual({
+      full_name: PRAXIS_REPO,
+      title: "Improve reconciler logging",
+      body: "add context to the retry log line",
+      requested_by: "alice",
+      channel: "dev_praxis",
+      message_id: "1",
+      idempotency_key: `file-issue:${PRAXIS_REPO}:Improve reconciler logging`,
+    });
+    expect(sent.labels).toBeUndefined(); // omitted so the server applies its default marker
+  });
+
+  it("honors an explicit repo + labels", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({ ok: true, status: 200, body: { filed: true, number: 5 } }),
+    );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const token = mintFileIssueConfirmToken({
+      secret: "test-token",
+      fullName: "cw/other",
+      title: "t",
+    });
+    await tools.praxis_file_issue.execute("c1", {
+      title: "t",
+      repo: "cw/other",
+      labels: ["enhancement"],
+      reason: "self-improve",
+      confirm: token,
+    });
+    const sent = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+    expect(sent.full_name).toBe("cw/other");
+    expect(sent.labels).toEqual(["enhancement"]);
+  });
+});
+
 describe("praxis_self_heal", () => {
   const REPO = "cloudwarriors-ai/foo";
 
@@ -692,5 +977,129 @@ describe("praxis_self_heal", () => {
       notify: false,
       note: "Reporter flagged this after the deploy.",
     });
+  });
+});
+
+describe("praxis_provide_info", () => {
+  it("fails policy gate when unconfigured", async () => {
+    const { tools } = buildTools({ pluginConfig: undefined });
+    const out = parse(
+      await tools.praxis_provide_info.execute("c1", { issue_id: 7, answer: "the login page" }),
+    );
+    expect(out).toEqual({ ok: false, denied: "write_policy_unconfigured" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects an empty answer before any fetch", async () => {
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_provide_info.execute("c1", { issue_id: 7, answer: "   " }),
+    );
+    expect(out).toEqual({ ok: false, error: "answer_required" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("posts kind=info_provided with the trusted Zoom identity and the toolCallId as idempotency key", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({ ok: true, status: 200, body: { applied: true, state: "assessing" } }),
+    );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_provide_info.execute("call-42", {
+        issue_id: 7,
+        answer: "the checkout page, POST /api/cart",
+      }),
+    );
+    expect(out.ok).toBe(true);
+    expect(out.applied).toBe(true);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://praxis:8000/api/v1/issues/7/events");
+    expect((init as RequestInit).method).toBe("POST");
+    const sent = JSON.parse((init as RequestInit).body as string);
+    expect(sent).toEqual({
+      kind: "info_provided",
+      reason: "the checkout page, POST /api/cart",
+      requested_by: "alice",
+      channel: "zoom",
+      channel_user_id: "alice",
+      idempotency_key: "call-42",
+    });
+  });
+
+  it("resolves an owner/repo#N ref to the praxis id via the issues list", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        mockResponse({
+          ok: true,
+          status: 200,
+          body: { issues: [{ id: 182, source_issue: 65 }, { id: 9, source_issue: 2 }] },
+        }),
+      )
+      .mockResolvedValueOnce(
+        mockResponse({ ok: true, status: 200, body: { applied: true, state: "assessing" } }),
+      );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_provide_info.execute("call-7", {
+        issue: "cloudwarriors-ai/praxis-e2e-sandbox#65",
+        answer: "no console errors",
+      }),
+    );
+    expect(out.ok).toBe(true);
+
+    const [lookupUrl] = fetchMock.mock.calls[0];
+    expect(lookupUrl).toBe(
+      "http://praxis:8000/api/v1/issues?repo=cloudwarriors-ai%2Fpraxis-e2e-sandbox",
+    );
+    const [postUrl, postInit] = fetchMock.mock.calls[1];
+    expect(postUrl).toBe("http://praxis:8000/api/v1/issues/182/events");
+    const sent = JSON.parse((postInit as RequestInit).body as string);
+    expect(sent.kind).toBe("info_provided");
+    expect(sent.channel_user_id).toBe("alice");
+  });
+
+  it("returns issue_not_tracked when the ref resolves to nothing", async () => {
+    fetchMock.mockResolvedValueOnce(
+      mockResponse({ ok: true, status: 200, body: { issues: [] } }),
+    );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_provide_info.execute("call-8", {
+        issue: "cw/app#404",
+        answer: "no console errors",
+      }),
+    );
+    expect(out.error).toBe("issue_not_tracked");
+    expect(out.message).toContain("cw/app#404");
+  });
+
+  it("surfaces identity_not_linked with the link instruction", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({ ok: false, status: 403, body: { error: "identity_not_linked" } }),
+    );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_provide_info.execute("c3", { issue_id: 7, answer: "the login page" }),
+    );
+    expect(out.error).toBe("identity_not_linked");
+    expect(out.message).toContain("praxis_link_github");
+  });
+
+  it("surfaces issue_not_awaiting_info with the issue state", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({
+        ok: false,
+        status: 409,
+        body: { error: "issue_not_awaiting_info", state: "in_progress" },
+      }),
+    );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_provide_info.execute("c4", { issue_id: 7, answer: "the login page" }),
+    );
+    expect(out.error).toBe("issue_not_awaiting_info");
+    expect(out.state).toBe("in_progress");
+    expect(out.message).toContain("in_progress");
   });
 });
