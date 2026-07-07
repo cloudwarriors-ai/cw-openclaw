@@ -28,6 +28,28 @@ const bigheadPresalesToolGroups = {
       path: () => "/internal/ops/active",
     },
     {
+      name: "bh_presales_recent_sessions",
+      description:
+        "List recent Bighead presales sessions, including ended meetings, with meeting id, Scopely session id, status, timestamps, and transcript entry counts. Use this before transcript/status lookups when the operator asks for the latest meeting but does not provide a Bighead session id.",
+      parameters: Type.Object({
+        limit: Type.Optional(
+          Type.Number({ description: "Max recent sessions to return (default 20, max 100)" }),
+        ),
+        with_transcript: Type.Optional(
+          Type.Boolean({
+            description: "When true, return only sessions that have transcript entries.",
+          }),
+        ),
+      }),
+      path: (toolParams) => {
+        const query = new URLSearchParams();
+        if (toolParams.limit) query.set("limit", String(toolParams.limit));
+        if (toolParams.with_transcript === true) query.set("with_transcript", "true");
+        const suffix = query.toString() ? `?${query.toString()}` : "";
+        return `/internal/ops/recent${suffix}`;
+      },
+    },
+    {
       name: "bh_presales_stuck_sessions",
       description:
         "List Bighead presales sessions that appear stuck or customer-impacting, including no-audio/no-transcript conditions.",

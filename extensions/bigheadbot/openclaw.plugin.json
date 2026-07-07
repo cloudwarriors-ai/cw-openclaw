@@ -48,6 +48,7 @@
       "bh_presales_audio_status",
       "bh_presales_meeting_status",
       "bh_presales_ops_health",
+      "bh_presales_recent_sessions",
       "bh_presales_session_status",
       "bh_presales_session_timeline",
       "bh_presales_stuck_sessions",

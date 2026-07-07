@@ -35,6 +35,7 @@ describe("bigheadbot presales ops tools", () => {
 
     expect(new Set(groupedNames).size).toBe(groupedNames.length);
     expect(groupedNames).toEqual(registeredNames);
+    expect(BIGHEAD_PRESALES_TOOL_GROUPS.observe).toContain("bh_presales_recent_sessions");
     expect(BIGHEAD_PRESALES_TOOL_GROUPS.audio).toEqual([
       "bh_presales_audio_status",
       "bh_presales_transcript_status",
@@ -104,6 +105,58 @@ describe("bigheadbot presales ops tools", () => {
       expect(result.data.lines[0].text).toContain("don't want CRM");
     } finally {
       delete process.env.BIGHEAD_OPS_FIXTURE_MODE;
+    }
+  });
+
+  it("returns recent sessions in fixture mode for latest-meeting discovery", async () => {
+    delete process.env.BIGHEAD_OPS_BASE_URL;
+    delete process.env.BIGHEAD_API_URL;
+    process.env.BIGHEAD_OPS_FIXTURE_MODE = "1";
+    try {
+      const tools = buildTools();
+      const result = parse(
+        await tools.bh_presales_recent_sessions.execute("t", {
+          limit: 5,
+          with_transcript: true,
+        }),
+      );
+      expect(result.ok).toBe(true);
+      expect(result.source).toBe("fixture");
+      expect(result.data[0].session_id).toBe("bh-fixture-ended");
+      expect(result.data[0].transcript_entries).toBe(548);
+    } finally {
+      delete process.env.BIGHEAD_OPS_FIXTURE_MODE;
+    }
+  });
+
+  it("builds the recent sessions API path with transcript filtering", async () => {
+    process.env.BIGHEAD_OPS_BASE_URL = "http://bighead.test";
+    process.env.BIGHEAD_OPS_TOKEN = "ops-token";
+    delete process.env.BIGHEAD_OPS_FIXTURE_MODE;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: async () => [{ session_id: "bh-real", transcript_entries: 3 }],
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const tools = buildTools();
+      const result = parse(
+        await tools.bh_presales_recent_sessions.execute("t", {
+          limit: 5,
+          with_transcript: true,
+        }),
+      );
+      expect(result.ok).toBe(true);
+      expect(fetchMock).toHaveBeenCalledWith(
+        "http://bighead.test/internal/ops/recent?limit=5&with_transcript=true",
+        { headers: { Authorization: "Bearer ops-token" } },
+      );
+    } finally {
+      vi.unstubAllGlobals();
+      delete process.env.BIGHEAD_OPS_BASE_URL;
+      delete process.env.BIGHEAD_OPS_TOKEN;
     }
   });
 

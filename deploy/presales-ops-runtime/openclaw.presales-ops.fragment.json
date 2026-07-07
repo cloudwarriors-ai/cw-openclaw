@@ -44,7 +44,7 @@
       "id": "bighead-observe",
       "name": "BigHead Observe",
       "workspace": "~/.openclaw/workspace-bighead-observe",
-      "tools": { "allow": ["bh_presales_ops_health", "bh_presales_active_sessions", "bh_presales_stuck_sessions"] }
+      "tools": { "allow": ["bh_presales_ops_health", "bh_presales_active_sessions", "bh_presales_recent_sessions", "bh_presales_stuck_sessions"] }
     },
     {
       "id": "bighead-meeting",
@@ -82,4 +82,3 @@
     }
   ]
 }
-
