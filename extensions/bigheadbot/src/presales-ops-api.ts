@@ -41,6 +41,22 @@ const fixture = {
       last_event_at: "2026-06-22T14:05:02Z",
     },
   ],
+  recent: [
+    {
+      session_id: "bh-fixture-ended",
+      meeting_id: "88531799696",
+      scopely_session_id: 1865,
+      status: "ended",
+      stage: "complete",
+      session_role: "worker",
+      interaction_mode: "voice",
+      initiated_by: "auto_join_worker",
+      transcript_entries: 548,
+      created_at: "2026-07-06T13:41:27.745050",
+      ended_at: "2026-07-06T13:49:22.124633",
+      is_active: false,
+    },
+  ],
   stuck: [
     {
       session_id: "bh-fixture-stuck",
@@ -150,6 +166,7 @@ export async function bigheadOpsFetch(path: string): Promise<BigheadOpsFetchResu
 function fixtureFor(path: string): unknown {
   if (path === "/internal/ops/health") return fixture.health;
   if (path === "/internal/ops/active") return fixture.active;
+  if (path.startsWith("/internal/ops/recent")) return fixture.recent;
   if (path === "/internal/ops/stuck") return fixture.stuck;
   if (path.includes("/timeline")) return fixture.timeline;
   if (path.includes("/audio")) return fixture.audio;
