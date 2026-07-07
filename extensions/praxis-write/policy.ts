@@ -120,6 +120,32 @@ export function mintRepoConfirmToken(params: {
   return createHmac("sha256", secret).update(msg).digest("hex").slice(0, 16);
 }
 
+/** Confirm token for a single-issue ingest, bound to the repo + issue number so a dry-run preview
+ * can't be replayed against a different issue. Derived from the API token secret, so the model
+ * cannot forge it without first calling the dry-run that returns it. */
+export function mintIngestConfirmToken(params: {
+  secret: string;
+  fullName: string;
+  number: number;
+}): string {
+  const { secret, fullName, number } = params;
+  const msg = `ingest:${fullName}:${number}`;
+  return createHmac("sha256", secret).update(msg).digest("hex").slice(0, 16);
+}
+
+/** Confirm token for authoring+filing an issue, bound to the target repo + title so a dry-run
+ * preview can't be replayed against a different repo or a different issue. Derived from the API
+ * token secret, so the model cannot forge it without first calling the dry-run that returns it. */
+export function mintFileIssueConfirmToken(params: {
+  secret: string;
+  fullName: string;
+  title: string;
+}): string {
+  const { secret, fullName, title } = params;
+  const msg = `file-issue:${fullName}:${title}`;
+  return createHmac("sha256", secret).update(msg).digest("hex").slice(0, 16);
+}
+
 /** Confirm token for a self-heal run, bound to the target repo + mode so a dry-run preview can't be
  * replayed against a different repo or a more destructive mode. */
 export function mintSelfHealConfirmToken(params: {

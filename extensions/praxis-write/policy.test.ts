@@ -6,6 +6,8 @@ import {
   deriveActorContext,
   idempotencyKey,
   mintConfirmToken,
+  mintFileIssueConfirmToken,
+  mintIngestConfirmToken,
   resolveWritePolicyConfig,
 } from "./policy.js";
 import type { PraxisIssueState } from "./praxis-write-client.js";
@@ -167,5 +169,53 @@ describe("idempotencyKey", () => {
   it("is one logical command per issue version", () => {
     expect(idempotencyKey("unblock", issue)).toBe("unblock:5:12");
     expect(idempotencyKey("cancelled", { ...issue, version: 13 })).toBe("cancelled:5:13");
+  });
+});
+
+describe("mintIngestConfirmToken", () => {
+  const secret = "server-only-secret";
+
+  it("verifies against the same repo + number", () => {
+    const a = mintIngestConfirmToken({ secret, fullName: "cw/foo", number: 1015 });
+    const b = mintIngestConfirmToken({ secret, fullName: "cw/foo", number: 1015 });
+    expect(confirmTokenMatches(a, b)).toBe(true);
+  });
+
+  it("is bound to the issue number (a different issue gets a different token)", () => {
+    const a = mintIngestConfirmToken({ secret, fullName: "cw/foo", number: 1015 });
+    const b = mintIngestConfirmToken({ secret, fullName: "cw/foo", number: 1016 });
+    expect(a).not.toBe(b);
+  });
+
+  it("is bound to the repo and cannot be forged without the secret", () => {
+    const a = mintIngestConfirmToken({ secret, fullName: "cw/foo", number: 1015 });
+    const otherRepo = mintIngestConfirmToken({ secret, fullName: "cw/bar", number: 1015 });
+    const otherSecret = mintIngestConfirmToken({ secret: "x", fullName: "cw/foo", number: 1015 });
+    expect(a).not.toBe(otherRepo);
+    expect(a).not.toBe(otherSecret);
+  });
+});
+
+describe("mintFileIssueConfirmToken", () => {
+  const secret = "server-only-secret";
+
+  it("verifies against the same repo + title", () => {
+    const a = mintFileIssueConfirmToken({ secret, fullName: "cw/praxis", title: "Fix x" });
+    const b = mintFileIssueConfirmToken({ secret, fullName: "cw/praxis", title: "Fix x" });
+    expect(confirmTokenMatches(a, b)).toBe(true);
+  });
+
+  it("is bound to the title (a different issue gets a different token)", () => {
+    const a = mintFileIssueConfirmToken({ secret, fullName: "cw/praxis", title: "Fix x" });
+    const b = mintFileIssueConfirmToken({ secret, fullName: "cw/praxis", title: "Fix y" });
+    expect(a).not.toBe(b);
+  });
+
+  it("is bound to the repo and cannot be forged without the secret", () => {
+    const a = mintFileIssueConfirmToken({ secret, fullName: "cw/praxis", title: "Fix x" });
+    const otherRepo = mintFileIssueConfirmToken({ secret, fullName: "cw/other", title: "Fix x" });
+    const otherSecret = mintFileIssueConfirmToken({ secret: "x", fullName: "cw/praxis", title: "Fix x" });
+    expect(a).not.toBe(otherRepo);
+    expect(a).not.toBe(otherSecret);
   });
 });
