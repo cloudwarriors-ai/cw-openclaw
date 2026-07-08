@@ -126,3 +126,29 @@ describe("getPraxisBase", () => {
     expect(getPraxisBase()).toBe(BASE);
   });
 });
+
+describe("issuePath", () => {
+  it("prefers repo + number (the GitHub reference callers hold)", async () => {
+    const { issuePath } = await import("./praxis-client.js");
+    expect(issuePath({ repo: "cloudwarriors-ai/scopely", number: 837 })).toBe(
+      "/api/v1/repos/cloudwarriors-ai/scopely/issues/837",
+    );
+    expect(issuePath({ repo: "cw/app", number: 7 }, "/diagnose")).toBe(
+      "/api/v1/repos/cw/app/issues/7/diagnose",
+    );
+    // repo+number wins even when issue_id is also supplied.
+    expect(issuePath({ repo: "cw/app", number: 7, issue_id: 99 }, "/events")).toBe(
+      "/api/v1/repos/cw/app/issues/7/events",
+    );
+  });
+
+  it("falls back to the internal issue_id route", async () => {
+    const { issuePath } = await import("./praxis-client.js");
+    expect(issuePath({ issue_id: 37 }, "/diagnose")).toBe("/api/v1/issues/37/diagnose");
+  });
+
+  it("throws a naming-the-fix error when neither addressing form is given", async () => {
+    const { issuePath } = await import("./praxis-client.js");
+    expect(() => issuePath({})).toThrow(/repo \+ number.*issue_id/);
+  });
+});
