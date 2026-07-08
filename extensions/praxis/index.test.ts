@@ -108,3 +108,29 @@ describe("praxis tool handlers", () => {
     expect(out.error).toMatch(/Praxis API 404/);
   });
 });
+
+describe("by-number addressing (2026-07-08 pk/number conflation incident)", () => {
+  it("praxis_diagnose_issue hits the by-number route when given repo + number", async () => {
+    fetchMock.mockResolvedValue(mockResponse({ ok: true, status: 200, body: { id: 37 } }));
+
+    const { tools } = buildTools();
+    const out = parse(
+      await tools.praxis_diagnose_issue.execute("call-4", {
+        repo: "cloudwarriors-ai/scopely",
+        number: 837,
+      }),
+    );
+
+    expect(out).toEqual({ id: 37 });
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "http://praxis:8000/api/v1/repos/cloudwarriors-ai/scopely/issues/837/diagnose",
+    );
+  });
+
+  it("praxis_get_issue errors clearly when neither addressing form is given", async () => {
+    const { tools } = buildTools();
+    const out = parse(await tools.praxis_get_issue.execute("call-5", {}));
+    expect(out.ok).toBe(false);
+    expect(out.error).toMatch(/repo \+ number|issue_id/);
+  });
+});

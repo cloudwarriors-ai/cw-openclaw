@@ -1,7 +1,7 @@
 import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
-import { listIssuesPath, praxisGet, praxisHealth } from "./praxis-client.js";
+import { issuePath, listIssuesPath, praxisGet, praxisHealth } from "./praxis-client.js";
 
 function jsonResult(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
@@ -76,14 +76,44 @@ const plugin = {
     optionalApi.registerTool(() => ({
       name: "praxis_get_issue",
       description:
-        "Get one Praxis issue by its Praxis id: current state, fuse counters, risk score, and its " +
-        "most recent events.",
+        "Get one Praxis issue: current state, fuse counters, risk score, and its most recent " +
+        "events. Address it by repo + GitHub issue number (preferred - e.g. repo " +
+        "'cloudwarriors-ai/scopely', number 837) or by Praxis's internal issue_id.",
       parameters: Type.Object({
-        issue_id: Type.Number({ description: "The Praxis issue id (not the GitHub issue number)" }),
+        repo: Type.Optional(
+          Type.String({
+            description: "Repo full name, e.g. 'cloudwarriors-ai/scopely'. Use with `number`.",
+          }),
+        ),
+        number: Type.Optional(
+          Type.Number({
+            description:
+              "The GitHub issue number (the number in 'repo#123' references). Use with `repo`. " +
+              "PREFER this form - it is the reference humans give you.",
+          }),
+        ),
+        issue_id: Type.Optional(
+          Type.Number({
+            description:
+              "Praxis's INTERNAL issue id (from praxis_list_issues). NOT the GitHub issue " +
+              "number - feeding a GitHub number here returns a misleading 404.",
+          }),
+        ),
       }),
       async execute(_id: string, params: Record<string, unknown>) {
         try {
-          return jsonResult(await praxisGet(`/api/v1/issues/${params.issue_id as number}`));
+          return jsonResult(
+            await praxisGet(
+              issuePath(
+                {
+                  repo: params.repo as string | undefined,
+                  number: params.number as number | undefined,
+                  issue_id: params.issue_id as number | undefined,
+                },
+                "",
+              ),
+            ),
+          );
         } catch (err) {
           return errorResult(err);
         }
@@ -96,13 +126,43 @@ const plugin = {
       description:
         "Get the full event trace (append-only audit trail) for a Praxis issue: every state " +
         "transition with actor, from/to state, and reason. Use this to reconstruct how an issue " +
-        "reached its current state.",
+        "reached its current state. Address by repo + GitHub issue number (preferred) or " +
+        "Praxis internal issue_id.",
       parameters: Type.Object({
-        issue_id: Type.Number({ description: "The Praxis issue id" }),
+        repo: Type.Optional(
+          Type.String({
+            description: "Repo full name, e.g. 'cloudwarriors-ai/scopely'. Use with `number`.",
+          }),
+        ),
+        number: Type.Optional(
+          Type.Number({
+            description:
+              "The GitHub issue number (the number in 'repo#123' references). Use with `repo`. " +
+              "PREFER this form - it is the reference humans give you.",
+          }),
+        ),
+        issue_id: Type.Optional(
+          Type.Number({
+            description:
+              "Praxis's INTERNAL issue id (from praxis_list_issues). NOT the GitHub issue " +
+              "number - feeding a GitHub number here returns a misleading 404.",
+          }),
+        ),
       }),
       async execute(_id: string, params: Record<string, unknown>) {
         try {
-          return jsonResult(await praxisGet(`/api/v1/issues/${params.issue_id as number}/events`));
+          return jsonResult(
+            await praxisGet(
+              issuePath(
+                {
+                  repo: params.repo as string | undefined,
+                  number: params.number as number | undefined,
+                  issue_id: params.issue_id as number | undefined,
+                },
+                "/events",
+              ),
+            ),
+          );
         } catch (err) {
           return errorResult(err);
         }
@@ -116,14 +176,42 @@ const plugin = {
         "Diagnose WHY a Praxis issue is stuck: fuse counters vs their caps (at_cap = tripped to " +
         "blocked), open questions awaiting a human reply, the live resolver attempt, and any " +
         "unsettled outbox effects. This is the primary triage tool. The response is redacted by " +
-        "Praxis (no raw error text or tokens).",
+        "Praxis (no raw error text or tokens). Address by repo + GitHub issue number " +
+        "(preferred) or Praxis internal issue_id.",
       parameters: Type.Object({
-        issue_id: Type.Number({ description: "The Praxis issue id" }),
+        repo: Type.Optional(
+          Type.String({
+            description: "Repo full name, e.g. 'cloudwarriors-ai/scopely'. Use with `number`.",
+          }),
+        ),
+        number: Type.Optional(
+          Type.Number({
+            description:
+              "The GitHub issue number (the number in 'repo#123' references). Use with `repo`. " +
+              "PREFER this form - it is the reference humans give you.",
+          }),
+        ),
+        issue_id: Type.Optional(
+          Type.Number({
+            description:
+              "Praxis's INTERNAL issue id (from praxis_list_issues). NOT the GitHub issue " +
+              "number - feeding a GitHub number here returns a misleading 404.",
+          }),
+        ),
       }),
       async execute(_id: string, params: Record<string, unknown>) {
         try {
           return jsonResult(
-            await praxisGet(`/api/v1/issues/${params.issue_id as number}/diagnose`),
+            await praxisGet(
+              issuePath(
+                {
+                  repo: params.repo as string | undefined,
+                  number: params.number as number | undefined,
+                  issue_id: params.issue_id as number | undefined,
+                },
+                "/diagnose",
+              ),
+            ),
           );
         } catch (err) {
           return errorResult(err);

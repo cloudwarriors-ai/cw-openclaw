@@ -81,6 +81,27 @@ export function listIssuesPath(filters: { repo?: string; state?: string }): stri
   return qs ? `/api/v1/issues?${qs}` : "/api/v1/issues";
 }
 
+/** Build the per-issue path for either addressing mode. Callers hold `repo#number`
+ * (the GitHub reference in every conversation), so that form is preferred and maps to
+ * Praxis's by-number routes (praxis PR #168). `issue_id` is Praxis's INTERNAL pk —
+ * the 2026-07-08 incident was the support bot feeding GitHub numbers into the pk
+ * route and narrating the honest 404s as a repo-access problem. `suffix` is "" |
+ * "/events" | "/diagnose". */
+export function issuePath(
+  params: { repo?: string; number?: number; issue_id?: number },
+  suffix: "" | "/events" | "/diagnose" = "",
+): string {
+  if (params.repo && params.number !== undefined) {
+    return `/api/v1/repos/${params.repo}/issues/${params.number}${suffix}`;
+  }
+  if (params.issue_id !== undefined) {
+    return `/api/v1/issues/${params.issue_id}${suffix}`;
+  }
+  throw new Error(
+    "Provide either repo + number (GitHub reference) or issue_id (Praxis internal id)",
+  );
+}
+
 /** Connectivity + contract check: fetch the OpenAPI schema and confirm the
  * server's version matches the version this client targets. */
 export async function praxisHealth(): Promise<{ ok: boolean; version?: string; error?: string }> {
