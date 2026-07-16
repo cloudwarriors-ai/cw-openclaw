@@ -13,6 +13,17 @@ import { jsonResult } from "./scopely-api.js";
 
 type FetchResult = Promise<{ ok: boolean; status: number; data: unknown }>;
 
+// Label the confirm prompt by the deployment's actual Scopely backend, derived
+// from SCOPELY_BASE_URL (the var that already selects which backend this bot
+// talks to) so the warning names the real environment instead of a baked-in
+// "PROD". Defaults to PROD — the cautious label — for any host that isn't a
+// recognizable non-prod host, so an unknown/misconfigured backend still
+// over-warns rather than under-warns.
+function scopelyEnvLabel(): string {
+  const url = process.env.SCOPELY_BASE_URL ?? process.env.SCOPELY_URL ?? "";
+  return /\/\/(dev|staging|test)[.-]/i.test(url) ? "DEV" : "PROD";
+}
+
 // Stage a gated mutation. Does NOT execute — the real call fires only when a
 // human replies `CONFIRM <code>` (consumed in the before_dispatch hook).
 //
@@ -44,7 +55,7 @@ export async function stageWrite(summary: string, run: () => FetchResult) {
   const code = makeCode();
   putPending({ code, conversationId: channel, summary, run });
   const prompt =
-    `⚠️ Confirm: ${summary} on PROD.\n` +
+    `⚠️ Confirm: ${summary} on ${scopelyEnvLabel()}.\n` +
     `Reply \`CONFIRM ${code}\` within 5 minutes to proceed, or ignore to cancel.`;
 
   await sendScopelyText(channel, prompt, getChannelThreadAnchor(channel));
