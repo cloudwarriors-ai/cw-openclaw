@@ -59,6 +59,30 @@ function jsonResult(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
 }
 
+function issueRef(issue: PraxisIssueState): string {
+  return `${issue.repo}#${issue.source_issue}`;
+}
+
+function hasUnsafeControlCharacter(value: string): boolean {
+  for (const character of value) {
+    const code = character.charCodeAt(0);
+    if (code <= 0x08 || code === 0x0b || code === 0x0c || (code >= 0x0e && code <= 0x1f)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function unsafeFailureSummary(summary: string): boolean {
+  return (
+    summary.length > 2000 ||
+    hasUnsafeControlCharacter(summary) ||
+    /(?:password|access[_ -]?token|api[_ -]?key)\s*[:=]|bearer\s+\S+|(?:sk-|gh[pousr]_)[\w-]{12,}/i.test(
+      summary,
+    )
+  );
+}
+
 function errorResult(err: unknown) {
   const message = err instanceof Error ? err.message : String(err);
   return {
@@ -715,9 +739,9 @@ const plugin = {
           description:
             "pass — UAT succeeded; fail — UAT failed and the issue should return for fixes",
         }),
-        reason: Type.String({
-          description: "Human-readable UAT verdict rationale (required, recorded for audit)",
-        }),
+        reason: Type.Optional(
+          Type.String({ description: "Required failure summary for fail; optional for pass" }),
+        ),
       }),
       async execute(toolCallId: string, params: Record<string, unknown>) {
         const actor = deriveActorContext(toolContext, toolCallId);
@@ -744,10 +768,14 @@ const plugin = {
           });
         }
 
-        const reason = typeof params.reason === "string" ? params.reason.trim() : "";
-        if (!reason) {
-          return jsonResult({ ok: false, error: "reason_required" });
+        const suppliedReason = typeof params.reason === "string" ? params.reason.trim() : "";
+        if (verdictValue === "fail" && suppliedReason.length < 3) {
+          return jsonResult({ ok: false, error: "failure_summary_required" });
         }
+        if (verdictValue === "fail" && unsafeFailureSummary(suppliedReason)) {
+          return jsonResult({ ok: false, error: "unsafe_failure_summary" });
+        }
+        const reason = suppliedReason || "User confirmed the validation passed.";
 
         const issueId = Number(params.issue_id);
         if (!Number.isInteger(issueId) || issueId <= 0) {
@@ -784,6 +812,8 @@ const plugin = {
             requested_by: channelUserId,
             channel: "zoom",
             channel_user_id: channelUserId,
+            message_id: actor.messageId,
+            idempotency_key: toolCallId,
           });
         } catch (err) {
           return errorResult(err);
@@ -818,9 +848,18 @@ const plugin = {
                 "No verified identity was forwarded to Praxis. This is a configuration error.",
             });
           }
+          return jsonResult({ ok: false, status: res.status, ...res.data });
         }
 
-        return jsonResult({ ok: res.ok, status: res.status, ...res.data });
+        if (verdictValue === "pass" && kindPrefix === "uat1") {
+          return jsonResult({ ok: res.ok, status: res.status, ...res.data });
+        }
+        const message =
+          verdictValue === "pass"
+            ? `Thanks - I recorded your pass for ${issueRef(issue)}. This Praxis run is complete.`
+            : `Thanks - I recorded the failed check for ${issueRef(issue)}: ${reason}\n\n` +
+              "Praxis is sending it back for rework. I'll notify you when another version is ready.";
+        return jsonResult({ ok: res.ok, status: res.status, ...res.data, message });
       },
     }));
 
@@ -893,6 +932,15 @@ const plugin = {
           return jsonResult({ ok: false, error: "invalid_issue_id" });
         }
 
+        let acknowledgementRef = ref;
+        if (!acknowledgementRef) {
+          try {
+            acknowledgementRef = issueRef(await getIssue(issueId));
+          } catch (err) {
+            return errorResult(err);
+          }
+        }
+
         let res: Awaited<ReturnType<typeof submitNeedsInfoAnswer>>;
         try {
           // toolCallId as idempotency key: a model retry of the same call never
@@ -902,6 +950,7 @@ const plugin = {
             requested_by: channelUserId,
             channel: "zoom",
             channel_user_id: channelUserId,
+            message_id: actor.messageId,
             idempotency_key: toolCallId,
           });
         } catch (err) {
@@ -935,9 +984,15 @@ const plugin = {
                 "Your linked GitHub account is not the asked reporter or a maintainer for this issue.",
             });
           }
+          return jsonResult({ ok: false, status: res.status, ...res.data });
         }
 
-        return jsonResult({ ok: res.ok, status: res.status, ...res.data });
+        return jsonResult({
+          ok: res.ok,
+          status: res.status,
+          ...res.data,
+          message: `Thanks - I recorded that information. Praxis is reassessing ${acknowledgementRef} now.`,
+        });
       },
     }));
 

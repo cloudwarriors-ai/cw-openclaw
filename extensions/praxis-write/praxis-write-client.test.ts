@@ -65,7 +65,14 @@ describe("praxisFetch", () => {
 
 describe("getIssue", () => {
   it("returns the issue state body", async () => {
-    const body = { id: 5, state: "blocked", state_reason: "no_response", version: 12 };
+    const body = {
+      id: 5,
+      repo: "cw/app",
+      source_issue: 50,
+      state: "blocked",
+      state_reason: "no_response",
+      version: 12,
+    };
     fetchMock.mockResolvedValue(mockResponse({ ok: true, status: 200, body }));
     expect(await getIssue(5)).toEqual(body);
     expect(fetchMock.mock.calls[0][0]).toBe(`${BASE}/api/v1/issues/5`);
@@ -146,6 +153,8 @@ describe("submitVerdict", () => {
       requested_by: "alice",
       channel: "zoom",
       channel_user_id: "alice",
+      message_id: "m-7",
+      idempotency_key: "call-7",
     });
     expect(res).toEqual({ ok: true, status: 200, data: { applied: true, state: "done" } });
     const [url, init] = fetchMock.mock.calls[0];
@@ -158,6 +167,8 @@ describe("submitVerdict", () => {
       requested_by: "alice",
       channel: "zoom",
       channel_user_id: "alice",
+      message_id: "m-7",
+      idempotency_key: "call-7",
     });
   });
 
@@ -171,6 +182,8 @@ describe("submitVerdict", () => {
       requested_by: "alice",
       channel: "zoom",
       channel_user_id: "alice",
+      message_id: "m-8",
+      idempotency_key: "call-8",
     });
     expect(res.ok).toBe(false);
     expect(res.status).toBe(403);

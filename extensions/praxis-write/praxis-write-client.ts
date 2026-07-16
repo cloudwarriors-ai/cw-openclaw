@@ -33,6 +33,8 @@ export interface PraxisResponse<T> {
  * so a confirm that races a state change fails closed. */
 export interface PraxisIssueState {
   id: number;
+  repo: string;
+  source_issue: number;
   state: string;
   state_reason: string;
   version: number;
@@ -125,6 +127,8 @@ export async function submitVerdict(
     requested_by: string;
     channel: string;
     channel_user_id: string;
+    message_id: string;
+    idempotency_key: string;
   },
 ): Promise<PraxisResponse<Record<string, unknown>>> {
   return praxisFetch<Record<string, unknown>>(`/api/v1/issues/${issueId}/events`, {
@@ -137,7 +141,9 @@ export async function submitVerdict(
  * (issue_dict exposes id + repo + source_issue). Returns undefined when not tracked. */
 export async function resolveIssueRef(ref: string): Promise<number | undefined> {
   const m = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(ref.trim());
-  if (!m) return undefined;
+  if (!m) {
+    return undefined;
+  }
   const repo = m[1];
   const number = Number(m[2]);
   const res = await praxisGet<{ issues: Array<{ id: number; source_issue: number }> }>(
@@ -158,7 +164,8 @@ export async function submitNeedsInfoAnswer(
     requested_by: string;
     channel: string;
     channel_user_id: string;
-    idempotency_key?: string;
+    message_id: string;
+    idempotency_key: string;
   },
 ): Promise<PraxisResponse<Record<string, unknown>>> {
   return praxisFetch<Record<string, unknown>>(`/api/v1/issues/${issueId}/events`, {

@@ -16,9 +16,17 @@ type ToolDef = {
   ) => Promise<{ content: { text: string }[] }>;
 };
 
-const ISSUE = { id: 5, state: "blocked", state_reason: "no_response", version: 12 };
-const ISSUE_DEV_UAT = { id: 7, state: "dev_uat", state_reason: "", version: 3 };
-const ISSUE_USER_UAT = { id: 8, state: "user_uat", state_reason: "", version: 5 };
+const ISSUE = {
+  id: 5,
+  repo: "cw/app",
+  source_issue: 5,
+  state: "blocked",
+  state_reason: "no_response",
+  version: 12,
+};
+const ISSUE_DEV_UAT = { ...ISSUE, id: 7, source_issue: 70, state: "dev_uat", version: 3 };
+const ISSUE_USER_UAT = { ...ISSUE, id: 8, source_issue: 80, state: "user_uat", version: 5 };
+const ISSUE_NEEDS_INFO = { ...ISSUE, id: 9, source_issue: 90, state: "needs_info", version: 1 };
 
 function mockResponse(opts: { ok: boolean; status: number; body: unknown }): Response {
   return {
@@ -146,7 +154,12 @@ describe("two-step dry-run / confirm", () => {
 
     expect(out.preview).toBe(true);
     expect(out.action).toBe("unblock");
-    expect(out.issue).toEqual(ISSUE);
+    expect(out.issue).toEqual({
+      id: ISSUE.id,
+      state: ISSUE.state,
+      state_reason: ISSUE.state_reason,
+      version: ISSUE.version,
+    });
     expect(typeof out.confirm_token).toBe("string");
     // Exactly one call (the GET) — no POST mutation.
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -265,16 +278,16 @@ describe("praxis_submit_verdict", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("rejects a missing reason before any fetch", async () => {
+  it("requires a concrete summary for fail before any fetch", async () => {
     const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
     const out = parse(
       await tools.praxis_submit_verdict.execute("c1", {
         issue_id: 7,
-        verdict: "pass",
+        verdict: "fail",
         reason: "  ",
       }),
     );
-    expect(out).toEqual({ ok: false, error: "reason_required" });
+    expect(out).toEqual({ ok: false, error: "failure_summary_required" });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -299,21 +312,22 @@ describe("praxis_submit_verdict", () => {
     ).toBe(true);
   });
 
-  it("submits uat1_pass for a dev_uat issue with verified Zoom identity", async () => {
+  it("accepts a bare user pass and returns the frozen acknowledgement", async () => {
     fetchMock
-      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: ISSUE_DEV_UAT }))
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: ISSUE_USER_UAT }))
       .mockResolvedValueOnce(
         mockResponse({ ok: true, status: 200, body: { applied: true, state: "done" } }),
       );
     const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
     const out = parse(
       await tools.praxis_submit_verdict.execute("c2", {
-        issue_id: 7,
+        issue_id: 8,
         verdict: "pass",
-        reason: "UAT complete, feature verified",
       }),
     );
-    expect(out).toEqual({ ok: true, status: 200, applied: true, state: "done" });
+    expect(out.message).toBe(
+      "Thanks - I recorded your pass for cw/app#80. This Praxis run is complete.",
+    );
 
     const post = fetchMock.mock.calls.find(
       (c: unknown[]) => (c[1] as RequestInit | undefined)?.method === "POST",
@@ -321,15 +335,46 @@ describe("praxis_submit_verdict", () => {
     if (!post) {
       throw new Error("expected a POST call");
     }
-    expect(post[0]).toBe("http://praxis:8000/api/v1/issues/7/events");
+    expect(post[0]).toBe("http://praxis:8000/api/v1/issues/8/events");
     const body = JSON.parse((post[1] as RequestInit).body as string);
     expect(body).toEqual({
-      kind: "uat1_pass",
-      reason: "UAT complete, feature verified",
+      kind: "uat2_pass",
+      reason: "User confirmed the validation passed.",
       requested_by: "alice",
       channel: "zoom",
       channel_user_id: "alice",
+      message_id: "1",
+      idempotency_key: "c2",
     });
+  });
+
+  it.each(["api_key=super-secret-value", "gho_123456789012"])(
+    "rejects a secret-shaped failure summary before any fetch",
+    async (reason) => {
+      const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+      const out = parse(
+        await tools.praxis_submit_verdict.execute("unsafe", {
+          issue_id: 8,
+          verdict: "fail",
+          reason,
+        }),
+      );
+      expect(out.error).toBe("unsafe_failure_summary");
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects a control character in a failure summary before any fetch", async () => {
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_submit_verdict.execute("unsafe-control", {
+        issue_id: 8,
+        verdict: "fail",
+        reason: "screen went blank\u0001after save",
+      }),
+    );
+    expect(out.error).toBe("unsafe_failure_summary");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("submits uat2_fail for a user_uat issue", async () => {
@@ -356,8 +401,11 @@ describe("praxis_submit_verdict", () => {
     }
     const body = JSON.parse((post[1] as RequestInit).body as string);
     expect(body.kind).toBe("uat2_fail");
+    expect(out.message).toContain("cw/app#80: button still broken");
     expect(body.channel).toBe("zoom");
     expect(body.channel_user_id).toBe("alice");
+    expect(body.message_id).toBe("1");
+    expect(body.idempotency_key).toBe("c3");
   });
 
   it("surfaces identity_not_linked with a link instruction", async () => {
@@ -628,7 +676,11 @@ describe("praxis_ingest", () => {
   it("fails closed when the allowlist is unconfigured (no fetch)", async () => {
     const { tools } = buildTools({ pluginConfig: undefined });
     const out = parse(
-      await tools.praxis_ingest.execute("c1", { full_name: REPO, number: 1015, reason: "track it" }),
+      await tools.praxis_ingest.execute("c1", {
+        full_name: REPO,
+        number: 1015,
+        reason: "track it",
+      }),
     );
     expect(out).toEqual({ ok: false, denied: "write_policy_unconfigured" });
     expect(fetchMock).not.toHaveBeenCalled();
@@ -676,7 +728,11 @@ describe("praxis_ingest", () => {
   it("dry-run previews and makes no HTTP call at all", async () => {
     const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
     const out = parse(
-      await tools.praxis_ingest.execute("c1", { full_name: REPO, number: 1015, reason: "track it" }),
+      await tools.praxis_ingest.execute("c1", {
+        full_name: REPO,
+        number: 1015,
+        reason: "track it",
+      }),
     );
     expect(out.preview).toBe(true);
     expect(out.action).toBe("ingest");
@@ -1000,9 +1056,11 @@ describe("praxis_provide_info", () => {
   });
 
   it("posts kind=info_provided with the trusted Zoom identity and the toolCallId as idempotency key", async () => {
-    fetchMock.mockResolvedValue(
-      mockResponse({ ok: true, status: 200, body: { applied: true, state: "assessing" } }),
-    );
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: ISSUE_NEEDS_INFO }))
+      .mockResolvedValueOnce(
+        mockResponse({ ok: true, status: 200, body: { applied: true, state: "assessing" } }),
+      );
     const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
     const out = parse(
       await tools.praxis_provide_info.execute("call-42", {
@@ -1012,8 +1070,11 @@ describe("praxis_provide_info", () => {
     );
     expect(out.ok).toBe(true);
     expect(out.applied).toBe(true);
+    expect(out.message).toBe(
+      "Thanks - I recorded that information. Praxis is reassessing cw/app#90 now.",
+    );
 
-    const [url, init] = fetchMock.mock.calls[0];
+    const [url, init] = fetchMock.mock.calls[1];
     expect(url).toBe("http://praxis:8000/api/v1/issues/7/events");
     expect((init as RequestInit).method).toBe("POST");
     const sent = JSON.parse((init as RequestInit).body as string);
@@ -1023,6 +1084,7 @@ describe("praxis_provide_info", () => {
       requested_by: "alice",
       channel: "zoom",
       channel_user_id: "alice",
+      message_id: "1",
       idempotency_key: "call-42",
     });
   });
@@ -1033,7 +1095,12 @@ describe("praxis_provide_info", () => {
         mockResponse({
           ok: true,
           status: 200,
-          body: { issues: [{ id: 182, source_issue: 65 }, { id: 9, source_issue: 2 }] },
+          body: {
+            issues: [
+              { id: 182, source_issue: 65 },
+              { id: 9, source_issue: 2 },
+            ],
+          },
         }),
       )
       .mockResolvedValueOnce(
@@ -1060,9 +1127,7 @@ describe("praxis_provide_info", () => {
   });
 
   it("returns issue_not_tracked when the ref resolves to nothing", async () => {
-    fetchMock.mockResolvedValueOnce(
-      mockResponse({ ok: true, status: 200, body: { issues: [] } }),
-    );
+    fetchMock.mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: { issues: [] } }));
     const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
     const out = parse(
       await tools.praxis_provide_info.execute("call-8", {
@@ -1075,9 +1140,11 @@ describe("praxis_provide_info", () => {
   });
 
   it("surfaces identity_not_linked with the link instruction", async () => {
-    fetchMock.mockResolvedValue(
-      mockResponse({ ok: false, status: 403, body: { error: "identity_not_linked" } }),
-    );
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: ISSUE_NEEDS_INFO }))
+      .mockResolvedValueOnce(
+        mockResponse({ ok: false, status: 403, body: { error: "identity_not_linked" } }),
+      );
     const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
     const out = parse(
       await tools.praxis_provide_info.execute("c3", { issue_id: 7, answer: "the login page" }),
@@ -1087,13 +1154,15 @@ describe("praxis_provide_info", () => {
   });
 
   it("surfaces issue_not_awaiting_info with the issue state", async () => {
-    fetchMock.mockResolvedValue(
-      mockResponse({
-        ok: false,
-        status: 409,
-        body: { error: "issue_not_awaiting_info", state: "in_progress" },
-      }),
-    );
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: ISSUE_NEEDS_INFO }))
+      .mockResolvedValueOnce(
+        mockResponse({
+          ok: false,
+          status: 409,
+          body: { error: "issue_not_awaiting_info", state: "in_progress" },
+        }),
+      );
     const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
     const out = parse(
       await tools.praxis_provide_info.execute("c4", { issue_id: 7, answer: "the login page" }),
