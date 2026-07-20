@@ -3,20 +3,14 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
+import type { ScopelyBotConfig } from "./config.js";
+import { traceScopelyLogs } from "./devtools-client.js";
 import { jsonResult, errorResult } from "./scopely-api.js";
-
-const DEVTOOLS_BASE = () =>
-  process.env.SCOPELY_DEVTOOLS_API_URL ??
-  process.env.DEVTOOLS_API_URL ??
-  "https://devtools-api.cloudwarriors.ai";
-const DEVTOOLS_TOKEN = () => process.env.SCOPELY_DEV_TOOLS_API ?? process.env.DEV_TOOLS_API ?? "";
-
-type PluginConfig = { scopelyRepos?: string[] };
 
 export function registerCorrelationTools(
   api: OpenClawPluginApi,
   logger: AuditLogger,
-  config: PluginConfig,
+  config: ScopelyBotConfig,
 ) {
   api.registerTool(() =>
     wrapToolWithAudit(
@@ -49,37 +43,16 @@ export function registerCorrelationTools(
               (params.container as string) ||
               process.env.SCOPELY_CONTAINER ||
               "scopely-scopely-backend-1";
-            const tail = (params.tail as number) || 500;
-            const since = params.since as string | undefined;
-
-            // 1. Search container logs via devtools API
-            let logMatches: string[] = [];
-            const token = DEVTOOLS_TOKEN();
-            if (token) {
-              const qs = new URLSearchParams({ tail: String(tail) });
-              if (since) {
-                qs.set("since", since);
-              }
-              try {
-                const resp = await fetch(
-                  `${DEVTOOLS_BASE()}/api/v1/containers/${encodeURIComponent(container)}/logs?${qs}`,
-                  { headers: { Authorization: `Bearer ${token}` } },
-                );
-                if (resp.ok) {
-                  const data = (await resp.json()) as { logs?: string };
-                  const logText =
-                    typeof data === "string" ? data : (data.logs ?? JSON.stringify(data));
-                  const lines = logText.split("\n");
-                  const lowerPattern = pattern.toLowerCase();
-                  logMatches = lines.filter((l: string) => l.toLowerCase().includes(lowerPattern));
-                }
-              } catch {
-                // devtools unavailable, continue with GH search
-              }
-            }
+            const logResult = await traceScopelyLogs(config, {
+              pattern,
+              containers: [container],
+              tail: params.tail,
+              since: params.since,
+            });
 
             // 2. Search GitHub issues for similar patterns
             let ghMatches: unknown = [];
+            let ghSource: Record<string, unknown> = { ok: false };
             try {
               const repo = (config.scopelyRepos ?? ["cloudwarriors-ai/scopely"])[0];
               const query = pattern.slice(0, 100);
@@ -104,18 +77,20 @@ export function registerCorrelationTools(
                 },
               );
               ghMatches = JSON.parse(result);
-            } catch {
-              // gh search failed, continue
+              ghSource = { ok: true };
+            } catch (err) {
+              ghSource = { ok: false, error: err instanceof Error ? err.message : String(err) };
             }
 
             return jsonResult({
-              ok: true,
+              ok: logResult.ok || ghSource.ok === true,
               pattern,
               container,
-              logMatches: {
-                count: logMatches.length,
-                lines: logMatches.slice(0, 50),
+              sources: {
+                logs: logResult.results[0]?.source ?? { ok: false, error: "no log result" },
+                github: ghSource,
               },
+              logMatches: logResult.results[0]?.matches ?? [],
               ghIssues: ghMatches,
             });
           } catch (err) {

@@ -2,11 +2,23 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the process boundary so no real `gh` command ever runs and we can assert that
 // LLM-controlled values reach gh as literal argv elements (execFileSync = no shell),
-// never a shell string. scopelybot's gh writes are NOT confirm-gated — they execute
-// immediately — so injection safety here rests entirely on argv (no shell).
+// never a shell string. Writes are staged and the captured closure is exercised
+// separately so no command can run before confirmation.
 const execFileSyncMock = vi.fn();
+const stagedRuns: Array<() => Promise<unknown>> = [];
 vi.mock("node:child_process", () => ({
   execFileSync: (...args: unknown[]) => execFileSyncMock(...args),
+}));
+
+vi.mock("./gated.js", () => ({
+  stageWrite: (_summary: string, run: () => Promise<unknown>) => {
+    stagedRuns.push(run);
+    return Promise.resolve({
+      content: [
+        { type: "text", text: JSON.stringify({ staged: true, awaiting_confirmation: true }) },
+      ],
+    });
+  },
 }));
 
 vi.mock("./scopely-api.js", () => ({
@@ -57,6 +69,7 @@ function ghArgvContaining(token: string): string[] | undefined {
 describe("scopelybot gh tools are injection-safe (execFileSync, no shell)", () => {
   beforeEach(() => {
     execFileSyncMock.mockReset();
+    stagedRuns.length = 0;
   });
 
   it("every gh call passes argv to execFileSync, not a shell string", async () => {
@@ -80,14 +93,29 @@ describe("scopelybot gh tools are injection-safe (execFileSync, no shell)", () =
     expect(argv).toContain(malicious);
   });
 
-  it("create passes a metachar title as ONE verbatim argv element (executes immediately)", async () => {
+  it("create stages first, then passes a metachar title as ONE verbatim argv element", async () => {
     const tools = buildTools();
     execFileSyncMock.mockReturnValue("https://github.com/cloudwarriors-ai/scopely/issues/9");
     const title = 'Crash "$(rm -rf /)" `id`';
     await tools.scopely_gh_create_issue.execute("t", { title, body: "x" });
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(stagedRuns).toHaveLength(1);
+    await stagedRuns[0]();
     const argv = ghArgvContaining("create");
     expect(argv).toBeDefined();
     expect(argv).toContain(title);
+  });
+
+  it("comment and close are separate staged writes", async () => {
+    const tools = buildTools();
+    execFileSyncMock.mockReturnValue("ok");
+    await tools.scopely_gh_add_comment.execute("t", { number: 9, body: "QA" });
+    await tools.scopely_gh_close_issue.execute("t", { number: 9, reason: "completed" });
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(stagedRuns).toHaveLength(2);
+    await stagedRuns[0]();
+    await stagedRuns[1]();
+    expect(execFileSyncMock).toHaveBeenCalledTimes(2);
   });
 
   it("get_issue rejects a non-integer issue number and never shells out", async () => {
