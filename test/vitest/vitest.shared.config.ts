@@ -435,6 +435,13 @@ export const sharedVitestConfig = {
     hookTimeout: isWindows ? 180_000 : 120_000,
     unstubEnvs: true,
     unstubGlobals: true,
+    // Default to one-shot runs. A bare `vitest` invocation (no `run`, no `--watch`)
+    // otherwise falls back to Vitest's interactive watch default, which never exits
+    // and — across this workspace's 80 project configs — piles up dozens of orphaned
+    // worker processes over time (see incident 2026-07-20). `--watch` on the CLI still
+    // overrides this, so the sanctioned `pnpm test:watch` path (test-projects.mjs) is
+    // unaffected; it passes `--watch` explicitly instead of relying on the implicit default.
+    watch: false,
     isolate: false,
     pool: defaultPool,
     runner: nonIsolatedRunnerPath,

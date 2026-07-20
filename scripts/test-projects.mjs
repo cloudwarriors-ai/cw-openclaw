@@ -267,7 +267,10 @@ async function main() {
             "node",
             ...resolveVitestNodeArgs(process.env),
             resolveVitestCliEntry(),
-            ...(plan.watchMode ? [] : ["run"]),
+            // watch:false is now the shared-config default (see vitest.shared.config.ts);
+            // pass --watch explicitly here so watch mode still activates instead of
+            // silently relying on Vitest's implicit non-CI watch default.
+            ...(plan.watchMode ? ["--watch"] : ["run"]),
             "--config",
             plan.config,
             ...plan.forwardedArgs,
