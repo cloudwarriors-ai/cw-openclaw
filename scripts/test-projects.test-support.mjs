@@ -2117,7 +2117,10 @@ function createVitestArgs(params) {
     "node",
     ...resolveVitestNodeArgs(params.env),
     resolveVitestCliEntry(),
-    ...(params.watchMode ? [] : ["run"]),
+    // watch:false is now the shared-config default (see vitest.shared.config.ts);
+    // pass --watch explicitly here so watch mode still activates instead of
+    // silently relying on Vitest's implicit non-CI watch default.
+    ...(params.watchMode ? ["--watch"] : ["run"]),
     "--config",
     params.config,
     ...(params.config === UI_E2E_VITEST_CONFIG ? ["--configLoader", "runner"] : []),
