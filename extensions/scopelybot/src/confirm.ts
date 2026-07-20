@@ -51,7 +51,7 @@ export async function tryExecuteConfirm(params: {
   }
   const start = Date.now();
   try {
-    const res = await action.run();
+    const res = await action.run({ actor: params.actor });
     params.logger({
       ts: new Date().toISOString(),
       tool: "scopely_confirm_execute",

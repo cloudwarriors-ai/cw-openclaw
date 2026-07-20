@@ -23,7 +23,10 @@ type FetchResult = Promise<{ ok: boolean; status: number; data: unknown }>;
 // rewrites, re-relays, and duplicates codes (observed live 2026-06-05). So the
 // tool result the model sees is CODE-FREE; the model only learns a prompt was
 // posted and must stay silent.
-export async function stageWrite(summary: string, run: () => FetchResult) {
+//
+// `run` receives the confirming actor's id at execution time; actions that record
+// who approved them (approver grants) use it, staged API calls ignore it.
+export async function stageWrite(summary: string, run: (ctx?: { actor?: string }) => FetchResult) {
   // Read the channel at call time (not module load) so env that loads after import
   // — and test stubbing — both resolve correctly.
   const channel = process.env.SCOPELYBOT_ZOOM_CHANNEL ?? "";
