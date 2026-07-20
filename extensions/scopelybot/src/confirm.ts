@@ -60,9 +60,25 @@ export async function tryExecuteConfirm(params: {
       resultSummary: res.ok ? "ok" : `error: ${res.status}`,
       durationMs: Date.now() - start,
     });
-    return res.ok
-      ? `✅ Done: ${action.summary}.`
-      : `❌ Failed (HTTP ${res.status}): ${action.summary}.`;
+    if (res.ok) {
+      return `✅ Done: ${action.summary}.`;
+    }
+    // Bundled confirms (gated.ts coalescing) report per-item outcomes on
+    // failure: HTTP ops are not transactional, so the human must see exactly
+    // which items applied and which did not — a bare "Failed" would hide a
+    // partial application.
+    const bundle = res.data as { bundle?: boolean; applied?: number; results?: unknown[] } | null;
+    if (bundle && bundle.bundle === true && Array.isArray(bundle.results)) {
+      const lines = bundle.results
+        .slice(0, 10)
+        .map((r) => {
+          const item = r as { summary: string; ok: boolean; status: number };
+          return item.ok ? `✅ ${item.summary}` : `❌ ${item.summary} (HTTP ${item.status})`;
+        })
+        .join("\n");
+      return `⚠️ Applied ${bundle.applied ?? 0} of ${bundle.results.length}:\n${lines}`;
+    }
+    return `❌ Failed (HTTP ${res.status}): ${action.summary}.`;
   } catch (err) {
     const msg = redactText(err instanceof Error ? err.message : String(err), 500);
     params.logger({
