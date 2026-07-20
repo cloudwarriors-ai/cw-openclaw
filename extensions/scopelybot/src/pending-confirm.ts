@@ -8,7 +8,10 @@ export type PendingAction = {
   code: string;
   conversationId: string; // channel the CONFIRM must come from
   summary: string; // human-readable description, echoed + audited
-  run: () => Promise<{ ok: boolean; status: number; data: unknown }>;
+  // Executes the staged mutation. Receives the confirming actor's id so actions
+  // that record WHO approved them (e.g. approver grants) can do so; most staged
+  // API calls ignore it.
+  run: (ctx?: { actor?: string }) => Promise<{ ok: boolean; status: number; data: unknown }>;
   expiresAt: number;
 };
 

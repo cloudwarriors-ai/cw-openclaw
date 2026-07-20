@@ -1,5 +1,7 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { registerAdminTools } from "./src/admin-tools.js";
+import { createApproverStore } from "./src/approver-store.js";
+import { registerApproverTools } from "./src/approver-tools.js";
 import { createAuditLogger } from "./src/audit.js";
 import { rememberChannelThreadAnchor, sendComfortMessage } from "./src/comfort.js";
 import type { ScopelyBotConfig } from "./src/config.js";
@@ -62,7 +64,13 @@ const plugin = {
     const workspaceDir = process.env.OPENCLAW_WORKSPACE ?? "/root/.openclaw/workspace";
     const logger = createAuditLogger(workspaceDir);
     const pluginConfig = resolveScopelyBotConfig(api.config, config);
-    const writeApproverIds = configuredWriteApprovers(pluginConfig);
+    // Config-seeded approvers are permanent; the store layers chat-granted approvers
+    // (scopely_grant_approver, confirm-gated) and the observed-identity ledger on top,
+    // persisted in the workspace so restarts keep both.
+    const approverStore = createApproverStore({
+      workspaceDir,
+      configuredIds: configuredWriteApprovers(pluginConfig),
+    });
 
     // Register every scopelybot tool as `optional: true` so per-agent allowlists
     // actually scope them: non-optional plugin tools bypass allowlists entirely and
@@ -88,6 +96,7 @@ const plugin = {
     registerDeploymentConfigTools(optionalApi, logger);
     registerScopingCardTools(optionalApi, logger);
     registerSupportTools(optionalApi, logger, pluginConfig);
+    registerApproverTools(optionalApi, logger, approverStore);
 
     // Zoom card bodies do not render Markdown. Keep this rewrite at the Scopely
     // plugin boundary so other agents and channels retain their existing output.
@@ -101,6 +110,15 @@ const plugin = {
     // the inbound message id so the confirm gate can thread its prompt.
     api.on("message_received", async (event, ctx) => {
       if (ctx.channelId !== "zoom" || !ctx.conversationId) return;
+      // Identity ledger: zoom webhooks carry (operator_id, operator email) per sender.
+      // Recording them lets scopely_grant_approver resolve an email to the Zoom id the
+      // confirm gate matches on. Scoped to scopelybot's own sessions so other bots'
+      // channels don't populate this bot's ledger.
+      if (isScopelyBotZoomMessage({ channelId: ctx.channelId, sessionKey: ctx.sessionKey })) {
+        const senderEmail =
+          typeof event.metadata?.senderName === "string" ? event.metadata.senderName : undefined;
+        approverStore.recordSeenIdentity(event.senderId, senderEmail);
+      }
       const text = typeof event.content === "string" ? event.content : "";
       if (CONFIRM_RE.test(text.trim())) return;
       const messageId =
@@ -134,7 +152,9 @@ const plugin = {
         conversationId: ctx.conversationId ?? "",
         channelId: ctx.channelId,
         sessionKey: ctx.sessionKey,
-        approverIds: writeApproverIds,
+        // Read at confirm time (not register time) so chat-granted approvers take
+        // effect immediately, without a container restart.
+        approverIds: approverStore.approverIds(),
         logger,
       });
       // `handled: true` suppresses the coordinator so the CONFIRM cannot re-stage; the
