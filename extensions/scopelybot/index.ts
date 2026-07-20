@@ -18,7 +18,7 @@ import { registerScopingCardTools } from "./src/scoping-card-tools.js";
 import { registerSupportTools } from "./src/support-tools.js";
 import { registerUserMaintenanceTools } from "./src/user-maintenance-tools.js";
 import { registerVendorConfigTools } from "./src/vendor-config-tools.js";
-import { rewriteScopelyBotZoomMessage } from "./src/zoom-format.js";
+import { isScopelyBotZoomMessage, rewriteScopelyBotZoomMessage } from "./src/zoom-format.js";
 
 // A human confirm reply. Mirrors the matcher in tryExecuteConfirm() so the
 // before_dispatch gate and the comfort-skip use one shape.
@@ -115,13 +115,25 @@ const plugin = {
     // re-stage), and `text` is delivered by core threaded into the conversation. The
     // LLM is never in the execution path: it cannot fabricate the inbound CONFIRM.
     api.on("before_dispatch", async (event, ctx) => {
-      if (ctx.channelId !== "zoom") return;
+      // Claim only CONFIRMs arriving through ScopelyBot's own Zoom surface (its
+      // bound channel or a thread inside it), proven by the agent-scoped session
+      // key. Six gated bots register this same first-claim-wins hook; an unscoped
+      // `channelId === "zoom"` claim lets whichever bot registered FIRST steal
+      // every zoom CONFIRM and answer "expired" from its own empty pending store
+      // (2026-07-20 incident: pulsebot consumed a scopelybot confirm).
+      if (
+        !isScopelyBotZoomMessage({ channelId: ctx.channelId ?? "", sessionKey: ctx.sessionKey })
+      ) {
+        return;
+      }
       const text = typeof event.content === "string" ? event.content : "";
       if (!CONFIRM_RE.test(text.trim())) return;
       const result = await tryExecuteConfirm({
         text,
         actor: ctx.senderId ?? "",
         conversationId: ctx.conversationId ?? "",
+        channelId: ctx.channelId,
+        sessionKey: ctx.sessionKey,
         approverIds: writeApproverIds,
         logger,
       });

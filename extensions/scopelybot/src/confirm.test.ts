@@ -48,8 +48,54 @@ describe("ScopelyBot confirmation actor gate", () => {
       approverIds: [approver],
       logger,
     });
-    expect(takePendingMock).toHaveBeenCalledWith("1234", "vipbot_prod");
+    expect(takePendingMock).toHaveBeenCalledWith("1234", {
+      conversationId: "vipbot_prod",
+      fromOwnZoomSurface: false,
+    });
     expect(result).toContain("HTTP 502");
     expect(result).not.toContain("secret");
+  });
+
+  // Regression for the 2026-07-20 incident: a CONFIRM sent inside a Zoom thread
+  // dispatches with the THREAD id as conversationId (never matching the
+  // channel-JID-bound pending), but the scopelybot session key proves it arrived
+  // through the bot's own Zoom binding — takePending must receive that proof.
+  it("marks a threaded CONFIRM from scopelybot's own zoom session as own-surface", async () => {
+    takePendingMock.mockReturnValue({
+      summary: "reset password for user 47",
+      run: vi.fn().mockResolvedValue({ ok: true, status: 200, data: {} }),
+    });
+    const result = await tryExecuteConfirm({
+      text: "CONFIRM 8248",
+      actor: approver,
+      conversationId: "554f6079-4d2e-4727-87db-1b1c482fff3d",
+      channelId: "zoom",
+      sessionKey: "agent:scopelybot:zoom:channel:554f6079-4d2e-4727-87db-1b1c482fff3d",
+      approverIds: [approver],
+      logger,
+    });
+    expect(takePendingMock).toHaveBeenCalledWith("8248", {
+      conversationId: "554f6079-4d2e-4727-87db-1b1c482fff3d",
+      fromOwnZoomSurface: true,
+    });
+    expect(result).toContain("✅ Done");
+  });
+
+  it("does not treat another agent's zoom session as scopelybot's surface", async () => {
+    takePendingMock.mockReturnValue(undefined);
+    const result = await tryExecuteConfirm({
+      text: "CONFIRM 4321",
+      actor: approver,
+      conversationId: "some-thread-id",
+      channelId: "zoom",
+      sessionKey: "agent:pulsebot:zoom:channel:some-thread-id",
+      approverIds: [approver],
+      logger,
+    });
+    expect(takePendingMock).toHaveBeenCalledWith("4321", {
+      conversationId: "some-thread-id",
+      fromOwnZoomSurface: false,
+    });
+    expect(result).toContain("No pending action");
   });
 });
