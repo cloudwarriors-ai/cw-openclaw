@@ -78,6 +78,12 @@ const plugin = {
     // execution path: it cannot fabricate the inbound CONFIRM.
     api.on("before_dispatch", async (event, ctx) => {
       if (ctx.channelId !== "zoom") return undefined;
+      // Claim only CONFIRMs from this bot's own sessions (session key prefix set by
+      // the agent binding). Six gated bots register this same first-claim-wins hook;
+      // without this guard, whichever bot registered FIRST steals every zoom CONFIRM
+      // and answers "expired" from its own empty pending store (2026-07-20 incident:
+      // pulsebot consumed a scopelybot confirm code that was 13 seconds old).
+      if (ctx.sessionKey?.startsWith("agent:zoomwarriorssupportbot:") !== true) return undefined;
       const text = typeof event.content === "string" ? event.content : "";
       if (!CONFIRM_RE.test(text.trim())) return undefined;
       const result = await tryExecuteConfirm({

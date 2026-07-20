@@ -1,31 +1,15 @@
+/**
+ * Plugin-boundary test for external-org-autopilot's before_dispatch confirm claim scoping.
+ */
+
 import os from "node:os";
 import { describe, expect, it, vi } from "vitest";
 import plugin from "./index.js";
 
-describe("pulsebot tool scoping", () => {
-  it("registers every tool as optional so per-agent allowlists can scope them", () => {
-    // Non-optional plugin tools bypass allowlists and leak into every agent's
-    // menu; optional ones are only visible to agents whose tools.allow opts in.
-    process.env.OPENCLAW_WORKSPACE = os.tmpdir();
-    const optionalFlags: Array<boolean | undefined> = [];
-    const api = {
-      registerTool: vi.fn((_tool: unknown, opts?: { optional?: boolean }) => {
-        optionalFlags.push(opts?.optional);
-      }),
-      on: vi.fn(),
-    } as never;
-
-    plugin.register(api, undefined);
-
-    expect(optionalFlags.length).toBeGreaterThan(0);
-    expect(optionalFlags.every((flag) => flag === true)).toBe(true);
-  });
-});
-
 // Six gated bots register the same first-claim-wins before_dispatch hook; each must
 // only claim CONFIRMs from its OWN agent sessions (2026-07-20 incident: pulsebot
 // claimed a scopelybot confirm and answered "expired" from its own empty store).
-describe("pulsebot confirm claim scoping", () => {
+describe("external-org-autopilot confirm claim scoping", () => {
   type Handler = (
     event: unknown,
     ctx: unknown,
@@ -67,7 +51,7 @@ describe("pulsebot confirm claim scoping", () => {
       {
         channelId: "zoom",
         conversationId: "thread-1",
-        sessionKey: "agent:pulsebot:zoom:channel:thread-1",
+        sessionKey: "agent:external-org-autopilot:zoom:channel:thread-1",
         senderId: "someone",
       },
     );

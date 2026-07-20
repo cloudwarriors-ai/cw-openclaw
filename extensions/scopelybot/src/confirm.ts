@@ -8,6 +8,7 @@
 import type { AuditLogger } from "./audit.js";
 import { takePending } from "./pending-confirm.js";
 import { redactText } from "./redaction.js";
+import { isScopelyBotZoomMessage } from "./zoom-format.js";
 
 export function isApprovedWriteActor(actor: string, approverIds: string[]): boolean {
   const normalized = actor.trim().toLowerCase();
@@ -22,6 +23,8 @@ export async function tryExecuteConfirm(params: {
   text: string;
   actor: string;
   conversationId: string;
+  channelId?: string;
+  sessionKey?: string;
   approverIds: string[];
   logger: AuditLogger;
 }): Promise<string | null> {
@@ -32,8 +35,17 @@ export async function tryExecuteConfirm(params: {
   if (!isApprovedWriteActor(params.actor, params.approverIds)) {
     return "Write confirmation is not authorized for this Zoom identity.";
   }
-  // Channel-scoped: only consumes an action staged for THIS conversation.
-  const action = takePending(m[1], params.conversationId);
+  // Channel-scoped: only consumes an action staged for THIS conversation. Zoom
+  // thread replies dispatch with the thread id as conversationId, so the session
+  // key — which proves the message came through ScopelyBot's own Zoom binding —
+  // is the accepted channel-binding evidence for threaded CONFIRMs.
+  const action = takePending(m[1], {
+    conversationId: params.conversationId,
+    fromOwnZoomSurface: isScopelyBotZoomMessage({
+      channelId: params.channelId ?? "",
+      sessionKey: params.sessionKey,
+    }),
+  });
   if (!action) {
     return `No pending action for code ${m[1]} — it may have expired (5 min), already been used, or was requested in a different channel.`;
   }

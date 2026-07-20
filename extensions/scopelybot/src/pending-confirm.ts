@@ -40,14 +40,33 @@ export function putPending(a: Omit<PendingAction, "expiresAt">): void {
   store.set(a.code, { ...a, expiresAt: Date.now() + TTL_MS });
 }
 
+// Where the CONFIRM arrived from, as observed by the dispatch pipeline.
+export type ConfirmScope = {
+  conversationId: string; // dispatch conversation the CONFIRM arrived in
+  // True when the caller proved — via the agent-scoped session key — that the
+  // CONFIRM arrived through ScopelyBot's own Zoom binding. Zoom thread-scoped
+  // sessions dispatch with the THREAD id as conversationId, so an exact match
+  // against the channel-JID-bound pending can never succeed for a threaded reply
+  // (2026-07-20 incident: a 13-second-old code was reported "expired"). The
+  // session-key prefix is the channel-binding proof in that case: scopelybot has
+  // exactly one bound channel, so any `agent:scopelybot:zoom:*` session IS that
+  // channel or a thread inside it.
+  fromOwnZoomSurface?: boolean;
+};
+
 // Retrieve and consume a pending action (one-time use). Channel-scoped: a CONFIRM
-// only fires an action staged for the SAME conversation, so a code leaked/observed
-// in one channel cannot trigger a write staged for another. A channel mismatch does
-// NOT consume the action — the rightful channel can still confirm it.
-export function takePending(code: string, conversationId: string): PendingAction | undefined {
+// only fires an action staged for the SAME conversation (exact id match, or the
+// caller's proof that the message came through this bot's own Zoom surface), so a
+// code leaked/observed in another bot's channel cannot trigger a write staged here.
+// A scope mismatch does NOT consume the action — the rightful channel can still
+// confirm it.
+export function takePending(code: string, scope: ConfirmScope): PendingAction | undefined {
   prune();
   const a = store.get(code);
-  if (!a || a.conversationId !== conversationId) {
+  if (!a) {
+    return undefined;
+  }
+  if (a.conversationId !== scope.conversationId && scope.fromOwnZoomSurface !== true) {
     return undefined;
   }
   store.delete(code);
