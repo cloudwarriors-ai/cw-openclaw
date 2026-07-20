@@ -15,6 +15,20 @@
           "cloudwarriors-ai/scopely"
         ],
         "description": "GitHub repos scoped for Scopely issue management"
+      },
+      "serviceContainers": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Exact Docker container names Scopely support tools may inspect"
+      },
+      "writeApproverIds": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Exact Zoom sender ids allowed to execute staged Scopely writes"
       }
     }
   },
@@ -25,6 +39,7 @@
       "scopely_approve_access_request",
       "scopely_audit_logs",
       "scopely_auth_status",
+      "scopely_compare_session_versions",
       "scopely_correlate_errors",
       "scopely_create_currency",
       "scopely_create_deployment_type",
@@ -76,6 +91,8 @@
       "scopely_list_pricing_items",
       "scopely_list_project_types",
       "scopely_list_scoping_cards",
+      "scopely_list_services",
+      "scopely_list_session_versions",
       "scopely_list_sessions",
       "scopely_list_users",
       "scopely_list_vendor_terms",
@@ -88,7 +105,12 @@
       "scopely_reject_access_request",
       "scopely_remove_org_domain",
       "scopely_reset_user_password",
+      "scopely_reassign_session",
+      "scopely_refresh_docusign_status",
+      "scopely_resend_docusign",
+      "scopely_resend_user_verification",
       "scopely_search",
+      "scopely_session_status_counts",
       "scopely_session_pricing",
       "scopely_set_user_active",
       "scopely_update_currency",
@@ -105,7 +127,10 @@
       "scopely_update_vendor_term",
       "scopely_user_activity",
       "scopely_vendor_config",
-      "scopely_wizard_funnel"
+      "scopely_wizard_funnel",
+      "scopely_support_session",
+      "scopely_trace_logs",
+      "scopely_unlock_user"
     ]
   }
 }

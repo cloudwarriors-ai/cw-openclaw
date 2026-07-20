@@ -7,6 +7,13 @@
 
 import type { AuditLogger } from "./audit.js";
 import { takePending } from "./pending-confirm.js";
+import { redactText } from "./redaction.js";
+
+export function isApprovedWriteActor(actor: string, approverIds: string[]): boolean {
+  const normalized = actor.trim().toLowerCase();
+  const allowed = new Set(approverIds.map((value) => value.trim().toLowerCase()).filter(Boolean));
+  return Boolean(normalized) && allowed.size > 0 && allowed.has(normalized);
+}
 
 // Called from the before_dispatch handler. If the inbound text is `CONFIRM <code>`
 // for a live pending action, execute it and return a human-readable result string.
@@ -15,10 +22,16 @@ export async function tryExecuteConfirm(params: {
   text: string;
   actor: string;
   conversationId: string;
+  approverIds: string[];
   logger: AuditLogger;
 }): Promise<string | null> {
   const m = params.text.trim().match(/^CONFIRM\s+(\d{4})\b/i);
   if (!m) return null;
+  // Check identity before touching the pending store. An unauthorized user in
+  // the correct channel cannot execute OR consume a valid pending action.
+  if (!isApprovedWriteActor(params.actor, params.approverIds)) {
+    return "Write confirmation is not authorized for this Zoom identity.";
+  }
   // Channel-scoped: only consumes an action staged for THIS conversation.
   const action = takePending(m[1], params.conversationId);
   if (!action) {
@@ -37,9 +50,9 @@ export async function tryExecuteConfirm(params: {
     });
     return res.ok
       ? `✅ Done: ${action.summary}.`
-      : `❌ Failed (HTTP ${res.status}): ${action.summary}. ${JSON.stringify(res.data).slice(0, 200)}`;
+      : `❌ Failed (HTTP ${res.status}): ${action.summary}.`;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = redactText(err instanceof Error ? err.message : String(err), 500);
     params.logger({
       ts: new Date().toISOString(),
       tool: "scopely_confirm_execute",
@@ -49,6 +62,6 @@ export async function tryExecuteConfirm(params: {
       error: msg,
       durationMs: Date.now() - start,
     });
-    return `❌ Error executing ${action.summary}: ${msg}`;
+    return `❌ Error executing ${action.summary}.`;
   }
 }

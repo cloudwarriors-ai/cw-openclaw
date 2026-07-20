@@ -9,6 +9,7 @@
 
 import { getChannelThreadAnchor, sendScopelyText } from "./comfort.js";
 import { makeCode, putPending } from "./pending-confirm.js";
+import { redactText } from "./redaction.js";
 import { jsonResult } from "./scopely-api.js";
 
 type FetchResult = Promise<{ ok: boolean; status: number; data: unknown }>;
@@ -42,9 +43,10 @@ export async function stageWrite(summary: string, run: () => FetchResult) {
   // Bind the staged action to that channel: only a CONFIRM from it can fire the
   // action (takePending enforces the match). Code is unpredictable (crypto).
   const code = makeCode();
-  putPending({ code, conversationId: channel, summary, run });
+  const safeSummary = redactText(summary, 500);
+  putPending({ code, conversationId: channel, summary: safeSummary, run });
   const prompt =
-    `⚠️ Confirm: ${summary} on PROD.\n` +
+    `⚠️ Confirm: ${safeSummary} on PROD.\n` +
     `Reply \`CONFIRM ${code}\` within 5 minutes to proceed, or ignore to cancel.`;
 
   await sendScopelyText(channel, prompt, getChannelThreadAnchor(channel));

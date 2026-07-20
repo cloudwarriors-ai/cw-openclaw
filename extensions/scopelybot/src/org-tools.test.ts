@@ -114,6 +114,7 @@ describe("org-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
+      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });
@@ -135,6 +136,7 @@ describe("org-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
+      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });
@@ -151,6 +153,7 @@ describe("org-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
+      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });
@@ -169,6 +172,7 @@ describe("org-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
+      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });
@@ -186,6 +190,7 @@ describe("org-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
+      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });

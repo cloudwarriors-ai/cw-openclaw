@@ -2,6 +2,8 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { registerAdminTools } from "./src/admin-tools.js";
 import { createAuditLogger } from "./src/audit.js";
 import { rememberChannelThreadAnchor, sendComfortMessage } from "./src/comfort.js";
+import type { ScopelyBotConfig } from "./src/config.js";
+import { configuredWriteApprovers, resolveScopelyBotConfig } from "./src/config.js";
 import { tryExecuteConfirm } from "./src/confirm.js";
 import { registerCorrelationTools } from "./src/correlation-tools.js";
 import { registerDeploymentConfigTools } from "./src/deployment-config-tools.js";
@@ -13,10 +15,10 @@ import { registerPassthroughTools } from "./src/passthrough-tools.js";
 import { registerPricingTools } from "./src/pricing-tools.js";
 import { registerScopelyTools } from "./src/scopely-tools.js";
 import { registerScopingCardTools } from "./src/scoping-card-tools.js";
+import { registerSupportTools } from "./src/support-tools.js";
 import { registerUserMaintenanceTools } from "./src/user-maintenance-tools.js";
 import { registerVendorConfigTools } from "./src/vendor-config-tools.js";
-
-type PluginConfig = { scopelyRepos?: string[] };
+import { rewriteScopelyBotZoomMessage } from "./src/zoom-format.js";
 
 // A human confirm reply. Mirrors the matcher in tryExecuteConfirm() so the
 // before_dispatch gate and the comfort-skip use one shape.
@@ -43,13 +45,24 @@ const plugin = {
         default: ["cloudwarriors-ai/scopely"],
         description: "GitHub repos scoped for Scopely issue management",
       },
+      serviceContainers: {
+        type: "array",
+        items: { type: "string" },
+        description: "Exact Docker container names Scopely support tools may inspect",
+      },
+      writeApproverIds: {
+        type: "array",
+        items: { type: "string" },
+        description: "Exact Zoom sender ids allowed to execute staged Scopely writes",
+      },
     },
   },
 
-  register(api: OpenClawPluginApi, config?: PluginConfig) {
+  register(api: OpenClawPluginApi, config?: ScopelyBotConfig) {
     const workspaceDir = process.env.OPENCLAW_WORKSPACE ?? "/root/.openclaw/workspace";
     const logger = createAuditLogger(workspaceDir);
-    const pluginConfig: PluginConfig = config ?? { scopelyRepos: ["cloudwarriors-ai/scopely"] };
+    const pluginConfig = resolveScopelyBotConfig(api.config, config);
+    const writeApproverIds = configuredWriteApprovers(pluginConfig);
 
     // Register every scopelybot tool as `optional: true` so per-agent allowlists
     // actually scope them: non-optional plugin tools bypass allowlists entirely and
@@ -74,6 +87,11 @@ const plugin = {
     registerVendorConfigTools(optionalApi, logger);
     registerDeploymentConfigTools(optionalApi, logger);
     registerScopingCardTools(optionalApi, logger);
+    registerSupportTools(optionalApi, logger, pluginConfig);
+
+    // Zoom card bodies do not render Markdown. Keep this rewrite at the Scopely
+    // plugin boundary so other agents and channels retain their existing output.
+    api.on("message_sending", (event, ctx) => rewriteScopelyBotZoomMessage(event.content, ctx));
 
     // Comfort message + thread-anchor capture on inbound. CONFIRM execution is
     // NOT handled here: message_received is a fire-and-forget OBSERVE hook (it
@@ -104,6 +122,7 @@ const plugin = {
         text,
         actor: ctx.senderId ?? "",
         conversationId: ctx.conversationId ?? "",
+        approverIds: writeApproverIds,
         logger,
       });
       // `handled: true` suppresses the coordinator so the CONFIRM cannot re-stage; the
@@ -148,7 +167,7 @@ const plugin = {
     }
 
     console.log(
-      "[scopelybot] Registered 86 tools (10 observability + 5 admin + 4 monitoring + 6 GH + 1 correlation + 2 passthrough + 9 user-maintenance + 8 org + 15 pricing + 13 vendor-config + 8 deployment-config + 5 scoping-card)",
+      "[scopelybot] Registered 97 tools (10 observability + 5 admin + 4 monitoring + 6 GH + 1 correlation + 2 passthrough + 9 user-maintenance + 8 org + 15 pricing + 13 vendor-config + 8 deployment-config + 5 scoping-card + 11 support)",
     );
   },
 };

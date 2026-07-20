@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import { redactValue } from "./redaction.js";
 
 export interface AuditEntry {
   ts: string;
@@ -57,6 +58,8 @@ export function wrapToolWithAudit(
         const parsed = JSON.parse(result.content[0]?.text ?? "{}");
         if (parsed.ok === false) {
           resultSummary = `error: ${parsed.error ?? "unknown"}`;
+        } else if (parsed.staged === true && parsed.awaiting_confirmation === true) {
+          resultSummary = "staged: awaiting confirmation";
         } else if (Array.isArray(parsed.data)) {
           resultSummary = `${parsed.data.length} items`;
         } else {
@@ -91,13 +94,5 @@ export function wrapToolWithAudit(
 }
 
 function sanitizeParams(params: Record<string, unknown>): Record<string, unknown> {
-  const clean: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(params)) {
-    if (typeof v === "string" && v.length > 200) {
-      clean[k] = v.slice(0, 200) + "...[truncated]";
-    } else {
-      clean[k] = v;
-    }
-  }
-  return clean;
+  return redactValue(params, { maxStringLength: 200 }) as Record<string, unknown>;
 }
