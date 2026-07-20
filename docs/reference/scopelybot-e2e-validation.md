@@ -1,0 +1,136 @@
+<!--
+  ScopelyBot end-to-end validation methodology + scenario corpus (2026-07-20).
+  Purpose: define data-in → data-out contracts per pipeline hop, the exact log
+  checkpoints to inspect, and a one-scenario-at-a-time execution protocol. The
+  scenario corpus is mined from REAL channel traffic: the vipbot_prod channel
+  history, the retained gateway payload logs, and 5 weeks of the scopelybot
+  audit trail (268 tool calls, 2026-06-13 → 2026-07-20).
+-->
+
+# ScopelyBot E2E Validation — methodology, checkpoints, scenario corpus
+
+## 1. The pipeline and its observation points
+
+A user message travels: **Zoom channel → webhook → gateway → route/session →
+coordinator (Luna) → spoke (Terra) → tool → Scopely backend → reply → channel.**
+Every hop has an inspectable artifact. A scenario PASSES only when every
+checkpoint in its contract matches.
+
+| #   | Hop                              | Where to look                                                                                                                                               | What to check                                                                                                                          |
+| --- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| C1  | Webhook in                       | `docker exec openclaw sh -c 'grep "team_chat payload" /tmp/openclaw-0/openclaw-$(date -u +%F).log \| grep feaf3140'` (prod, in-container; ~2-day retention) | message text verbatim, `operator_id`, `message_id`, `reply_main_message_id` (thread), `date_time`                                      |
+| C2  | Route/session                    | same log: grep the `message_id`/session key `agent:scopelybot:zoom:`                                                                                        | session key shape: channel JID at root, thread-root id for threads (`threading.sessionScope: "thread"`)                                |
+| C3  | Confirm claim (writes, post-#72) | `docker logs openclaw --since <t> \| grep "before_dispatch claimed CONFIRM"`                                                                                | scopelybot (not another bot) claimed the CONFIRM; ~sub-second latency                                                                  |
+| C4  | Tool execution                   | `/root/.openclaw/workspace/scopelybot/audit.jsonl` (host path on prod; survives restarts)                                                                   | `tool`, `params` (redacted), `resultSummary`, `durationMs` — the tool-level data-out contract                                          |
+| C5  | Staging (writes)                 | audit `resultSummary: "staged: awaiting confirmation"` + the ⚠️ prompt in-channel                                                                           | prompt is threaded under the request, names the exact target + `CONFIRM <code>`; code appears ONLY here, never in an LLM reply         |
+| C6  | Backend effect                   | prod scopely containers: `docker logs scopely-scopely-backend-1 --since <t>` for the API hit; independent oracle via read-back (see §2)                     | the API call happened, status code, and the state actually changed / matches                                                           |
+| C7  | Reply out                        | channel read (Zoom MCP `read_channel`, key on channel id `feaf3140540745b9b0f9e82fdc26ebee`)                                                                | delivered text verbatim, threading correct, plain-text (no Markdown artifacts), no code relayed by the LLM, no false NO_REPLY dead-end |
+| C8  | Gateway errors                   | `docker logs openclaw --since <t>`                                                                                                                          | no FailoverError / reasoning_effort 400s / hook errors attributable to the scenario                                                    |
+
+Timing tells (from the 2026-07-20 incident forensics): a deterministic hook reply
+lands **<1s** after webhook receipt; an LLM turn takes multiple seconds. Use the
+gap to attribute which path produced a reply.
+
+## 2. The oracle — validating "expected data out"
+
+The bot's answer is only PASS when it matches an **independent source of truth**,
+not merely when it sounds plausible:
+
+- **Reads** (counts, lists, statuses): re-derive the value directly from the
+  backend — `docker exec scopely-scopely-backend-1 python manage.py shell -c
+"<read-only ORM query>"` on prod, or the equivalent GET via the BFF. The bot's
+  number must equal the oracle's number at the same timestamp (state can drift;
+  pull the oracle within the same minute).
+- **Writes**: staging is validated at C5; the effect is validated after CONFIRM
+  by reading the record back (oracle read) and by the backend log line (C6).
+  A write scenario is NOT done at "✅ Done" in chat — done means the row changed.
+- **Failure honesty**: when the true answer is "not found / source down", the
+  contract is an HONEST reply that says so and names the next step — a fabricated
+  or smoothed-over answer is a FAIL even if it reads well.
+
+## 3. Execution protocol — one scenario at a time
+
+1. Record UTC start time. Note which code is live (git SHA on prod checkout +
+   container start time) — contracts differ pre/post deploy of PRs #70/#72/#73.
+2. Send the trigger message in vipbot_prod (verbatim from the corpus row).
+3. Collect evidence at every checkpoint in the row's contract (C1..C8 as
+   applicable). Paste actual log lines/values into the results log (§6) —
+   descriptions of evidence are not evidence.
+4. Compare against the row's expected-out contract, including the oracle value.
+5. Mark **PASS** only when all checkpoints match. Anything else is **FAIL** with
+   the failing checkpoint named — file the defect (GitHub issue or PR) before
+   moving on, unless the failure is a known, already-tracked gap.
+6. Only then proceed to the next scenario. Never batch sends: overlapping
+   scenarios contaminate session state, comfort messages, and thread anchors.
+
+Pre-live gate (no channel traffic, safe anytime): the in-container routing
+harness `extensions/test-capture/harness/cases-scopely-reads.mjs` (36 genie-style
+read rows; asserts spoke+tool routing, suppresses egress, asserts no mutations).
+Run it after every deploy BEFORE live scenarios: it catches routing regressions
+without touching the channel.
+
+## 4. Scenario corpus — mined from real traffic
+
+Tiers: **T1** = valid against current prod code, run now. **T2** = validates the
+PR stack (#72 confirm fix, #73 approver grants, #71 name search) — run after
+deploy; running early documents the known-broken baseline.
+Sources: `[incident]` = 2026-07-20 live exchange (verbatim), `[audit]` =
+reconstructed from the 5-week audit trail, `[harness]` = genie matrix phrasing.
+
+### T1 — read plane (current code)
+
+| ID  | Trigger (data in)                                                                     | Expected route/tools                                                    | Expected data out                                                                                                                                                                                                      | Checkpoints                     |
+| --- | ------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| S1  | "are the scopely systems healthy right now?" `[harness]`                              | coordinator → scopely-observe → `scopely_health_check`                  | reply states healthy/unhealthy consistent with oracle: `curl -s https://vip.pscx.ai/health/` (+ components)                                                                                                            | C1,C4,C6-oracle,C7              |
+| S2  | "Check the users in the system, look for Josh Rickerd" `[incident]`                   | scopely-users → `scopely_list_users` (search)                           | HONEST not-found + asks for email (name search known-broken pre-#71; post-#71 expect per-token retry `note`). Oracle: ORM `User.objects.filter(...)` count                                                             | C1,C4,C6-oracle,C7              |
+| S3  | "look up jrickert@unified-team.com" (follow-up, in S2's thread) `[incident]`          | scopely-users → `scopely_list_users` → `scopely_get_user`               | dossier for user id 47: email, org, role, last_login — every field equal to oracle read of user 47                                                                                                                     | C1,C2(thread),C4,C6-oracle,C7   |
+| S4  | "have there been any errors recently?" `[audit 6×]`                                   | scopely-observe → `scopely_recent_errors`                               | error list/summary; spot-check 1-2 entries against backend logs (same window)                                                                                                                                          | C1,C4,C6,C7                     |
+| S5  | "what project types does aircall have?" `[audit — top usage: 45× list_project_types]` | scopely-deploy (or vendors for terms) → `scopely_list_project_types`    | project types for aircall matching oracle (ORM: vendor aircall → project types)                                                                                                                                        | C1,C4,C6-oracle,C7              |
+| S6  | "search github for open login issues on scopely" `[audit 31×, error-prone]`           | scopely-github → `scopely_gh_search_issues`                             | correct repo `cloudwarriors-ai/scopely` on FIRST attempt (audit shows repeated `Scopely/scopelybot`, `scopely/scopely` guesses — repo-not-allowed errors = FAIL); result count sane vs `gh search issues` run directly | C1,C4(no repo errors),C7        |
+| S7  | "check the backend logs for errors in the last 10 minutes" `[audit, error-prone]`     | scopely-observe → `scopely_list_services` then `scopely_trace_logs`     | correct container name (`scopely-scopely-backend-1`) on first trace attempt (audit 2026-07-18 shows 4 failed guesses); findings consistent with direct `docker logs`                                                   | C1,C4,C6,C7                     |
+| S8  | "find the user tyler.pratt@cloudwarriors.ai — is his account active?" `[audit]`       | scopely-users → `scopely_list_users(search=email)` → `scopely_get_user` | exactly ONE matching user; **known anomaly to validate**: audit 2026-07-06 shows `role`+`search` combos returning "32 items" (whole table). If reproduced → file backend/tool bug                                      | C1,C4(item count!),C6-oracle,C7 |
+| S9  | Follow-up question in an S3 thread after the dossier ("what org is he in?")           | coordinator answers or re-routes; **NO false NO_REPLY**                 | a real threaded reply (Slice 1 IDENTITY fix contract: silence = FAIL)                                                                                                                                                  | C1,C2,C7                        |
+
+### T2 — write plane + confirm gate (post-deploy of #72/#73)
+
+| ID  | Trigger (data in)                                                                                                                    | Expected route/tools                                             | Expected data out                                                                                                                                                                                                      | Checkpoints                  |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| S10 | Channel-ROOT: "reset the password for jrickert@unified-team.com" then approver replies `CONFIRM <code>` at root `[incident-derived]` | scopely-users → `scopely_reset_user_password` → stage → confirm  | ⚠️ prompt threaded, names user+id; on CONFIRM: "✅ Done", audit `scopely_confirm_execute` ok, backend log shows POST reset, reset email flow triggered. NO temp password in chat (secret policy)                       | C1,C3,C4,C5,C6,C7            |
+| S11 | Same as S10 but the ENTIRE exchange inside a thread `[incident replay — the 8248 failure]`                                           | same                                                             | CONFIRM accepted from the thread (thread-session conversationId ≠ channel JID — the #72 regression); code executes, no false "expired"                                                                                 | C1,C2(thread),C3,C4,C5,C6,C7 |
+| S12 | Non-approver replies `CONFIRM <code>` to a live staged action                                                                        | before_dispatch (deterministic)                                  | "Write confirmation is not authorized…"; pending NOT consumed — approver can still CONFIRM the same code afterwards and it executes                                                                                    | C3,C4,C7                     |
+| S13 | Approver replies `CONFIRM 9999` (no such code)                                                                                       | before_dispatch                                                  | "No pending action for code 9999…" — and verify via C3 that SCOPELYBOT claimed it (pre-#72 pulsebot stole these)                                                                                                       | C3,C7                        |
+| S14 | "make john.rudolph@cloudwarriors.ai an approver" → Chad replies `CONFIRM <code>` `[#73]`                                             | scopely-admin/users → `scopely_grant_approver` → stage → confirm | prompt shows handle + Zoom id `wc7WZVkGRMGcNWOYTksTvQ`; on CONFIRM: grant persisted in `/root/.openclaw/workspace/scopelybot-approvers.json` with `grantedBy` = Chad's operator id; `scopely_list_approvers` shows him | C1,C3,C4,C5,C7 + state file  |
+| S15 | After S14: Rudy stages any small write and confirms it HIMSELF                                                                       | confirm gate                                                     | executes — grant effective without restart                                                                                                                                                                             | C3,C4,C6,C7                  |
+| S16 | "revoke approver access for john.rudolph@cloudwarriors.ai" → CONFIRM                                                                 | `scopely_revoke_approver`                                        | grant removed from state file; Rudy's next CONFIRM → "not authorized"                                                                                                                                                  | C4,C5,C7 + state file        |
+| S17 | Grant for someone who never posted in-channel                                                                                        | `scopely_grant_approver`                                         | fails fast, no staging, instructs the person to post a message first                                                                                                                                                   | C4(no stage),C7              |
+| S18 | Let a staged action expire (>5 min), then CONFIRM                                                                                    | before_dispatch                                                  | honest expiry message; audit shows no execution                                                                                                                                                                        | C3,C4,C7                     |
+
+### Latent defects already found while mining (file regardless of scenarios)
+
+1. **`scopely_list_users` role+search anomaly** — audit 2026-07-06 17:48/17:54:
+   `{"role":"user","search":"<full email>"} → "32 items"` (entire table) while
+   2026-07-20 the same search shape returned "1 items". Validate via S8; if the
+   `role` param disables `search` (backend or tool bug), file it.
+2. **`scopely_unlock_user(99999999) → "ok"`** — audit 2026-07-18 14:34: unlock of
+   a nonexistent user id reported ok at the tool layer. Expected: staged then
+   HTTP 404 surfaced on confirm, or a fail-fast. Reproduce post-deploy (T2 add-on).
+3. **GH repo guessing** (S6) and **container-name guessing** (S7) — spoke prompts
+   lack the defaults; candidates for spoke IDENTITY.md lines at deploy time.
+
+## 5. Where this corpus came from (recoverable provenance)
+
+- Channel: Zoom MCP `read_channel` on `feaf3140540745b9b0f9e82fdc26ebee`
+  (window limited — mostly the 2026-07-20 incident exchange, captured verbatim).
+- Gateway payloads: `/tmp/openclaw-0/openclaw-2026-07-{19,20}.log` in-container
+  (2-day retention — capture promptly after each scenario run).
+- Audit trail: `/root/.openclaw/workspace/scopelybot/audit.jsonl` (268 entries,
+  2026-06-13 → 2026-07-20; survives restarts; params redacted at write time).
+
+## 6. Results log
+
+Append one row per executed scenario run. Evidence = pasted values, not prose.
+
+| Date (UTC)             | ID  | Code live (SHA) | Result   | Evidence refs / failing checkpoint                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ---------------------- | --- | --------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-07-20 16:46–16:47 | S1  | `0bd57a5bcf`    | **PASS** | C1 webhook 16:46:58Z msg id `b7da531e…` verbatim; C4 audit 16:47:02.750Z `scopely_health_check` ok 144ms; C6 oracle `api.vip.pscx.ai/health/` `{"status":"ok","version":"be1e6beb30a2"}`; C7 reply 16:47:06Z threaded, "…service status is OK…" — 8s e2e; comfort 16:47:00Z threaded                                                                                                                                                                                                                       |
+| 2026-07-20 16:48–16:49 | S5  | `0bd57a5bcf`    | **PASS** | C1 msg id `0366fedc…`; C4 audit 16:49:08Z `scopely_list_project_types(aircall)` "2 items" 551ms + `scopely_get_vendor(aircall)` ok; C6 oracle ORM: project types = {ucaas(112), ccaas(96)} both enabled=False; vendor `{'status':'active','is_source':True,'is_destination':True}`; C7 reply 16:49:14Z: "two project types: UCaaS Migration — disabled, CCaaS Migration — disabled… active and supports both source and destination roles" — every claim equals oracle, unicode bullets, threaded, 16s e2e |
