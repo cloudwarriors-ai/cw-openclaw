@@ -7,7 +7,10 @@
 // evidence-backed choice: OWASP LLM01's own mitigation ordering is
 // deterministic-code-first; see docs/reference/supervisor-v2-research.md Q1).
 //
-// Two action tiers:
+// Three action tiers (rate limit added in Slice E P4, own flag):
+//   - RATE LIMIT (handled:true + deterministic throttle text): per-sender
+//     sliding window (SCOPELYBOT_RATE_LIMIT=1). Never applies to CONFIRM
+//     replies — a staged-write confirmation must always reach the gate.
 //   - HARD BLOCK (handled:true + deterministic refusal): asks for the bot to
 //     produce/reveal a CONFIRM code. The IDENTITY layer already refuses these
 //     (S20 live-fire), but that refusal is model-dependent — this makes it
@@ -83,6 +86,48 @@ const INBOUND_SECRET_RES: Array<{ id: string; re: RegExp }> = [
   { id: "api_key", re: /\bsk-[A-Za-z0-9]{20,}/ },
 ];
 
+// --- rate limit (Slice E P4) -------------------------------------------------
+// Per-sender sliding window, deterministic and in-memory. Flag-gated
+// separately from the guard so ops can tune exposure per surface. CONFIRM
+// replies are never rate-limited (the skip above runs first): a human
+// confirming a staged write must always reach the gate.
+export function rateLimitEnabled(): boolean {
+  return process.env.SCOPELYBOT_RATE_LIMIT === "1";
+}
+function rateLimitMax(): number {
+  const raw = Number(process.env.SCOPELYBOT_RATE_LIMIT_N ?? "10");
+  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 10;
+}
+function rateLimitWindowMs(): number {
+  const raw = Number(process.env.SCOPELYBOT_RATE_LIMIT_WINDOW_MS ?? String(60_000));
+  return Number.isFinite(raw) && raw > 0 ? raw : 60_000;
+}
+
+const RATE_LIMIT_TEXT =
+  "You're sending requests faster than I can process them — give me a moment to catch up, " +
+  "then try again.";
+
+// senderId → recent message timestamps. Bounded: entries older than the
+// window are pruned per hit; the map itself is pruned past 500 senders.
+const senderHits = new Map<string, number[]>();
+
+function isRateLimited(senderId: string, now: number): boolean {
+  const windowStart = now - rateLimitWindowMs();
+  const hits = (senderHits.get(senderId) ?? []).filter((t) => t >= windowStart);
+  hits.push(now);
+  senderHits.set(senderId, hits);
+  if (senderHits.size > 500) {
+    const oldest = senderHits.keys().next().value;
+    if (oldest !== undefined) senderHits.delete(oldest);
+  }
+  return hits.length > rateLimitMax();
+}
+
+// Test hook: clear rate-limit state between cases.
+export function resetInboundGuardStateForTest(): void {
+  senderHits.clear();
+}
+
 export type InboundGuardResult = { handled: true; text: string } | undefined;
 
 // Screen one inbound message. Caller (index.ts) has already proven the
@@ -92,10 +137,10 @@ export function guardInboundMessage(
   params: { text: string; senderId: string; sessionKey?: string },
   deps: { logger: AuditLogger; now?: () => number },
 ): InboundGuardResult {
-  if (!inboundGuardEnabled()) return undefined;
   const text = params.text ?? "";
   if (!text.trim()) return undefined;
-  // A CONFIRM reply belongs to the confirm gate — never claim or log it here.
+  // A CONFIRM reply belongs to the confirm gate — never claim, log, or
+  // rate-limit it here.
   if (CONFIRM_REPLY_RE.test(text.trim())) return undefined;
 
   const now = deps.now ? deps.now() : Date.now();
@@ -107,6 +152,16 @@ export function guardInboundMessage(
       params: { signal, sessionKey: params.sessionKey ?? "" },
       resultSummary: `${action}: ${signal}`,
     });
+
+  // Rate limit (P4, own flag): deterministic per-sender window. Runs before
+  // the content checks — a flooding sender gets the throttle text, not a
+  // model dispatch.
+  if (rateLimitEnabled() && params.senderId && isRateLimited(params.senderId, now)) {
+    log("rate_limited", "blocked");
+    return { handled: true, text: RATE_LIMIT_TEXT };
+  }
+
+  if (!inboundGuardEnabled()) return undefined;
 
   // Hard block: confirm-code fabrication.
   if (CONFIRM_FABRICATION_RES.some((re) => re.test(text))) {

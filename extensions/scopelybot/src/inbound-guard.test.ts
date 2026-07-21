@@ -6,23 +6,35 @@
 // (injection phrasings + secret pastes are logged but never suppressed).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { guardInboundMessage, inboundGuardEnabled } from "./inbound-guard.js";
+import {
+  guardInboundMessage,
+  inboundGuardEnabled,
+  resetInboundGuardStateForTest,
+} from "./inbound-guard.js";
 
 const auditMock = vi.fn();
 
-function guard(text: string) {
+function guard(text: string, opts?: { senderId?: string; now?: number }) {
   return guardInboundMessage(
-    { text, senderId: "Mb4vcQ4YQUaQKJjoY4vntQ", sessionKey: "agent:scopelybot:zoom:channel:x" },
-    { logger: auditMock, now: () => 1_000_000 },
+    {
+      text,
+      senderId: opts?.senderId ?? "Mb4vcQ4YQUaQKJjoY4vntQ",
+      sessionKey: "agent:scopelybot:zoom:channel:x",
+    },
+    { logger: auditMock, now: () => opts?.now ?? 1_000_000 },
   );
 }
 
 beforeEach(() => {
+  resetInboundGuardStateForTest();
   auditMock.mockClear();
   process.env.SCOPELYBOT_INBOUND_GUARD = "1";
 });
 afterEach(() => {
   delete process.env.SCOPELYBOT_INBOUND_GUARD;
+  delete process.env.SCOPELYBOT_RATE_LIMIT;
+  delete process.env.SCOPELYBOT_RATE_LIMIT_N;
+  delete process.env.SCOPELYBOT_RATE_LIMIT_WINDOW_MS;
 });
 
 describe("gating", () => {
@@ -112,5 +124,53 @@ describe("signal tier — logged, never suppressed", () => {
   it("does not log ordinary traffic at all", () => {
     expect(guard("what's the health status of the pricing engine?")).toBeUndefined();
     expect(auditMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("rate limit (P4, own flag)", () => {
+  beforeEach(() => {
+    process.env.SCOPELYBOT_RATE_LIMIT = "1";
+    process.env.SCOPELYBOT_RATE_LIMIT_N = "3";
+  });
+
+  it("throttles a sender past N messages in the window, per sender", () => {
+    for (let i = 0; i < 3; i++) {
+      expect(guard(`question ${i}`, { now: 1_000_000 + i })).toBeUndefined();
+    }
+    const res = guard("question 4", { now: 1_000_010 });
+    expect(res).toMatchObject({ handled: true });
+    expect(res?.text).toContain("faster than I can process");
+    expect(auditMock).toHaveBeenCalledWith(
+      expect.objectContaining({ resultSummary: "blocked: rate_limited" }),
+    );
+    // A different sender is unaffected.
+    expect(guard("hello", { senderId: "other-user", now: 1_000_020 })).toBeUndefined();
+  });
+
+  it("the window slides — old messages age out", () => {
+    for (let i = 0; i < 3; i++) guard(`q${i}`, { now: 1_000_000 + i });
+    // Past the 60s window the count resets.
+    expect(guard("later question", { now: 1_000_000 + 61_000 })).toBeUndefined();
+  });
+
+  it("NEVER rate-limits a CONFIRM reply — the gate must always execute", () => {
+    for (let i = 0; i < 10; i++) guard(`flood ${i}`, { now: 1_000_000 + i });
+    expect(guard("CONFIRM 4821", { now: 1_000_020 })).toBeUndefined();
+    expect(auditMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ params: expect.objectContaining({ signal: "confirm" }) }),
+    );
+  });
+
+  it("runs even when the content guard flag is off (independent flags)", () => {
+    delete process.env.SCOPELYBOT_INBOUND_GUARD;
+    for (let i = 0; i < 3; i++) guard(`q${i}`, { now: 1_000_000 + i });
+    expect(guard("q4", { now: 1_000_005 })).toMatchObject({ handled: true });
+  });
+
+  it("is fully inert when its flag is unset", () => {
+    delete process.env.SCOPELYBOT_RATE_LIMIT;
+    for (let i = 0; i < 20; i++) {
+      expect(guard(`q${i}`, { now: 1_000_000 + i })).toBeUndefined();
+    }
   });
 });
