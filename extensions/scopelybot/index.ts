@@ -17,6 +17,8 @@ import { registerPassthroughTools } from "./src/passthrough-tools.js";
 import { registerPricingTools } from "./src/pricing-tools.js";
 import { registerScopelyTools } from "./src/scopely-tools.js";
 import { registerScopingCardTools } from "./src/scoping-card-tools.js";
+import { registerSessionLifecycleTools } from "./src/session-lifecycle-tools.js";
+import { registerSowTools } from "./src/sow-tools.js";
 import { superviseFinalize } from "./src/supervisor.js";
 import { registerSupportTools } from "./src/support-tools.js";
 import { registerUserMaintenanceTools } from "./src/user-maintenance-tools.js";
@@ -97,6 +99,8 @@ const plugin = {
     registerDeploymentConfigTools(optionalApi, logger);
     registerScopingCardTools(optionalApi, logger);
     registerSupportTools(optionalApi, logger, pluginConfig);
+    registerSessionLifecycleTools(optionalApi, logger);
+    registerSowTools(optionalApi, logger);
     registerApproverTools(optionalApi, logger, approverStore);
 
     // Zoom card bodies do not render Markdown. Keep this rewrite at the Scopely
@@ -211,7 +215,7 @@ const plugin = {
     }
 
     console.log(
-      "[scopelybot] Registered 99 tools (11 observability + 6 admin + 4 monitoring + 6 GH + 1 correlation + 2 passthrough + 9 user-maintenance + 8 org + 15 pricing + 13 vendor-config + 8 deployment-config + 5 scoping-card + 11 support)",
+      "[scopelybot] Registered 115 tools (11 observability + 6 admin + 4 monitoring + 6 GH + 1 correlation + 2 passthrough + 9 user-maintenance + 8 org + 15 pricing + 13 vendor-config + 8 deployment-config + 5 scoping-card + 11 support + 11 session-lifecycle + 5 sow)",
     );
   },
 };
