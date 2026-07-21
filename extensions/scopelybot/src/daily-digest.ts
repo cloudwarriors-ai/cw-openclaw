@@ -219,24 +219,37 @@ export function chunkDigestText(text: string, limit = CHUNK_LIMIT): string[] {
 // as the confirm prompt and escalation posts), so the marker is written after
 // the send loop regardless — a Zoom outage costs that day's digest rather
 // than producing a retry storm against a down API.
+//
+// Overlap guard: the interval fires every minute but a build against a slow
+// backend can exceed that — a second tick would read the still-unwritten
+// marker and double-post. Single-process module state is sufficient (one
+// gateway process owns the interval).
+let tickInFlight = false;
+
 export async function runDigestTick(
   workspaceDir: string,
   deps?: { now?: () => number; send?: typeof sendScopelyText },
 ): Promise<boolean> {
   const now = deps?.now ? deps.now() : Date.now();
+  if (tickInFlight) return false;
   if (!digestDue(workspaceDir, now)) return false;
   const channel = process.env.SCOPELYBOT_ZOOM_CHANNEL ?? "";
   if (!channel) return false;
 
-  const state = readDigestState(workspaceDir);
-  const digest = await buildDigest(asRecord(state.statsSnapshot));
-  const send = deps?.send ?? sendScopelyText;
-  for (const chunk of chunkDigestText(digest.text)) {
-    await send(channel, chunk);
+  tickInFlight = true;
+  try {
+    const state = readDigestState(workspaceDir);
+    const digest = await buildDigest(asRecord(state.statsSnapshot));
+    const send = deps?.send ?? sendScopelyText;
+    for (const chunk of chunkDigestText(digest.text)) {
+      await send(channel, chunk);
+    }
+    writeDigestState(workspaceDir, {
+      lastPostedDate: utcDateKey(now),
+      ...(digest.statsSnapshot ? { statsSnapshot: digest.statsSnapshot } : {}),
+    });
+    return true;
+  } finally {
+    tickInFlight = false;
   }
-  writeDigestState(workspaceDir, {
-    lastPostedDate: utcDateKey(now),
-    ...(digest.statsSnapshot ? { statsSnapshot: digest.statsSnapshot } : {}),
-  });
-  return true;
 }
