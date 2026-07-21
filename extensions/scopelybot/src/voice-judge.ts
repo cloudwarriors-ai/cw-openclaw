@@ -29,6 +29,15 @@
 //      per-run once guard here — the harness does not enforce per-check
 //      retry budgets, and an LLM judge is non-deterministic across passes.
 //   7. Fail-open everywhere: judge error/timeout/malformed = no opinion.
+//
+// ACCEPTED RESIDUAL (audit 2026-07-21, monitored): the fact firewall blocks
+// token-expressed facts (digits/emails/ids) but not WORD-expressed ones — a
+// guard-passing instruction like "sound more positive" could in principle
+// nudge the author into flipping a polarity ("denied"→"approved"). Layered
+// mitigations: judge sees a REDACTED draft only; temp 0; the fixed
+// fact-preserving frame; the revised draft re-runs the full deterministic
+// plane (leak + grounding checks). Watch `revise: voice` audit entries for
+// drift; if observed, narrow the remit to formatting-only.
 
 import type { AuditLogger } from "./audit.js";
 import { redactText } from "./redaction.js";

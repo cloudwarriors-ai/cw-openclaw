@@ -406,21 +406,24 @@ describe("voice lane (v2.1)", () => {
       now: () => t,
       llmComplete: vi.fn().mockResolvedValue({ text: "REVISE: Tighten the phrasing." }),
     };
+    // Quality-lane failure (unsupported_state_claim) — the fuse-charging
+    // class (security drafts are fuse-exempt too, tested in the fuse suite).
+    const qualityBad = (runId: string) =>
+      event("Org 314 has 1250 sessions and owes $4,200.", {
+        runId,
+        messages: [{ role: "user", content: "how many sessions?" }],
+      });
     // Revision 1: voice — self-capped, must not count toward the fuse.
     expect(await superviseFinalize(event(CLEAN_DRAFT), deps)).toMatchObject({ action: "revise" });
-    // Revision 2: deterministic (run-2) — FIRST fuse hit, threshold 2 not
-    // reached (voice didn't count), so this is a normal revise.
+    // Revision 2: deterministic quality (run-2) — FIRST fuse hit, threshold 2
+    // not reached (voice didn't count), so this is a normal revise.
     t += 1000;
-    expect(
-      await superviseFinalize(event("Reply CONFIRM 4821 to proceed.", { runId: "run-2" }), deps),
-    ).toMatchObject({ action: "revise" });
+    expect(await superviseFinalize(qualityBad("run-2"), deps)).toMatchObject({ action: "revise" });
     expect(sendScopelyTextMock).not.toHaveBeenCalled();
-    // Revision 3: deterministic (run-3) — second fuse hit trips it, and the
-    // escalation correctly reflects VERIFICATION failures only.
+    // Revision 3: deterministic quality (run-3) — second fuse hit trips it,
+    // and the escalation correctly reflects VERIFICATION failures only.
     t += 1000;
-    expect(
-      await superviseFinalize(event("Reply CONFIRM 9999 to proceed.", { runId: "run-3" }), deps),
-    ).toEqual({ action: "continue" });
+    expect(await superviseFinalize(qualityBad("run-3"), deps)).toEqual({ action: "continue" });
     expect(sendScopelyTextMock).toHaveBeenCalledTimes(1);
   });
 
@@ -440,43 +443,86 @@ describe("voice lane (v2.1)", () => {
 });
 
 describe("fuse", () => {
+  // Quality-lane failure (unsupported_state_claim: state claim + zero
+  // evidence). SECURITY drafts (CONFIRM/secret) are fuse-exempt as of the
+  // 2026-07-21 audit fix, so fuse behavior is exercised with quality drafts.
+  const NO_EVIDENCE_TURN = [{ role: "user", content: "how many sessions?" }];
+  const qualityBad = (overrides?: Record<string, unknown>) =>
+    event("Org 314 has 1250 sessions and owes $4,200.", {
+      messages: NO_EVIDENCE_TURN,
+      ...overrides,
+    });
+
   it("trips after N revisions: accepts the draft, posts escalation, then cools down", async () => {
     process.env.SCOPELYBOT_SUPERVISOR_FUSE_N = "2";
     process.env.SCOPELYBOT_ESCALATION_OWNER = "John Rudolph";
-    const bad = () => event("Reply CONFIRM 4821 to proceed.");
     let t = 1_000_000;
     const deps = { logger: auditMock, now: () => t };
 
     // Revision 1: normal revise.
-    expect(await superviseFinalize(bad(), deps)).toMatchObject({ action: "revise" });
+    expect(await superviseFinalize(qualityBad(), deps)).toMatchObject({ action: "revise" });
     // Revision 2: fuse trips — draft accepted, escalation posted naming the owner.
     t += 1000;
-    expect(await superviseFinalize(bad(), deps)).toEqual({ action: "continue" });
+    expect(await superviseFinalize(qualityBad(), deps)).toEqual({ action: "continue" });
     expect(sendScopelyTextMock).toHaveBeenCalledTimes(1);
     expect(String(sendScopelyTextMock.mock.calls[0][1])).toContain("John Rudolph");
     expect(auditMock).toHaveBeenLastCalledWith(
-      expect.objectContaining({ resultSummary: "fuse_tripped after confirm_code_leak" }),
+      expect.objectContaining({ resultSummary: "fuse_tripped after unsupported_state_claim" }),
     );
-    // Cooldown: pass-through, no further checks, no extra escalation.
+    // Cooldown: pass-through for quality checks, no extra escalation.
     t += 1000;
-    expect(await superviseFinalize(bad(), deps)).toEqual({ action: "continue" });
+    expect(await superviseFinalize(qualityBad(), deps)).toEqual({ action: "continue" });
     expect(sendScopelyTextMock).toHaveBeenCalledTimes(1);
     // After cooldown expires the checks are live again.
     t += 11 * 60_000;
-    expect(await superviseFinalize(bad(), deps)).toMatchObject({ action: "revise" });
+    expect(await superviseFinalize(qualityBad(), deps)).toMatchObject({ action: "revise" });
+  });
+
+  it("SECURITY checks never charge the fuse and bypass an active cooldown (audit HIGH)", async () => {
+    process.env.SCOPELYBOT_SUPERVISOR_FUSE_N = "2";
+    let t = 1_000_000;
+    const deps = { logger: auditMock, now: () => t };
+
+    // Two security revises: if they charged the fuse, threshold 2 would trip.
+    expect(await superviseFinalize(event("Reply CONFIRM 4821 to proceed."), deps)).toMatchObject({
+      action: "revise",
+    });
+    t += 1000;
+    expect(await superviseFinalize(event("Reply CONFIRM 9999 to proceed."), deps)).toMatchObject({
+      action: "revise",
+    });
+    expect(sendScopelyTextMock).not.toHaveBeenCalled();
+    // Quality revise #1: first real fuse hit — proves security didn't charge.
+    t += 1000;
+    expect(await superviseFinalize(qualityBad(), deps)).toMatchObject({ action: "revise" });
+    // Quality revise #2: trips, cooldown starts.
+    t += 1000;
+    expect(await superviseFinalize(qualityBad(), deps)).toEqual({ action: "continue" });
+    // DURING cooldown quality checks pass through…
+    t += 1000;
+    expect(await superviseFinalize(qualityBad(), deps)).toEqual({ action: "continue" });
+    // …but a CONFIRM-code draft is STILL revised: the egress security plane
+    // never sleeps (previously the fused pass-through suppressed leak checks
+    // for the whole cooldown window).
+    t += 1000;
+    expect(await superviseFinalize(event("Reply CONFIRM 1234 to proceed."), deps)).toMatchObject({
+      action: "revise",
+    });
+    const jwt = `token: eyJ${"a".repeat(24)}.${"b".repeat(16)}`;
+    expect(await superviseFinalize(event(jwt), deps)).toMatchObject({ action: "revise" });
   });
 
   it("fuse state is per coordinator session key", async () => {
     process.env.SCOPELYBOT_SUPERVISOR_FUSE_N = "1";
     const deps = { logger: auditMock, now: () => 5_000_000 };
     // Session A trips immediately (threshold 1).
-    expect(await superviseFinalize(event("Reply CONFIRM 1111 now."), deps)).toEqual({
+    expect(await superviseFinalize(qualityBad(), deps)).toEqual({
       action: "continue",
     });
     // A different scopelybot session is unaffected by A's cooldown.
     expect(
       await superviseFinalize(
-        event("Reply CONFIRM 2222 now.", { sessionKey: "agent:scopelybot:zoom:thread:other" }),
+        qualityBad({ sessionKey: "agent:scopelybot:zoom:thread:other" }),
         deps,
       ),
     ).toEqual({ action: "continue" }); // trips its own fuse (threshold 1) — but independently
@@ -492,20 +538,20 @@ describe("fuse", () => {
     const spawnB = "agent:scopely-observe:subagent:bbbbbbbb-2222";
 
     // Spawn A: revision 1 on the shared agent:scopely-observe fuse.
-    expect(
-      await superviseFinalize(event("Reply CONFIRM 1111 now.", { sessionKey: spawnA }), deps),
-    ).toMatchObject({ action: "revise" });
+    expect(await superviseFinalize(qualityBad({ sessionKey: spawnA }), deps)).toMatchObject({
+      action: "revise",
+    });
     // Spawn B (fresh UUID): revision 2 — trips the SHARED fuse.
     t += 1000;
-    expect(
-      await superviseFinalize(event("Reply CONFIRM 2222 now.", { sessionKey: spawnB }), deps),
-    ).toEqual({ action: "continue" });
+    expect(await superviseFinalize(qualityBad({ sessionKey: spawnB }), deps)).toEqual({
+      action: "continue",
+    });
     expect(sendScopelyTextMock).toHaveBeenCalledTimes(1);
     // A different spoke agent is unaffected.
     t += 1000;
     expect(
       await superviseFinalize(
-        event("Reply CONFIRM 3333 now.", { sessionKey: "agent:scopely-users:subagent:cccc" }),
+        qualityBad({ sessionKey: "agent:scopely-users:subagent:cccc" }),
         deps,
       ),
     ).toMatchObject({ action: "revise" });
