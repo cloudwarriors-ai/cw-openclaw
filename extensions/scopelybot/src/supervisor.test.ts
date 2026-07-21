@@ -88,6 +88,7 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env.SCOPELYBOT_SUPERVISOR;
   delete process.env.SCOPELYBOT_SUPERVISOR_V2;
+  delete process.env.SCOPELYBOT_SUPERVISOR_VOICE;
   delete process.env.SCOPELYBOT_ZOOM_CHANNEL;
   delete process.env.SCOPELYBOT_SUPERVISOR_FUSE_N;
   delete process.env.SCOPELYBOT_ESCALATION_OWNER;
@@ -297,12 +298,17 @@ describe("ungrounded_claim (v2)", () => {
 });
 
 describe("revise shape", () => {
-  it("returns a harness-budgeted single retry keyed per turn+check", async () => {
+  it("carries the actionable instruction in `reason` — the only field the harness feeds back", async () => {
     const res = await superviseFinalize(event("Reply CONFIRM 4821 to proceed."), {
       logger: auditMock,
     });
     expect(res).toMatchObject({
       action: "revise",
+      // SUBSTRATE PIN: run.ts builds the retry prompt from `reason` alone
+      // (buildBeforeAgentFinalizeRetryPrompt); retry.{instruction,
+      // idempotencyKey,maxAttempts} are typed but unconsumed by the harness.
+      // The crafted instruction must therefore BE the reason.
+      reason: expect.stringContaining("Never include, repeat, or invent CONFIRM codes"),
       retry: {
         idempotencyKey: "scopelybot-supervisor:turn-1:confirm_code_leak",
         maxAttempts: 1,
@@ -314,6 +320,106 @@ describe("revise shape", () => {
         resultSummary: "revise: confirm_code_leak",
       }),
     );
+  });
+});
+
+describe("voice lane (v2.1)", () => {
+  // Long enough to clear voice-judge skip predicates; grounded against
+  // GROUNDED_TURN's corpus ("42") so the deterministic plane stays clean.
+  const CLEAN_DRAFT =
+    "There are 42 active sessions right now. Everything else in the pipeline looks healthy " +
+    "and no approvals are waiting on you.";
+
+  beforeEach(() => {
+    process.env.SCOPELYBOT_SUPERVISOR_VOICE = "1";
+  });
+
+  it("is inert without llmComplete wired (flag alone cannot activate it)", async () => {
+    const res = await superviseFinalize(event(CLEAN_DRAFT), { logger: auditMock });
+    expect(res).toBeUndefined();
+  });
+
+  it("judges only drafts the deterministic plane already passed", async () => {
+    const llmComplete = vi.fn().mockResolvedValue({ text: "PASS" });
+    const res = await superviseFinalize(event("Reply CONFIRM 4821 to proceed."), {
+      logger: auditMock,
+      llmComplete,
+    });
+    expect(res).toMatchObject({ action: "revise" }); // deterministic finding wins
+    expect(llmComplete).not.toHaveBeenCalled();
+  });
+
+  it("never judges spoke drafts — coordinator (human-facing) only", async () => {
+    process.env.SCOPELYBOT_SUPERVISOR_V2 = "1";
+    const llmComplete = vi.fn().mockResolvedValue({ text: "PASS" });
+    const res = await superviseFinalize(
+      event(CLEAN_DRAFT, { sessionKey: SPOKE_SESSION }),
+      { logger: auditMock, llmComplete },
+    );
+    expect(res).toBeUndefined();
+    expect(llmComplete).not.toHaveBeenCalled();
+  });
+
+  it("voice REVISE → framed instruction rides `reason`, charges the shared fuse, audits", async () => {
+    const llmComplete = vi
+      .fn()
+      .mockResolvedValue({ text: "REVISE: Lead with the answer and drop the filler." });
+    const res = await superviseFinalize(event(CLEAN_DRAFT), { logger: auditMock, llmComplete });
+    expect(res).toMatchObject({ action: "revise" });
+    const reason = (res as { reason: string }).reason;
+    expect(reason).toContain("keeping every fact, number, name, and value exactly the same");
+    expect(reason).toContain("Lead with the answer");
+    expect(auditMock).toHaveBeenCalledWith(
+      expect.objectContaining({ tool: "scopely_supervisor", resultSummary: "revise: voice" }),
+    );
+  });
+
+  it("caps voice at ONE revision per run — the harness budget is global, the judge is non-deterministic", async () => {
+    const llmComplete = vi.fn().mockResolvedValue({ text: "REVISE: Tighten the phrasing." });
+    const first = await superviseFinalize(event(CLEAN_DRAFT), { logger: auditMock, llmComplete });
+    expect(first).toMatchObject({ action: "revise" });
+    // Second finalize pass in the SAME run (the revised draft): judge not consulted.
+    const second = await superviseFinalize(event(CLEAN_DRAFT), { logger: auditMock, llmComplete });
+    expect(second).toBeUndefined();
+    expect(llmComplete).toHaveBeenCalledTimes(1);
+    // A different run judges again.
+    const third = await superviseFinalize(event(CLEAN_DRAFT, { runId: "run-2" }), {
+      logger: auditMock,
+      llmComplete,
+    });
+    expect(third).toMatchObject({ action: "revise" });
+  });
+
+  it("voice revisions count toward the SAME fuse as deterministic checks", async () => {
+    process.env.SCOPELYBOT_SUPERVISOR_FUSE_N = "2";
+    let t = 2_000_000;
+    const deps = {
+      logger: auditMock,
+      now: () => t,
+      llmComplete: vi.fn().mockResolvedValue({ text: "REVISE: Tighten the phrasing." }),
+    };
+    // Revision 1: voice (run-1).
+    expect(await superviseFinalize(event(CLEAN_DRAFT), deps)).toMatchObject({ action: "revise" });
+    // Revision 2: deterministic (run-2) — trips the shared fuse.
+    t += 1000;
+    expect(
+      await superviseFinalize(event("Reply CONFIRM 4821 to proceed.", { runId: "run-2" }), deps),
+    ).toEqual({ action: "continue" });
+    expect(sendScopelyTextMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("judge fail-open (error/malformed) leaves the draft untouched", async () => {
+    const llmComplete = vi.fn().mockRejectedValue(new Error("boom"));
+    const res = await superviseFinalize(event(CLEAN_DRAFT), { logger: auditMock, llmComplete });
+    expect(res).toBeUndefined();
+  });
+
+  it("stays fully inert when SCOPELYBOT_SUPERVISOR_VOICE is unset (rollout gate)", async () => {
+    delete process.env.SCOPELYBOT_SUPERVISOR_VOICE;
+    const llmComplete = vi.fn().mockResolvedValue({ text: "REVISE: anything" });
+    const res = await superviseFinalize(event(CLEAN_DRAFT), { logger: auditMock, llmComplete });
+    expect(res).toBeUndefined();
+    expect(llmComplete).not.toHaveBeenCalled();
   });
 });
 

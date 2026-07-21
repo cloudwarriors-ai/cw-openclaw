@@ -3,10 +3,12 @@
 // v2 research in docs/reference/supervisor-v2-research.md).
 //
 // Wired into `before_agent_finalize`: reviews a DRAFT final reply before it is
-// accepted, and either lets it through (`continue`) or requests ONE bounded
-// revision pass (`revise` + retry.maxAttempts=1 — the harness enforces the
-// budget per run+idempotencyKey, so a broken check can never create an
-// unbounded loop). All checks are DETERMINISTIC string/shape predicates — no
+// accepted, and either lets it through (`continue`) or requests a bounded
+// revision pass. Bounds: the harness's global MAX_BEFORE_AGENT_FINALIZE_
+// REVISIONS=3 per run (run.ts:217) plus this module's fuse — the harness does
+// NOT enforce per-check retry budgets (retry.{idempotencyKey,maxAttempts} are
+// typed but unconsumed; only `reason` reaches the model, see the revise-return
+// comment below). All checks are DETERMINISTIC string/shape predicates — no
 // model in the supervisor's own loop (per the v2 research: deterministic
 // claim-vs-evidence is the highest-confidence egress pattern; LLM self-checks
 // are a documented failure mode).
@@ -53,6 +55,7 @@
 
 import type { AuditLogger } from "./audit.js";
 import { sendScopelyText } from "./comfort.js";
+import { judgeVoice, voiceJudgeEnabled, type VoiceLlmComplete } from "./voice-judge.js";
 
 // Shape of the before_agent_finalize event fields this module consumes.
 // Kept structural (not imported from core types) so the extension compiles
@@ -462,9 +465,29 @@ function isFused(fuseKey: string, now: number): boolean {
   return fuseFor(fuseKey).fusedUntil > now;
 }
 
+// ---------------------------------------------------------------------------
+// Voice-judge per-run once guard. The harness does not enforce per-check
+// retry budgets (see the revise-return comment), and an LLM judge is
+// non-deterministic across passes — without this cap a picky judge could
+// burn all 3 harness revisions on voice alone. Bounded FIFO so the set
+// cannot grow without limit across a long-lived process.
+// ---------------------------------------------------------------------------
+
+const VOICE_JUDGED_RUNS_MAX = 200;
+const voiceRevisedRuns = new Set<string>();
+
+function markVoiceRevised(runKey: string): void {
+  voiceRevisedRuns.add(runKey);
+  if (voiceRevisedRuns.size > VOICE_JUDGED_RUNS_MAX) {
+    const oldest = voiceRevisedRuns.values().next().value;
+    if (oldest !== undefined) voiceRevisedRuns.delete(oldest);
+  }
+}
+
 // Test hook: clear all fuse state between test cases.
 export function resetSupervisorStateForTest(): void {
   fuseBySession.clear();
+  voiceRevisedRuns.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -476,7 +499,7 @@ export function resetSupervisorStateForTest(): void {
 // (+ deterministic escalation post) when the fuse trips.
 export async function superviseFinalize(
   event: FinalizeEvent,
-  deps: { logger: AuditLogger; now?: () => number },
+  deps: { logger: AuditLogger; now?: () => number; llmComplete?: VoiceLlmComplete },
 ): Promise<FinalizeResult | undefined> {
   if (!supervisorEnabled()) return undefined;
   const sessionKey = event.sessionKey ?? "";
@@ -488,7 +511,33 @@ export async function superviseFinalize(
   const now = deps.now ? deps.now() : Date.now();
   if (isFused(scope.fuseKey, now)) return { action: "continue" };
 
-  const verdict = reviewDraft(draft, collectTurnEvidence(event.messages), scope.profile);
+  let verdict = reviewDraft(draft, collectTurnEvidence(event.messages), scope.profile);
+
+  // Voice lane (v2.1, SCOPELYBOT_SUPERVISOR_VOICE=1): only when the
+  // deterministic plane is satisfied, only for human-facing coordinator
+  // drafts, and at most once per run (the harness's revision budget is
+  // global, not per-check — a non-deterministic judge must self-cap).
+  // judgeVoice never throws: error/timeout/malformed output all fail open.
+  const runKey = event.runId ?? event.turnId ?? "";
+  if (
+    verdict.ok &&
+    voiceJudgeEnabled() &&
+    scope.profile === "coordinator" &&
+    deps.llmComplete &&
+    runKey &&
+    !voiceRevisedRuns.has(runKey)
+  ) {
+    const voice = await judgeVoice(draft, { complete: deps.llmComplete, logger: deps.logger, now: deps.now });
+    if (!voice.ok) {
+      markVoiceRevised(runKey);
+      verdict = {
+        ok: false,
+        checkId: "voice",
+        reason: "voice judge requested a tone/readability revision",
+        instruction: voice.instruction,
+      };
+    }
+  }
   if (verdict.ok) return undefined;
 
   const tripped = recordRevisionAndCheckFuse(scope.fuseKey, now);
@@ -520,11 +569,18 @@ export async function superviseFinalize(
 
   return {
     action: "revise",
-    reason: verdict.reason,
+    // SUBSTRATE FACT (verified 2026-07-21): the harness feeds ONLY `reason`
+    // back to the model — run.ts builds the retry prompt as
+    // BEFORE_AGENT_FINALIZE_RETRY_PROMPT_PREFIX + "\n\n" + outcome.reason
+    // (src/agents/embedded-agent-runner/run.ts:276, attempt.ts:3193). The
+    // `retry.{instruction,idempotencyKey,maxAttempts}` fields exist in the
+    // typed contract (hook-types.ts:377) but nothing consumes them today, so
+    // the actionable instruction MUST ride in `reason` or it is silently
+    // dropped. The real revision bounds are the harness's global cap
+    // (MAX_BEFORE_AGENT_FINALIZE_REVISIONS=3 per run) plus this module's fuse.
+    reason: verdict.instruction,
     retry: {
       instruction: verdict.instruction,
-      // Keyed per turn+check so the harness budget allows exactly ONE retry
-      // for this check in this turn, and a different check may still fire.
       idempotencyKey: `scopelybot-supervisor:${event.turnId ?? event.runId ?? "turn"}:${verdict.checkId}`,
       maxAttempts: 1,
     },
