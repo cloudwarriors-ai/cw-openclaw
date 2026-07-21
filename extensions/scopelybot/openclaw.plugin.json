@@ -135,7 +135,23 @@
       "scopely_update_vendor_term",
       "scopely_user_activity",
       "scopely_vendor_config",
-      "scopely_wizard_funnel"
+      "scopely_wizard_funnel",
+      "scopely_cancel_session",
+      "scopely_archive_session",
+      "scopely_reopen_session",
+      "scopely_revise_session",
+      "scopely_clone_session",
+      "scopely_request_session_approval",
+      "scopely_approve_session",
+      "scopely_reject_session",
+      "scopely_list_session_discounts",
+      "scopely_add_session_discount",
+      "scopely_remove_session_discount",
+      "scopely_sow_preview",
+      "scopely_generate_sow",
+      "scopely_execute_sow",
+      "scopely_send_sow",
+      "scopely_change_sow_signer"
     ]
   }
 }
