@@ -10,6 +10,7 @@ import { tryExecuteConfirm } from "./src/confirm.js";
 import { registerCorrelationTools } from "./src/correlation-tools.js";
 import { registerDeploymentConfigTools } from "./src/deployment-config-tools.js";
 import { registerGhTools } from "./src/gh-tools.js";
+import { guardInboundMessage } from "./src/inbound-guard.js";
 import { registerMonitoringTools } from "./src/monitoring-tools.js";
 import { registerOrgTools } from "./src/org-tools.js";
 import { runPassthroughCycle } from "./src/passthrough-runner-cycle.js";
@@ -177,6 +178,29 @@ const plugin = {
       // result string (executed / "no pending action") is delivered threaded by core.
       console.log("[scopelybot] before_dispatch claimed CONFIRM (coordinator suppressed)");
       return { handled: true, text: result ?? undefined };
+    });
+
+    // Inbound guard (Slice S2-B): deterministic ingress screening, registered
+    // AFTER the confirm gate — before_dispatch handlers run in registration
+    // order within a plugin, so a real `CONFIRM <code>` is always claimed by
+    // the gate first (and the guard structurally skips CONFIRM shapes too).
+    // Scoped to scopelybot's own Zoom surface with the same session-key proof
+    // the other hooks use. Opt-in via SCOPELYBOT_INBOUND_GUARD=1 (checked
+    // inside guardInboundMessage, at call time) — unset means this handler is
+    // a no-op. NOTE: like the confirm gate, a hard block's refusal text is
+    // dropped if another hook already set suppressDelivery — acceptable,
+    // mirrored behavior.
+    api.on("before_dispatch", (event, ctx) => {
+      if (
+        !isScopelyBotZoomMessage({ channelId: ctx.channelId ?? "", sessionKey: ctx.sessionKey })
+      ) {
+        return;
+      }
+      const text = typeof event.content === "string" ? event.content : "";
+      return guardInboundMessage(
+        { text, senderId: ctx.senderId ?? "", sessionKey: ctx.sessionKey },
+        { logger },
+      );
     });
 
     // Schedule recurring passthrough test runs.
