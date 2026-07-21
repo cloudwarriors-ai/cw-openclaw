@@ -36,9 +36,21 @@ export async function scopelyFetch(
     return scopelyFetch(path, { ...opts, retried: true });
   }
 
-  const data = resp.headers.get("content-type")?.includes("application/json")
-    ? await resp.json()
-    : await resp.text();
+  // Read as text first, then parse. DRF answers DELETE with 204 No Content but
+  // STILL sets Content-Type: application/json on the empty body — resp.json()
+  // throws "Unexpected end of JSON input", which surfaced live (2026-07-21) as
+  // a false "❌ Error executing DELETE …" on a delete that had SUCCEEDED.
+  // Empty or malformed bodies fall back to the raw text: an honest payload
+  // beats an exception that misreports a completed mutation as a failure.
+  const raw = await resp.text();
+  let data: unknown = raw;
+  if (resp.headers.get("content-type")?.includes("application/json") && raw.trim() !== "") {
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      // Content-Type lied — keep the raw text.
+    }
+  }
 
   return { ok: resp.ok, status: resp.status, data };
 }
