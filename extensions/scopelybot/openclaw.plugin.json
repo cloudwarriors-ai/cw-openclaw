@@ -48,6 +48,7 @@
       "scopely_create_invite",
       "scopely_create_org",
       "scopely_create_pricing_default",
+      "scopely_create_support_ticket",
       "scopely_create_pricing_item",
       "scopely_create_project_type",
       "scopely_create_scoping_card",

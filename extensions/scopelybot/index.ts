@@ -22,6 +22,7 @@ import { registerScopingCardTools } from "./src/scoping-card-tools.js";
 import { registerSessionLifecycleTools } from "./src/session-lifecycle-tools.js";
 import { registerSowTools } from "./src/sow-tools.js";
 import { superviseFinalize } from "./src/supervisor.js";
+import { registerSupportTicketTools } from "./src/support-ticket-tools.js";
 import { registerSupportTools } from "./src/support-tools.js";
 import { registerUserMaintenanceTools } from "./src/user-maintenance-tools.js";
 import { registerVendorConfigTools } from "./src/vendor-config-tools.js";
@@ -102,6 +103,10 @@ const plugin = {
     registerDeploymentConfigTools(optionalApi, logger);
     registerScopingCardTools(optionalApi, logger);
     registerSupportTools(optionalApi, logger, pluginConfig);
+    // Slice E: the end-user support surface's one ungated write (tickets
+    // create work for us, not product mutations). Allowlisted only to the
+    // scopely-support agent in openclaw.json — the admin bot doesn't get it.
+    registerSupportTicketTools(optionalApi, logger, pluginConfig);
     registerSessionLifecycleTools(optionalApi, logger);
     registerSowTools(optionalApi, logger);
     registerApproverTools(optionalApi, logger, approverStore);
@@ -275,7 +280,7 @@ const plugin = {
     }
 
     console.log(
-      "[scopelybot] Registered 115 tools (11 observability + 6 admin + 4 monitoring + 6 GH + 1 correlation + 2 passthrough + 9 user-maintenance + 8 org + 15 pricing + 13 vendor-config + 8 deployment-config + 5 scoping-card + 11 support + 11 session-lifecycle + 5 sow)",
+      "[scopelybot] Registered 116 tools (11 observability + 6 admin + 4 monitoring + 6 GH + 1 correlation + 2 passthrough + 9 user-maintenance + 8 org + 15 pricing + 13 vendor-config + 8 deployment-config + 5 scoping-card + 11 support + 1 support-ticket + 11 session-lifecycle + 5 sow)",
     );
   },
 };
