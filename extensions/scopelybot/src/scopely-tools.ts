@@ -101,7 +101,8 @@ export function registerScopelyTools(api: OpenClawPluginApi, logger: AuditLogger
         description:
           "List Scopely VIP users. Returns user profiles with roles, organizations, last_login, and session count. " +
           "Use this to answer 'who was the last person to login' or 'who are the active users'. " +
-          "Set ordering to '-last_login' to sort by most recent login.",
+          "Set ordering to '-last_login' to sort by most recent login. `search` handles a full " +
+          "person name (e.g. 'Josh Rickerd') automatically — no need to split it yourself.",
         parameters: Type.Object({
           role: Type.Optional(
             Type.String({
@@ -127,7 +128,39 @@ export function registerScopelyTools(api: OpenClawPluginApi, logger: AuditLogger
                 details: result.data,
               });
             }
-            return jsonResult({ ok: true, data: result.data });
+            const rows = Array.isArray(result.data) ? result.data : [];
+            const search = typeof params.search === "string" ? params.search.trim() : "";
+            // The backend OR-matches the *whole* search string against email, first_name,
+            // last_name, and username separately (icontains) — a two-word "Josh Rickerd"
+            // never matches, since no single field holds both tokens together. When the
+            // first attempt returns nothing and the query looks like a full name, retry
+            // per token and union the results client-side (deduped by id) instead of
+            // reporting a false "no user found".
+            const tokens = search.split(/\s+/).filter((t) => t.length > 1);
+            if (rows.length === 0 && tokens.length > 1) {
+              const byId = new Map<number, unknown>();
+              for (const token of tokens) {
+                const tokenQs = buildQuery({ ...params, search: token }, [
+                  "role",
+                  "search",
+                  "ordering",
+                ]);
+                const tokenResult = await scopelyFetch(`/api/auth/users/${tokenQs}`);
+                if (tokenResult.ok && Array.isArray(tokenResult.data)) {
+                  for (const row of tokenResult.data as Array<{ id: number }>) {
+                    byId.set(row.id, row);
+                  }
+                }
+              }
+              if (byId.size > 0) {
+                return jsonResult({
+                  ok: true,
+                  data: [...byId.values()],
+                  note: `No exact match for "${search}" as one phrase; matched individual name terms instead.`,
+                });
+              }
+            }
+            return jsonResult({ ok: true, data: rows });
           } catch (err) {
             return errorResult(err);
           }
