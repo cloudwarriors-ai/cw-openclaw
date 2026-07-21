@@ -72,12 +72,24 @@ POST /api/v1/auth/support-tokens/          (service credential required)
 ```
 
 - **Mint auth:** a dedicated service account credential held only by the
-  support-bot container (same secret plane as the existing extraction-service
-  `X-Api-Key` pattern). Minting is itself audited (who was impersonated, when,
-  from which channel).
+  support-bot container. Precedent patterns in the repo — both GLOBAL and
+  unscoped, which is exactly what the OBO token fixes:
+  `BigHeadServiceTokenAuthentication` (constant-time bearer compare,
+  `apps/integrations/authentication.py:18-34`) and the extraction-service
+  `X-Api-Key` (shared key, fails closed if unset). The support token is the
+  repo's FIRST scoped credential. Minting is itself audited (who was
+  impersonated, when, from which channel).
 - **Token shape (SimpleJWT custom token):** `sub` = subject user id,
   `act: "scopely-support-bot"` (RFC 8693-style actor claim),
-  `scope: "support:read"`, TTL ≤ 15 min, **no refresh**.
+  `scope: "support:read"`, TTL ≤ 15 min, **no refresh** — a deliberate
+  divergence from the app's session JWTs (`config/settings.py:512-522`:
+  HS256, 1h access + 7d rotating/blacklisted refresh). Same signing key and
+  library; the custom claims + auth class do the narrowing.
+- **In-repo OBO precedent:** `AdminQuickCreateView` already acts on behalf of
+  a user via `acting_user_email` → `resolve_session_actor()` and records BOTH
+  identities for the SOC 2 trail (`attributed_to_user_id` +
+  `actor_service_account_id`, `apps/scoping/views/sessions.py:124-128,165-171`).
+  The support-token audit shape copies this dual-identity pattern.
 - **Acceptance:** a custom DRF authentication class accepts these tokens ONLY
   for safe methods (GET/HEAD) and ONLY on an allowlisted set of user-facing
   routes (`sessions/my/`, `sessions/<pk>/`, `sessions/notifications/`, SOW
@@ -91,6 +103,22 @@ POST /api/v1/auth/support-tokens/          (service credential required)
 Estimated Django footprint: 1 token class + 1 mint view + 1 auth class +
 route allowlist + tests. No changes to existing views — `for_user` already
 guards them.
+
+**Rejected alternative — service account + `PartnerOrgAccess`.** The repo has
+one existing per-entity scoping mechanism beyond base roles: a
+`partner_readonly` user with a `PartnerOrgAccess` allow-list of org slugs
+(`apps/users/models.py:350`, enforced in the admin viewsets, GET/HEAD/OPTIONS
+only). A single bot service account with the pilot orgs allow-listed would
+reuse existing infrastructure with ZERO new Django code. Rejected because it
+is **org-bound, not subject-bound**: (1) the bot would see everything in an
+org regardless of which user is asking — the authorization question becomes
+"what is in org X" instead of "what may user A see", re-importing the
+authorization logic into the bot (the exact thing §2.1 says must not happen);
+(2) the audit trail records the service account, not the end user the read
+was performed for; (3) one credential whose reach grows with every onboarded
+org is a cross-org master key — the §0 prime directive by another name.
+Acceptable only as a time-boxed P1 pilot shortcut if the OBO view is not yet
+merged, never as the destination.
 
 ### 2.3 What the bot-side changes
 
