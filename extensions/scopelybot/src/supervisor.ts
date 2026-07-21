@@ -321,6 +321,27 @@ export function findUngroundedTokens(draft: string, evidence: TurnEvidence): str
   return extractHardTokens(draft).filter((token) => !tokenGrounded(token.toLowerCase(), haystack));
 }
 
+// Sender-authorization DENIAL phrasings (not mere explanations of the
+// approval model — "only approvers can confirm" carries no denial and must
+// not match). Deliberately narrow: each pattern requires an explicit
+// negative-authorization assertion about a sender/account/identity.
+const AUTH_DENIAL_RES: RegExp[] = [
+  // Apostrophes: models emit both ASCII ' and typographic ’ (the live
+  // incident draft used ’) — every contraction class must accept both.
+  /\bnot\s+(?:currently\s+)?(?:recognized\s+as\s+|an?\s+)?authoriz/i, // "not authorized", "not recognized as authorized"
+  /\b(?:is|are)n['’]?t\s+(?:currently\s+)?authoriz/i,
+  // No \b before the n['’]t branch: it must match the TAIL of "isn't"/"aren't".
+  /(?:\bnot|n['’]t)\s+(?:on|in)\s+the\s+(?:authorized|allow|approved)[\w-]*\s*(?:sender\s*)?list/i,
+  /\bunauthorized\s+(?:sender|user|account|identity)\b/i,
+  /\b(?:lacks?|without)\s+(?:the\s+)?(?:required\s+)?(?:authorization|write\s+approval)\b/i,
+];
+
+// Ground truth for a REAL authorization failure this turn: an auth-shaped
+// error in a tool result (401/403/permission language) or the human's own
+// message describing/pasting a denial (meta-conversation is answerable).
+const AUTH_FAILURE_MARKER_RE =
+  /\b40[13]\b|unauthorized|not authorized|forbidden|permission denied|not permitted|access denied|not recognized as authorized/i;
+
 // ---------------------------------------------------------------------------
 // Draft review.
 // ---------------------------------------------------------------------------
@@ -367,6 +388,33 @@ export function reviewDraft(
         "Your reply is raw JSON or contains a large JSON dump. Rewrite it as a plain-language answer: " +
         "lead with the answer, keep only the fields the human asked about, no code blocks.",
     };
+  }
+  // Auth-denial fabrication (live incident 2026-07-21): the model told a
+  // write approver — whose CONFIRM had executed minutes earlier — that his
+  // account "isn't on the authorized sender list". Word-only claims carry no
+  // hard tokens, so the grounding checks below can't see them; this is the
+  // one word-claim CATEGORY checkable deterministically, because the model is
+  // NEVER in the authorization path: the system enforces approval at CONFIRM
+  // time, so any sender-authorization denial the model asserts must trace to
+  // a tool result (401/403/permission error) or to the human's own message
+  // (meta-conversation about a denial they experienced/pasted). Neither →
+  // fabricated by construction.
+  if (supervisorV2Enabled() && AUTH_DENIAL_RES.some((re) => re.test(draft))) {
+    const authHaystack = `${evidence.corpus}\n${evidence.humanText}`.toLowerCase();
+    if (!AUTH_FAILURE_MARKER_RE.test(authHaystack)) {
+      return {
+        ok: false,
+        checkId: "ungrounded_auth_denial",
+        reason: "draft claims an authorization denial with no auth failure in this turn's evidence",
+        instruction:
+          "Your reply claims the sender is not authorized, but no tool result or system message " +
+          "this turn reports any authorization failure — and you are never in the authorization " +
+          "path (the system enforces approval when the user replies CONFIRM <code>). Remove the " +
+          "authorization claim and state what actually happened instead: if the action was never " +
+          "staged, route the request so it stages now; if the user replied something other than " +
+          "`CONFIRM <code>`, explain that exact reply format.",
+      };
+    }
   }
   // A clarifying question back to the human is not a state claim.
   const isShortQuestion = draft.trim().length < 120 && draft.trim().endsWith("?");

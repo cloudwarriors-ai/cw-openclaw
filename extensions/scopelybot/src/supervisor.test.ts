@@ -216,6 +216,59 @@ describe("evidence model (prod-verified delivery shape)", () => {
   });
 });
 
+// Live incident 2026-07-21: the model told a write approver — whose CONFIRM
+// had executed the five9 batch minutes earlier — that his account "isn't on
+// the authorized sender list". Zero hard tokens, so no grounding check could
+// see it. Auth-denial claims are deterministically checkable: the model is
+// never in the authorization path, so a denial must trace to a tool auth
+// error or the human's own message describing one.
+describe("ungrounded_auth_denial (v2)", () => {
+  const INCIDENT_DRAFT =
+    "I can’t apply this change from the current account because it isn’t on the authorized " +
+    "sender list. No changes were made to Genesys.";
+  beforeEach(() => {
+    process.env.SCOPELYBOT_SUPERVISOR_V2 = "1";
+  });
+
+  it("blocks the exact live fabrication (no auth failure anywhere this turn)", () => {
+    const v = reviewDraft(INCIDENT_DRAFT, ev({ corpus: "", humanText: "Confimed" }));
+    expect(v).toMatchObject({ ok: false, checkId: "ungrounded_auth_denial" });
+    if (!v.ok) expect(v.instruction).toContain("CONFIRM <code>");
+  });
+
+  it("allows the claim when a tool result actually reported an auth failure", () => {
+    expect(
+      reviewDraft(INCIDENT_DRAFT, ev({ corpus: '{"ok":false,"status":403,"data":"Forbidden"}' })),
+    ).toEqual({ ok: true });
+  });
+
+  it("allows meta-conversation when the human described/pasted the denial", () => {
+    expect(
+      reviewDraft(
+        "The denial you saw — “not recognized as authorized” — refers to the sender mapping.",
+        ev({ corpus: "", humanText: "it told John: not recognized as authorized. why?" }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  it("does not fire on explanations of the approval model (FP corpus)", () => {
+    for (const draft of [
+      "John Rudolph is already configured as a ScopelyBot write approver.",
+      "Only write approvers can confirm staged changes; the system checks this at CONFIRM time.",
+      "Once you reply CONFIRM with the code, the system verifies your identity and applies it.",
+    ]) {
+      expect(reviewDraft(draft, ev({ corpus: "" }))).toEqual({ ok: true });
+    }
+  });
+
+  it("does not fire with the v2 flag off (rollout gate)", () => {
+    delete process.env.SCOPELYBOT_SUPERVISOR_V2;
+    expect(reviewDraft(INCIDENT_DRAFT, ev({ corpus: "", humanText: "Confimed" }))).toEqual({
+      ok: true,
+    });
+  });
+});
+
 describe("ungrounded_claim (v2)", () => {
   beforeEach(() => {
     process.env.SCOPELYBOT_SUPERVISOR_V2 = "1";
