@@ -99,3 +99,59 @@ describe("ScopelyBot confirmation actor gate", () => {
     expect(result).toContain("No pending action");
   });
 });
+
+// Live gap 2026-07-21: a category-validation 400 ("UCaaS — Base" isn't a real
+// category) surfaced as a bare "Failed (HTTP 400)" — the human had to read
+// server code to learn why. 4xx bodies now surface redacted; 5xx stay hidden
+// (the test above pins that).
+describe("backend error detail on 4xx", () => {
+  beforeEach(() => {
+    takePendingMock.mockReset();
+    logger.mockReset();
+  });
+
+  it("surfaces the DRF validation message on a 400 (the live pricing-item shape)", async () => {
+    takePendingMock.mockReturnValue({
+      summary: "create pricing item chad_test_price_item on goto/pt 9 @ 1.00",
+      run: vi.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        data: {
+          category: [
+            "Category must be one of: Core, Call Routing, Hardware & Paging, Porting, " +
+              "SBC / PBX, SSO, Integrations, Training, Go-Live, T&M, Order Minimum. " +
+              "Got 'UCaaS — Base'.",
+          ],
+        },
+      }),
+    });
+    const result = await tryExecuteConfirm({
+      text: "CONFIRM 1234",
+      actor: approver,
+      conversationId: "vipbot_prod",
+      approverIds: [approver],
+      logger,
+    });
+    expect(result).toContain("HTTP 400");
+    expect(result).toContain("Category must be one of");
+    expect(result).toContain("Got 'UCaaS — Base'");
+  });
+
+  it("drops HTML error pages instead of relaying markup", async () => {
+    takePendingMock.mockReturnValue({
+      summary: "update pricing item 5",
+      run: vi
+        .fn()
+        .mockResolvedValue({ ok: false, status: 404, data: "<html><body>Not Found</body></html>" }),
+    });
+    const result = await tryExecuteConfirm({
+      text: "CONFIRM 1234",
+      actor: approver,
+      conversationId: "vipbot_prod",
+      approverIds: [approver],
+      logger,
+    });
+    expect(result).toContain("HTTP 404");
+    expect(result).not.toContain("<html>");
+  });
+});

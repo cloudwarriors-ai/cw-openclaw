@@ -8,6 +8,7 @@
 // so the bot cannot self-mutate. Tests assert scopelyFetch is not called during execute().
 
 import { getChannelThreadAnchor, sendScopelyText } from "./comfort.js";
+import { formatBackendErrorDetail } from "./confirm.js";
 import { makeCode, putPending } from "./pending-confirm.js";
 import { redactText } from "./redaction.js";
 import { jsonResult } from "./scopely-api.js";
@@ -19,7 +20,9 @@ type StagedItem = { summary: string; run: (ctx?: { actor?: string }) => FetchRes
 
 // Per-item outcome of a confirmed bundle, surfaced back to the human so partial
 // application is never silent (deletes/updates over HTTP are not transactional).
-export type BundleItemResult = { summary: string; ok: boolean; status: number };
+// `detail` carries the backend's redacted error message on failure so the
+// human sees WHY (e.g. a validation message), not just a status code.
+export type BundleItemResult = { summary: string; ok: boolean; status: number; detail?: string };
 
 // Open coalescing bundles, keyed by channel. A bundle collects every stageWrite
 // issued within the debounce window (one agent turn typically stages its writes
@@ -78,7 +81,17 @@ async function flushItems(channel: string, items: StagedItem[]): Promise<void> {
       for (const it of items) {
         try {
           const res = await it.run(ctx);
-          results.push({ summary: it.summary, ok: res.ok, status: res.status });
+          // 4xx only — same boundary as confirm.ts (5xx bodies stay hidden).
+          const detail =
+            !res.ok && res.status >= 400 && res.status < 500
+              ? formatBackendErrorDetail(res.data)
+              : "";
+          results.push({
+            summary: it.summary,
+            ok: res.ok,
+            status: res.status,
+            ...(detail ? { detail } : {}),
+          });
         } catch {
           results.push({ summary: it.summary, ok: false, status: 0 });
         }

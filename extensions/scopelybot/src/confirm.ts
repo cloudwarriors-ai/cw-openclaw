@@ -16,6 +16,39 @@ export function isApprovedWriteActor(actor: string, approverIds: string[]): bool
   return Boolean(normalized) && allowed.size > 0 && allowed.has(normalized);
 }
 
+// Compact, redacted extract of a backend error body so a failed confirm
+// explains itself. Live gap 2026-07-21: a category-validation 400 surfaced
+// as a bare "Failed (HTTP 400)" — the backend's message ("Category must be
+// one of: …") never reached the human, who had no way to know WHY without
+// server logs. Handles DRF shapes ({field: [msgs]}, {detail: "…"}) and
+// plain-text bodies; HTML error pages are dropped (noise, not signal).
+// CALLERS surface this for 4xx ONLY: client-error bodies are validation
+// feedback meant for the requester, while 5xx bodies are server internals
+// (stack traces, proxies' HTML) and stay hidden — pinned by the existing
+// "hides backend failure bodies" 502 test.
+export function formatBackendErrorDetail(data: unknown): string {
+  if (!data) return "";
+  let text = "";
+  if (typeof data === "string") {
+    text = data;
+  } else if (typeof data === "object" && !Array.isArray(data)) {
+    const parts: string[] = [];
+    for (const [key, value] of Object.entries(data as Record<string, unknown>).slice(0, 3)) {
+      const msg = Array.isArray(value)
+        ? value.map((v) => (typeof v === "string" ? v : JSON.stringify(v))).join(" ")
+        : typeof value === "string"
+          ? value
+          : JSON.stringify(value);
+      parts.push(key === "detail" ? msg : `${key}: ${msg}`);
+    }
+    text = parts.join("; ");
+  } else if (Array.isArray(data)) {
+    text = data.map((v) => (typeof v === "string" ? v : JSON.stringify(v))).join(" ");
+  }
+  if (/^\s*</.test(text)) return ""; // HTML error page — no useful detail
+  return redactText(text, 400).trim();
+}
+
 // Called from the before_dispatch handler. If the inbound text is `CONFIRM <code>`
 // for a live pending action, execute it and return a human-readable result string.
 // Returns null when the message is not a confirm (so normal handling continues).
@@ -72,13 +105,16 @@ export async function tryExecuteConfirm(params: {
       const lines = bundle.results
         .slice(0, 10)
         .map((r) => {
-          const item = r as { summary: string; ok: boolean; status: number };
-          return item.ok ? `✅ ${item.summary}` : `❌ ${item.summary} (HTTP ${item.status})`;
+          const item = r as { summary: string; ok: boolean; status: number; detail?: string };
+          if (item.ok) return `✅ ${item.summary}`;
+          const itemDetail = item.detail ? ` — ${item.detail}` : "";
+          return `❌ ${item.summary} (HTTP ${item.status})${itemDetail}`;
         })
         .join("\n");
       return `⚠️ Applied ${bundle.applied ?? 0} of ${bundle.results.length}:\n${lines}`;
     }
-    return `❌ Failed (HTTP ${res.status}): ${action.summary}.`;
+    const detail = res.status >= 400 && res.status < 500 ? formatBackendErrorDetail(res.data) : "";
+    return `❌ Failed (HTTP ${res.status}): ${action.summary}.${detail ? ` — ${detail}` : ""}`;
   } catch (err) {
     const msg = redactText(err instanceof Error ? err.message : String(err), 500);
     params.logger({
