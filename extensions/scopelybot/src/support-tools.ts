@@ -191,10 +191,18 @@ export function registerSupportTools(
       {
         name: "scopely_session_status_counts",
         description:
-          "Get live Scopely session counts by lifecycle status with optional admin-list facets. Read-only.",
+          "Get live Scopely session counts by lifecycle status with optional admin-list facets. Read-only. " +
+          "For a plain 'how many sessions' question, call with NO filters.",
         parameters: Type.Object({
           vendor: Type.Optional(Type.String()),
-          deployment: Type.Optional(Type.String()),
+          deployment: Type.Optional(
+            Type.String({
+              description:
+                "Deployment-type KEY from the scoping wizard (e.g. autopilot, copilot, bespoke) — " +
+                "NOT an environment name like prod/dev. Unknown keys are rejected with the valid list. " +
+                "Omit to count sessions across all deployment types.",
+            }),
+          ),
           search: Type.Optional(Type.String()),
           date_from: Type.Optional(Type.String()),
           date_to: Type.Optional(Type.String()),
@@ -203,6 +211,31 @@ export function registerSupportTools(
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
+            // Fail-loud filter validation (issue #81): the backend silently
+            // returns all-zero counts for an unknown deployment_type value —
+            // observed live 2026-07-21 when the model guessed deployment="prod"
+            // and confidently reported "0 sessions" against 713 real ones.
+            // Valid keys are data-defined (deployment-type templates), so we
+            // check against the live list instead of hardcoding an enum. Same
+            // self-correction pattern that fixed the S7 container guessing.
+            const deployment =
+              typeof params.deployment === "string" ? params.deployment.trim() : "";
+            if (deployment) {
+              const templates = await scopelyFetch(`/api/admin/deployment-type-templates/`);
+              const rows = Array.isArray(templates.data)
+                ? templates.data
+                : ((asRecord(templates.data).results as unknown[]) ?? []);
+              const validKeys = rows.map((row) => String(asRecord(row).key ?? "")).filter(Boolean);
+              if (templates.ok && validKeys.length > 0 && !validKeys.includes(deployment)) {
+                return jsonResult({
+                  ok: false,
+                  error:
+                    `Unknown deployment type "${deployment}" — the backend would silently return zero ` +
+                    `counts for it. Valid deployment-type keys: ${validKeys.join(", ")}. ` +
+                    `Omit the deployment filter to count sessions across all deployment types.`,
+                });
+              }
+            }
             const query = buildQuery(params, [
               "vendor",
               "deployment",
