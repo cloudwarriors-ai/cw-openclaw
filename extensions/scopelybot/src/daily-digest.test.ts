@@ -90,7 +90,7 @@ describe("buildDigest", () => {
     expect(digest.text).toContain("in progress: 391"); // zero delta → no suffix
     expect(digest.text).not.toContain("391 (");
     expect(digest.text).toContain("Pending approvals: 2");
-    expect(digest.text).toContain("Possibly stuck (in progress, created >7d ago): 1 — #42 Globex");
+    expect(digest.text).toContain("Possibly stuck (in progress, created >60d ago): 1 — #42 Globex");
     expect(digest.text).toContain("Extraction failures: none");
     expect(digest.statsSnapshot).toMatchObject({ total_sessions: 713 });
     // The stuck query uses status + created-date cutoff (the only staleness
@@ -99,6 +99,38 @@ describe("buildDigest", () => {
       .map((c) => c[0] as string)
       .find((p) => p.startsWith("/api/admin/sessions/"));
     expect(stuckCall).toMatch(/status=in_progress&date_to=\d{4}-\d{2}-\d{2}&limit=5/);
+  });
+
+  it("formats currency/size keys compact and rate keys as percentages (live-data polish)", async () => {
+    // The first LIVE build rendered "pipeline value: 14570816.5" — raw floats.
+    scopelyFetchMock.mockImplementation((p: string) => {
+      if (p === "/api/admin/stats/")
+        return Promise.resolve(
+          ok({
+            pipeline_value: 14570816.5,
+            avg_deal_size: 79853.67,
+            conversion_rate: 14.7,
+            small_value: 420,
+          }),
+        );
+      return Promise.resolve(ok({ count: 0, results: [] }));
+    });
+    const digest = await buildDigest({ pipeline_value: 14320816.5 });
+    expect(digest.text).toContain("pipeline value: $14.57M (+$250.0k)");
+    expect(digest.text).toContain("avg deal size: $79.9k");
+    expect(digest.text).toContain("conversion rate: 14.7%");
+    expect(digest.text).toContain("small value: $420");
+  });
+
+  it("stuck threshold is env-tunable via SCOPELYBOT_DIGEST_STUCK_DAYS", async () => {
+    process.env.SCOPELYBOT_DIGEST_STUCK_DAYS = "30";
+    try {
+      mockAllReads();
+      const digest = await buildDigest({});
+      expect(digest.text).toContain("created >30d ago");
+    } finally {
+      delete process.env.SCOPELYBOT_DIGEST_STUCK_DAYS;
+    }
   });
 
   it("a failing section renders unavailable without suppressing the digest", async () => {
