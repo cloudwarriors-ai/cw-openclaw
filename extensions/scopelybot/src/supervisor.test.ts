@@ -352,15 +352,15 @@ describe("voice lane (v2.1)", () => {
   it("never judges spoke drafts — coordinator (human-facing) only", async () => {
     process.env.SCOPELYBOT_SUPERVISOR_V2 = "1";
     const llmComplete = vi.fn().mockResolvedValue({ text: "PASS" });
-    const res = await superviseFinalize(
-      event(CLEAN_DRAFT, { sessionKey: SPOKE_SESSION }),
-      { logger: auditMock, llmComplete },
-    );
+    const res = await superviseFinalize(event(CLEAN_DRAFT, { sessionKey: SPOKE_SESSION }), {
+      logger: auditMock,
+      llmComplete,
+    });
     expect(res).toBeUndefined();
     expect(llmComplete).not.toHaveBeenCalled();
   });
 
-  it("voice REVISE → framed instruction rides `reason`, charges the shared fuse, audits", async () => {
+  it("voice REVISE → framed instruction rides `reason`, audits", async () => {
     const llmComplete = vi
       .fn()
       .mockResolvedValue({ text: "REVISE: Lead with the answer and drop the filler." });
@@ -374,23 +374,31 @@ describe("voice lane (v2.1)", () => {
     );
   });
 
-  it("caps voice at ONE revision per run — the harness budget is global, the judge is non-deterministic", async () => {
+  it("caps voice per run AND per sessionKey cooldown — one turn can span multiple announce runs", async () => {
+    let t = 2_000_000;
     const llmComplete = vi.fn().mockResolvedValue({ text: "REVISE: Tighten the phrasing." });
-    const first = await superviseFinalize(event(CLEAN_DRAFT), { logger: auditMock, llmComplete });
+    const deps = { logger: auditMock, now: () => t, llmComplete };
+    const first = await superviseFinalize(event(CLEAN_DRAFT), deps);
     expect(first).toMatchObject({ action: "revise" });
     // Second finalize pass in the SAME run (the revised draft): judge not consulted.
-    const second = await superviseFinalize(event(CLEAN_DRAFT), { logger: auditMock, llmComplete });
+    const second = await superviseFinalize(event(CLEAN_DRAFT), deps);
     expect(second).toBeUndefined();
     expect(llmComplete).toHaveBeenCalledTimes(1);
-    // A different run judges again.
-    const third = await superviseFinalize(event(CLEAN_DRAFT, { runId: "run-2" }), {
-      logger: auditMock,
-      llmComplete,
-    });
-    expect(third).toMatchObject({ action: "revise" });
+    // A DIFFERENT run inside the cooldown window (the 2026-07-21 S23 shape:
+    // the turn re-routed and the second spoke completion opened a fresh
+    // announce runId) — judge still not consulted.
+    t += 30_000;
+    const third = await superviseFinalize(event(CLEAN_DRAFT, { runId: "run-2" }), deps);
+    expect(third).toBeUndefined();
+    expect(llmComplete).toHaveBeenCalledTimes(1);
+    // After the cooldown lapses (default 180s) a new run judges again.
+    t += 180_000;
+    const fourth = await superviseFinalize(event(CLEAN_DRAFT, { runId: "run-3" }), deps);
+    expect(fourth).toMatchObject({ action: "revise" });
+    expect(llmComplete).toHaveBeenCalledTimes(2);
   });
 
-  it("voice revisions count toward the SAME fuse as deterministic checks", async () => {
+  it("voice revisions do NOT charge the shared correctness fuse", async () => {
     process.env.SCOPELYBOT_SUPERVISOR_FUSE_N = "2";
     let t = 2_000_000;
     const deps = {
@@ -398,12 +406,20 @@ describe("voice lane (v2.1)", () => {
       now: () => t,
       llmComplete: vi.fn().mockResolvedValue({ text: "REVISE: Tighten the phrasing." }),
     };
-    // Revision 1: voice (run-1).
+    // Revision 1: voice — self-capped, must not count toward the fuse.
     expect(await superviseFinalize(event(CLEAN_DRAFT), deps)).toMatchObject({ action: "revise" });
-    // Revision 2: deterministic (run-2) — trips the shared fuse.
+    // Revision 2: deterministic (run-2) — FIRST fuse hit, threshold 2 not
+    // reached (voice didn't count), so this is a normal revise.
     t += 1000;
     expect(
       await superviseFinalize(event("Reply CONFIRM 4821 to proceed.", { runId: "run-2" }), deps),
+    ).toMatchObject({ action: "revise" });
+    expect(sendScopelyTextMock).not.toHaveBeenCalled();
+    // Revision 3: deterministic (run-3) — second fuse hit trips it, and the
+    // escalation correctly reflects VERIFICATION failures only.
+    t += 1000;
+    expect(
+      await superviseFinalize(event("Reply CONFIRM 9999 to proceed.", { runId: "run-3" }), deps),
     ).toEqual({ action: "continue" });
     expect(sendScopelyTextMock).toHaveBeenCalledTimes(1);
   });
