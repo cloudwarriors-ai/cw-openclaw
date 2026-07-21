@@ -8,6 +8,7 @@ import type { ScopelyBotConfig } from "./src/config.js";
 import { configuredWriteApprovers, resolveScopelyBotConfig } from "./src/config.js";
 import { tryExecuteConfirm } from "./src/confirm.js";
 import { registerCorrelationTools } from "./src/correlation-tools.js";
+import { dailyDigestEnabled, runDigestTick } from "./src/daily-digest.js";
 import { registerDeploymentConfigTools } from "./src/deployment-config-tools.js";
 import { registerGhTools } from "./src/gh-tools.js";
 import { guardInboundMessage } from "./src/inbound-guard.js";
@@ -21,6 +22,7 @@ import { registerScopingCardTools } from "./src/scoping-card-tools.js";
 import { registerSessionLifecycleTools } from "./src/session-lifecycle-tools.js";
 import { registerSowTools } from "./src/sow-tools.js";
 import { superviseFinalize } from "./src/supervisor.js";
+import { registerSupportTicketTools } from "./src/support-ticket-tools.js";
 import { registerSupportTools } from "./src/support-tools.js";
 import { registerUserMaintenanceTools } from "./src/user-maintenance-tools.js";
 import { registerVendorConfigTools } from "./src/vendor-config-tools.js";
@@ -36,6 +38,7 @@ const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
 const MIN_INTERVAL_MS = 60 * 1000;
 
 let intervalHandle: NodeJS.Timeout | null = null;
+let digestHandle: NodeJS.Timeout | null = null;
 
 const plugin = {
   id: "scopelybot",
@@ -100,6 +103,10 @@ const plugin = {
     registerDeploymentConfigTools(optionalApi, logger);
     registerScopingCardTools(optionalApi, logger);
     registerSupportTools(optionalApi, logger, pluginConfig);
+    // Slice E: the end-user support surface's one ungated write (tickets
+    // create work for us, not product mutations). Allowlisted only to the
+    // scopely-support agent in openclaw.json — the admin bot doesn't get it.
+    registerSupportTicketTools(optionalApi, logger, pluginConfig);
     registerSessionLifecycleTools(optionalApi, logger);
     registerSowTools(optionalApi, logger);
     registerApproverTools(optionalApi, logger, approverStore);
@@ -151,7 +158,9 @@ const plugin = {
       const messageId =
         typeof event.metadata?.messageId === "string" ? event.metadata.messageId : undefined;
       rememberChannelThreadAnchor(ctx.conversationId, messageId);
-      void sendComfortMessage(ctx.conversationId, messageId);
+      // Slice 4: the inbound text drives deterministic domain classification
+      // (context-aware comfort) and the trivial-greeting skip inside comfort.ts.
+      void sendComfortMessage(ctx.conversationId, messageId, text);
     });
 
     // Confirm gate execution: a human `CONFIRM <code>` reply runs the staged action.
@@ -248,8 +257,30 @@ const plugin = {
       );
     }
 
+    // Daily digest (Slice 4, SCOPELYBOT_DAILY_DIGEST=1): a minute tick that
+    // fires at most once per UTC day past SCOPELYBOT_DIGEST_HOUR_UTC, with the
+    // last-posted date persisted in the workspace (restart-safe). Same
+    // startup/shutdown lifecycle as the passthrough runner.
+    if (dailyDigestEnabled()) {
+      api.registerHook("gateway:startup", () => {
+        digestHandle = setInterval(() => {
+          void runDigestTick(workspaceDir).catch((err) => {
+            console.error("[scopelybot-digest] tick failed:", err);
+          });
+        }, 60_000);
+        digestHandle.unref?.();
+        console.log("[scopelybot-digest] daily digest enabled");
+      });
+      api.registerHook("gateway:shutdown", () => {
+        if (digestHandle) {
+          clearInterval(digestHandle);
+          digestHandle = null;
+        }
+      });
+    }
+
     console.log(
-      "[scopelybot] Registered 115 tools (11 observability + 6 admin + 4 monitoring + 6 GH + 1 correlation + 2 passthrough + 9 user-maintenance + 8 org + 15 pricing + 13 vendor-config + 8 deployment-config + 5 scoping-card + 11 support + 11 session-lifecycle + 5 sow)",
+      "[scopelybot] Registered 116 tools (11 observability + 6 admin + 4 monitoring + 6 GH + 1 correlation + 2 passthrough + 9 user-maintenance + 8 org + 15 pricing + 13 vendor-config + 8 deployment-config + 5 scoping-card + 11 support + 1 support-ticket + 11 session-lifecycle + 5 sow)",
     );
   },
 };
