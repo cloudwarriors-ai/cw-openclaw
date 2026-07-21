@@ -5,11 +5,13 @@
 // tools use and formatted entirely in code (no model in the loop; the digest
 // is a report, not a conversation).
 //
-// Scheduling rides the passthrough-runner pattern (gateway:startup interval,
-// unref'd, gateway:shutdown cleanup — index.ts) but fires once per day: a
-// minute-granularity tick checks "past the configured hour AND not yet posted
-// today (UTC)", with the last-posted date persisted in the workspace so a
-// container restart can neither double-post nor skip a day.
+// Scheduling: an unref'd interval started directly in register() with cleanup
+// via api.lifecycle.registerRuntimeLifecycle (index.ts — NOT gateway:startup,
+// which never fires for this lazily-registered plugin; see the scheduling
+// pattern comment there). Fires once per day: a minute-granularity tick
+// checks "past the configured hour AND not yet posted today (UTC)", with the
+// last-posted date persisted in the workspace so a container restart can
+// neither double-post nor skip a day.
 //
 // Failure posture: every fetch is independent and fail-soft — a section that
 // errors renders as "unavailable" instead of suppressing the digest. Sends
