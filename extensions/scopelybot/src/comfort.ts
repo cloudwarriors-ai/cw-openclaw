@@ -1,3 +1,10 @@
+// Zoom send plane for scopelybot: chatbot-token acquisition, the comfort
+// message ("On it...") posted on inbound requests — context-aware since
+// Slice 4, classified deterministically from the inbound text — the generic
+// deterministic text send (confirm prompts, escalations, digests), and the
+// per-channel thread anchor that threads deterministic posts under the
+// originating request.
+
 // ScopelyBot Zoom channel JID — update this after creating the channel in Zoom
 const SCOPELYBOT_CHANNEL = process.env.SCOPELYBOT_ZOOM_CHANNEL ?? "";
 
@@ -30,9 +37,47 @@ const COMFORT_MESSAGES = [
   "Let me dig into that...",
 ];
 
+// Deterministic domain classification for context-aware comfort messages
+// (Slice 4). Keyword regex only — no model, no network. Ordered: the first
+// matching domain wins, so more specific vocabularies (users, pricing) sit
+// above the broad session/deal bucket. Falls back to the generic pool.
+const COMFORT_DOMAINS: Array<{ re: RegExp; text: string }> = [
+  {
+    re: /\buser|password|login|log ?in|verification|account|email address\b/i,
+    text: "Checking user records...",
+  },
+  { re: /\bpric|rate card|discount|cost|curve|quote\b/i, text: "Pulling pricing details..." },
+  { re: /\bvendor|card config|scoping card|project type\b/i, text: "Checking vendor configuration..." },
+  {
+    re: /\bsession|deal|sow|approv|archive|reopen|clone|pipeline|scope\b/i,
+    text: "Looking into the deal pipeline...",
+  },
+  {
+    re: /\bhealth|status|error|log|extract|monitor|uptime|down\b/i,
+    text: "Checking system health...",
+  },
+  { re: /\bgithub|issue|repo|deploy|release\b/i, text: "Checking the repo and deploys..." },
+];
+
+// Trivial greetings/acks get a real coordinator reply anyway — a comfort
+// message on top is pure noise. Deliberately narrow: anything with actual
+// request content must still get its comfort message.
+const GREETING_RE =
+  /^(?:hi|hello|hey|yo|thanks?|thank you|ok(?:ay)?|got it|good (?:morning|afternoon|evening)|gm)[\s!.]*$/i;
+
+// Pick the comfort text for an inbound message: domain-matched when the
+// vocabulary is recognizable, otherwise the legacy random pool.
+export function pickComfortText(inboundText: string): string {
+  for (const { re, text } of COMFORT_DOMAINS) {
+    if (re.test(inboundText)) return text;
+  }
+  return COMFORT_MESSAGES[Math.floor(Math.random() * COMFORT_MESSAGES.length)];
+}
+
 export async function sendComfortMessage(
   channelJid: string,
   replyToMessageId?: string,
+  inboundText?: string,
 ): Promise<void> {
   // Only send to the designated ScopelyBot channel
   if (!SCOPELYBOT_CHANNEL || channelJid !== SCOPELYBOT_CHANNEL) {
@@ -45,7 +90,13 @@ export async function sendComfortMessage(
     return;
   }
 
-  const text = COMFORT_MESSAGES[Math.floor(Math.random() * COMFORT_MESSAGES.length)];
+  // Skip trivial greetings — the coordinator's real reply is enough.
+  const inbound = (inboundText ?? "").trim();
+  if (inbound && GREETING_RE.test(inbound)) {
+    return;
+  }
+
+  const text = pickComfortText(inbound);
   const normalizedReplyTo =
     typeof replyToMessageId === "string" && replyToMessageId.trim().length > 0
       ? replyToMessageId.trim()

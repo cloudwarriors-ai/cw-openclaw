@@ -8,6 +8,7 @@ import type { ScopelyBotConfig } from "./src/config.js";
 import { configuredWriteApprovers, resolveScopelyBotConfig } from "./src/config.js";
 import { tryExecuteConfirm } from "./src/confirm.js";
 import { registerCorrelationTools } from "./src/correlation-tools.js";
+import { dailyDigestEnabled, runDigestTick } from "./src/daily-digest.js";
 import { registerDeploymentConfigTools } from "./src/deployment-config-tools.js";
 import { registerGhTools } from "./src/gh-tools.js";
 import { guardInboundMessage } from "./src/inbound-guard.js";
@@ -36,6 +37,7 @@ const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
 const MIN_INTERVAL_MS = 60 * 1000;
 
 let intervalHandle: NodeJS.Timeout | null = null;
+let digestHandle: NodeJS.Timeout | null = null;
 
 const plugin = {
   id: "scopelybot",
@@ -151,7 +153,9 @@ const plugin = {
       const messageId =
         typeof event.metadata?.messageId === "string" ? event.metadata.messageId : undefined;
       rememberChannelThreadAnchor(ctx.conversationId, messageId);
-      void sendComfortMessage(ctx.conversationId, messageId);
+      // Slice 4: the inbound text drives deterministic domain classification
+      // (context-aware comfort) and the trivial-greeting skip inside comfort.ts.
+      void sendComfortMessage(ctx.conversationId, messageId, text);
     });
 
     // Confirm gate execution: a human `CONFIRM <code>` reply runs the staged action.
@@ -246,6 +250,28 @@ const plugin = {
       console.log(
         "[scopelybot-passthrough] runner disabled (set PASSTHROUGH_RUNNER_ENABLED=1 and SCOPELY_REPO_PATH to enable)",
       );
+    }
+
+    // Daily digest (Slice 4, SCOPELYBOT_DAILY_DIGEST=1): a minute tick that
+    // fires at most once per UTC day past SCOPELYBOT_DIGEST_HOUR_UTC, with the
+    // last-posted date persisted in the workspace (restart-safe). Same
+    // startup/shutdown lifecycle as the passthrough runner.
+    if (dailyDigestEnabled()) {
+      api.registerHook("gateway:startup", () => {
+        digestHandle = setInterval(() => {
+          void runDigestTick(workspaceDir).catch((err) => {
+            console.error("[scopelybot-digest] tick failed:", err);
+          });
+        }, 60_000);
+        digestHandle.unref?.();
+        console.log("[scopelybot-digest] daily digest enabled");
+      });
+      api.registerHook("gateway:shutdown", () => {
+        if (digestHandle) {
+          clearInterval(digestHandle);
+          digestHandle = null;
+        }
+      });
     }
 
     console.log(
