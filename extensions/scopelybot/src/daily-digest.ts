@@ -37,7 +37,15 @@ export function digestHourUtc(): number {
 // possibly stuck. Created-date is the only staleness dimension the admin
 // sessions list can filter on (no ordering/updated_at params — verified
 // against SessionAdminViewSet._filtered_queryset).
-const STUCK_AFTER_DAYS = 7;
+// Default 60: calibrated against LIVE prod data 2026-07-21 — at the original
+// 7d default the flag caught 381 of ~391 in-progress sessions (zero
+// information); the live distribution was >7d:381, >30d:372, >60d:96,
+// >90d:0, so 60 is the knee where the flag starts discriminating.
+// Env-tunable so the PM can re-calibrate as the pipeline ages.
+export function stuckAfterDays(): number {
+  const raw = Number(process.env.SCOPELYBOT_DIGEST_STUCK_DAYS ?? "60");
+  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 60;
+}
 
 // Zoom chatbot messages cap near 4096 chars (core adapter chunks agent
 // replies at 4000 — extensions/zoom/src/outbound.ts). sendScopelyText posts
@@ -95,6 +103,21 @@ function countOf(v: unknown): number | undefined {
   return undefined;
 }
 
+// Human-format a stat by key shape (live-data polish 2026-07-21: the raw
+// floats read as "pipeline value: 14570816.5" in the first live build).
+// Currency-ish keys (…_value/_size) render compact ($14.57M / $79.9k);
+// rate keys render as percentages. Deterministic key-suffix rules only.
+function formatStatValue(key: string, value: number): string {
+  if (/_(?:value|size)$/.test(key)) {
+    const abs = Math.abs(value);
+    if (abs >= 1_000_000) return `$${(value / 1_000_000).toFixed(2)}M`;
+    if (abs >= 1_000) return `$${(value / 1_000).toFixed(1)}k`;
+    return `$${value}`;
+  }
+  if (/_rate$/.test(key)) return `${value}%`;
+  return String(value);
+}
+
 // Render "42 (+5)" style deltas for numeric stats present in both snapshots.
 function statsLine(current: Record<string, unknown>, previous: Record<string, unknown>): string {
   const parts: string[] = [];
@@ -103,8 +126,10 @@ function statsLine(current: Record<string, unknown>, previous: Record<string, un
     const prev = previous[key];
     const delta = typeof prev === "number" ? value - prev : undefined;
     const deltaText =
-      delta === undefined || delta === 0 ? "" : ` (${delta > 0 ? "+" : ""}${delta})`;
-    parts.push(`${key.replace(/_/g, " ")}: ${value}${deltaText}`);
+      delta === undefined || delta === 0
+        ? ""
+        : ` (${delta > 0 ? "+" : "-"}${formatStatValue(key, Math.abs(delta))})`;
+    parts.push(`${key.replace(/_/g, " ")}: ${formatStatValue(key, value)}${deltaText}`);
     if (parts.length >= 6) break;
   }
   return parts.length > 0 ? parts.join(", ") : "no numeric stats available";
@@ -143,7 +168,8 @@ export async function buildDigest(previousStats: Record<string, unknown>): Promi
   }
 
   try {
-    const cutoff = new Date(Date.now() - STUCK_AFTER_DAYS * 86_400_000).toISOString().slice(0, 10);
+    const stuckDays = stuckAfterDays();
+    const cutoff = new Date(Date.now() - stuckDays * 86_400_000).toISOString().slice(0, 10);
     const stuck = await scopelyFetch(
       `/api/admin/sessions/?status=in_progress&date_to=${cutoff}&limit=5`,
     );
@@ -163,7 +189,7 @@ export async function buildDigest(previousStats: Record<string, unknown>): Promi
         .filter((s) => s !== "#?");
       lines.push(
         total > 0
-          ? `Possibly stuck (in progress, created >${STUCK_AFTER_DAYS}d ago): ${total}` +
+          ? `Possibly stuck (in progress, created >${stuckDays}d ago): ${total}` +
               (names.length > 0 ? ` — ${names.join(", ")}` : "")
           : "Possibly stuck deals: none",
       );
