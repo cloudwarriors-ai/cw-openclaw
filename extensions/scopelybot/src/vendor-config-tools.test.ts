@@ -112,6 +112,7 @@ describe("vendor-config-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
+      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });
@@ -134,6 +135,7 @@ describe("vendor-config-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
+      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });
@@ -158,6 +160,7 @@ describe("vendor-config-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
+      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });
@@ -172,6 +175,7 @@ describe("vendor-config-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${delCode}`,
       actor: "t",
+      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });
@@ -195,6 +199,7 @@ describe("vendor-config-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
+      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });

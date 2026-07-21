@@ -138,6 +138,7 @@ describe("pricing-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
+      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });
@@ -170,6 +171,7 @@ describe("pricing-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
+      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });
@@ -195,6 +197,7 @@ describe("pricing-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
+      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });
@@ -211,6 +214,7 @@ describe("pricing-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
+      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });

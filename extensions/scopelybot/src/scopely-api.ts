@@ -1,3 +1,4 @@
+import { redactText, redactValue } from "./redaction.js";
 import { scopelyCookieHeader, scopelyEnsureAuth, scopelyClearSession } from "./scopely-auth.js";
 
 const SCOPELY_URL = () =>
@@ -43,11 +44,11 @@ export async function scopelyFetch(
 }
 
 export function jsonResult(data: unknown) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
+  return { content: [{ type: "text" as const, text: JSON.stringify(redactValue(data)) }] };
 }
 
 export function errorResult(err: unknown) {
-  const message = err instanceof Error ? err.message : String(err);
+  const message = redactText(err instanceof Error ? err.message : String(err), 1000);
   return {
     content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: message }) }],
   };

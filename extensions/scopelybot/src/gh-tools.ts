@@ -3,6 +3,7 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
+import { stageWrite } from "./gated.js";
 import { jsonResult, errorResult } from "./scopely-api.js";
 
 type PluginConfig = { scopelyRepos?: string[] };
@@ -171,27 +172,29 @@ export function registerGhTools(api: OpenClawPluginApi, logger: AuditLogger, con
             const labels = params.labels as string[] | undefined;
             const title = typeof params.title === "string" ? params.title : "";
             const body = typeof params.body === "string" ? params.body : "";
-            const result = execFileSync(
-              "gh",
-              [
-                "issue",
-                "create",
-                "--repo",
-                repo,
-                "--title",
-                title,
-                ...(labels?.length ? ["--label", labels.join(",")] : []),
-                "--body-file",
-                "-",
-              ],
-              {
-                encoding: "utf-8",
-                input: body,
-                timeout: 30000,
-                env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1" },
-              },
-            );
-            return jsonResult({ ok: true, url: result.trim() });
+            return await stageWrite(`create GitHub issue in ${repo}: ${title}`, async () => {
+              const result = execFileSync(
+                "gh",
+                [
+                  "issue",
+                  "create",
+                  "--repo",
+                  repo,
+                  "--title",
+                  title,
+                  ...(labels?.length ? ["--label", labels.join(",")] : []),
+                  "--body-file",
+                  "-",
+                ],
+                {
+                  encoding: "utf-8",
+                  input: body,
+                  timeout: 30000,
+                  env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1" },
+                },
+              );
+              return { ok: true, status: 201, data: { url: result.trim() } };
+            });
           } catch (err) {
             return errorResult(err);
           }
@@ -220,17 +223,19 @@ export function registerGhTools(api: OpenClawPluginApi, logger: AuditLogger, con
             assertAllowedRepo(repo, config);
             const issueNumber = assertIssueNumber(params.number);
             const body = typeof params.body === "string" ? params.body : "";
-            const result = execFileSync(
-              "gh",
-              ["issue", "comment", String(issueNumber), "--repo", repo, "--body-file", "-"],
-              {
-                encoding: "utf-8",
-                input: body,
-                timeout: 30000,
-                env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1" },
-              },
-            );
-            return jsonResult({ ok: true, url: result.trim() });
+            return await stageWrite(`comment on GitHub issue ${repo}#${issueNumber}`, async () => {
+              const result = execFileSync(
+                "gh",
+                ["issue", "comment", String(issueNumber), "--repo", repo, "--body-file", "-"],
+                {
+                  encoding: "utf-8",
+                  input: body,
+                  timeout: 30000,
+                  env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1" },
+                },
+              );
+              return { ok: true, status: 200, data: { url: result.trim() } };
+            });
           } catch (err) {
             return errorResult(err);
           }
@@ -291,9 +296,6 @@ export function registerGhTools(api: OpenClawPluginApi, logger: AuditLogger, con
             Type.String({ description: "Repo (owner/name). Defaults to primary Scopely repo." }),
           ),
           number: Type.Number({ description: "Issue number" }),
-          comment: Type.Optional(
-            Type.String({ description: "Closing comment to post before closing." }),
-          ),
           reason: Type.Optional(
             Type.String({ description: "Close reason: completed or not_planned." }),
           ),
@@ -308,38 +310,25 @@ export function registerGhTools(api: OpenClawPluginApi, logger: AuditLogger, con
               params.reason.trim().toLowerCase() === "not_planned"
                 ? "not planned"
                 : "completed";
-            const closingComment = typeof params.comment === "string" ? params.comment.trim() : "";
-
-            if (closingComment) {
-              execFileSync(
-                "gh",
-                ["issue", "comment", String(issueNumber), "--repo", repo, "--body-file", "-"],
-                {
-                  encoding: "utf-8",
-                  input: closingComment,
-                  timeout: 30000,
-                  env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1" },
-                },
-              );
-            }
-
-            const closeOutput = execFileSync(
-              "gh",
-              ["issue", "close", String(issueNumber), "--repo", repo, "--reason", reason],
-              {
-                encoding: "utf-8",
-                timeout: 30000,
-                env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1" },
+            return await stageWrite(
+              `close GitHub issue ${repo}#${issueNumber} as ${reason}`,
+              async () => {
+                const closeOutput = execFileSync(
+                  "gh",
+                  ["issue", "close", String(issueNumber), "--repo", repo, "--reason", reason],
+                  {
+                    encoding: "utf-8",
+                    timeout: 30000,
+                    env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1" },
+                  },
+                ).trim();
+                return {
+                  ok: true,
+                  status: 200,
+                  data: { number: issueNumber, repo, closeOutput, closeReason: reason },
+                };
               },
-            ).trim();
-
-            return jsonResult({
-              ok: true,
-              number: issueNumber,
-              repo,
-              closeOutput,
-              closeReason: reason,
-            });
+            );
           } catch (err) {
             return errorResult(err);
           }
