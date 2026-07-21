@@ -29,6 +29,26 @@ export function registerScopelyTools(api: OpenClawPluginApi, logger: AuditLogger
     ),
   );
 
+  // Health endpoints live on the API host (api.vip.pscx.ai), not the frontend
+  // BFF, and need no auth — served directly by Django (scopely config/urls.py).
+  // SCOPELY_HEALTH_URL overrides the /health/ URL; component health derives
+  // from the same base so one override moves both.
+  function healthUrl(suffix: "" | "components/"): string {
+    const baseUrl =
+      process.env.SCOPELY_BASE_URL ?? process.env.SCOPELY_URL ?? "https://vip.pscx.ai";
+    const root =
+      process.env.SCOPELY_HEALTH_URL ?? `${baseUrl.replace("//vip.", "//api.vip.")}/health/`;
+    return `${root.replace(/\/+$/, "")}/${suffix}`;
+  }
+
+  async function fetchHealth(url: string) {
+    const resp = await fetch(url);
+    const data = resp.headers.get("content-type")?.includes("application/json")
+      ? await resp.json()
+      : await resp.text();
+    return jsonResult({ ok: resp.ok, status: resp.status, data });
+  }
+
   // scopely_health_check — "Is the service up?"
   api.registerTool(() =>
     wrapToolWithAudit(
@@ -40,16 +60,30 @@ export function registerScopelyTools(api: OpenClawPluginApi, logger: AuditLogger
         parameters: Type.Object({}),
         async execute() {
           try {
-            const baseUrl =
-              process.env.SCOPELY_BASE_URL ?? process.env.SCOPELY_URL ?? "https://vip.pscx.ai";
-            const healthUrl =
-              process.env.SCOPELY_HEALTH_URL ??
-              `${baseUrl.replace("//vip.", "//api.vip.")}/health/`;
-            const resp = await fetch(healthUrl);
-            const data = resp.headers.get("content-type")?.includes("application/json")
-              ? await resp.json()
-              : await resp.text();
-            return jsonResult({ ok: resp.ok, status: resp.status, data });
+            return await fetchHealth(healthUrl(""));
+          } catch (err) {
+            return errorResult(err);
+          }
+        },
+      },
+      logger,
+    ),
+  );
+
+  // scopely_component_health — "Is the box up AND does the product still work?"
+  api.registerTool(() =>
+    wrapToolWithAudit(
+      {
+        name: "scopely_component_health",
+        description:
+          "Check per-dependency readiness of Scopely VIP: DocuSign, email, OAuth, CRM, SOW templates, " +
+          "and other integration components, each reported up/degraded/down/not_configured with a short " +
+          "reason, plus an overall rollup. Use this when 'is it up' isn't enough — e.g. 'why are SOW " +
+          "sends failing' or before/after a change window. Read-only.",
+        parameters: Type.Object({}),
+        async execute() {
+          try {
+            return await fetchHealth(healthUrl("components/"));
           } catch (err) {
             return errorResult(err);
           }
