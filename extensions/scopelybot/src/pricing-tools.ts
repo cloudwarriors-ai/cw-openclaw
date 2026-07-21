@@ -2,12 +2,49 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
+import { fetchDeploymentTypeKeys } from "./deployment-keys.js";
 import { describeChanges, pickBody, stageWrite } from "./gated.js";
 import { buildQuery, errorResult, jsonResult, scopelyFetch } from "./scopely-api.js";
 
 // Pricing-config tools (Scopely VIP admin). All IsPlatformStaff. Reads run
 // immediately; writes are confirm-gated. Prices are decimal STRINGS (e.g. "15.00").
 // unit_price_by_deployment is a dict {deployment_key: "price"}; deployment_types is a string list.
+
+// Fail-loud deployment-key validation for pricing writes (live incident
+// 2026-07-21): asked to "Make it core", the model wrote the pricing CATEGORY
+// "core" into deployment_types on two dialpad items. The backend accepted it
+// (its validator only checks "list of strings"), but the pricing engine gates
+// CCaaS rows on `effective_deployment in deployment_types` — so rows with an
+// unknown deployment type NEVER match a real deployment and silently drop from
+// every quote. Category is validated loudly by the backend (400 naming the
+// enum); deployment keys are the SILENT failure, so they get the pre-stage
+// gate here — same pattern as the issue-#81 fix in support-tools.
+// Returns an error string naming the unknown + valid keys, or null to proceed.
+// FAILS OPEN (null) when the template lookup errors: validation must never
+// turn a backend outage into a false rejection.
+async function rejectUnknownDeploymentKeys(
+  params: Record<string, unknown>,
+): Promise<string | null> {
+  const referenced: string[] = [];
+  if (Array.isArray(params.deployment_types)) {
+    referenced.push(...params.deployment_types.map(String));
+  }
+  const overrides = params.unit_price_by_deployment;
+  if (overrides && typeof overrides === "object" && !Array.isArray(overrides)) {
+    referenced.push(...Object.keys(overrides));
+  }
+  if (referenced.length === 0) return null;
+  const validKeys = await fetchDeploymentTypeKeys();
+  if (validKeys.length === 0) return null; // fail open — lookup unavailable
+  const unknown = [...new Set(referenced.filter((k) => !validKeys.includes(k)))];
+  if (unknown.length === 0) return null;
+  return (
+    `Unknown deployment type key(s): ${unknown.join(", ")}. Valid keys: ${validKeys.join(", ")}. ` +
+    `A pricing row gated on an unknown deployment type never matches a real deployment and ` +
+    `silently drops from every quote. Note "Core" is a pricing CATEGORY, not a deployment ` +
+    `type — do not put category values in deployment_types. Fix the keys and retry.`
+  );
+}
 
 const PRICING_FIELDS = [
   "pricing_key",
@@ -29,16 +66,22 @@ function pricingBodyParams(extra: Record<string, unknown> = {}) {
     unit_price: Type.String({ description: 'Unit price as a decimal string, e.g. "15.00"' }),
     unit_price_by_deployment: Type.Optional(
       Type.Record(Type.String(), Type.String(), {
-        description: 'Per-deployment price overrides, e.g. {"autopilot":"18.00"}',
+        description:
+          'Per-deployment price overrides keyed by deployment-type KEY, e.g. {"autopilot":"18.00"}. ' +
+          "Unknown keys are rejected with the valid list.",
       }),
     ),
     category: Type.String({
-      description: "Pricing category (must be a valid UCaaS pricing category)",
+      description:
+        "Pricing category (must be a valid UCaaS pricing category, e.g. Core, Integrations). " +
+        "This is NOT a deployment type.",
     }),
     sort_order: Type.Optional(Type.Number({ description: "Sort order (default 0)" })),
     deployment_types: Type.Optional(
       Type.Array(Type.String(), {
-        description: 'Deployment type keys, e.g. ["autopilot","copilot"]',
+        description:
+          'Deployment type KEYS, e.g. ["autopilot","copilot","bespoke"] — NOT a pricing category ' +
+          'like "Core". Unknown keys are rejected with the valid list.',
       }),
     ),
     is_active: Type.Optional(Type.Boolean({ description: "Active flag (default true)" })),
@@ -105,6 +148,8 @@ export function registerPricingTools(api: OpenClawPluginApi, logger: AuditLogger
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
+            const keyError = await rejectUnknownDeploymentKeys(params);
+            if (keyError) return jsonResult({ ok: false, error: keyError });
             const body = pickBody(params, ["scope_category", ...PRICING_FIELDS]);
             return stageWrite(
               `create pricing default ${params.scope_category as string}/${params.pricing_key as string} @ ${params.unit_price as string}`,
@@ -138,12 +183,20 @@ export function registerPricingTools(api: OpenClawPluginApi, logger: AuditLogger
           unit_price_by_deployment: Type.Optional(Type.Record(Type.String(), Type.String())),
           category: Type.Optional(Type.String()),
           sort_order: Type.Optional(Type.Number()),
-          deployment_types: Type.Optional(Type.Array(Type.String())),
+          deployment_types: Type.Optional(
+            Type.Array(Type.String(), {
+              description:
+                "Deployment type KEYS (e.g. autopilot, copilot, bespoke) — NOT a pricing " +
+                "category. Unknown keys are rejected with the valid list.",
+            }),
+          ),
           is_active: Type.Optional(Type.Boolean()),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
             const id = params.id as number;
+            const keyError = await rejectUnknownDeploymentKeys(params);
+            if (keyError) return jsonResult({ ok: false, error: keyError });
             const body = pickBody(params, PRICING_FIELDS);
             if (Object.keys(body).length === 0) {
               return jsonResult({ ok: false, error: "No fields to update." });
@@ -232,6 +285,8 @@ export function registerPricingTools(api: OpenClawPluginApi, logger: AuditLogger
           try {
             const vendorKey = params.vendor_key as string;
             const ptPk = params.project_type_id as number;
+            const keyError = await rejectUnknownDeploymentKeys(params);
+            if (keyError) return jsonResult({ ok: false, error: keyError });
             const body = pickBody(params, PRICING_FIELDS);
             return stageWrite(
               `create pricing item ${params.pricing_key as string} on ${vendorKey}/pt ${ptPk} @ ${params.unit_price as string}`,
@@ -268,7 +323,13 @@ export function registerPricingTools(api: OpenClawPluginApi, logger: AuditLogger
           unit_price_by_deployment: Type.Optional(Type.Record(Type.String(), Type.String())),
           category: Type.Optional(Type.String()),
           sort_order: Type.Optional(Type.Number()),
-          deployment_types: Type.Optional(Type.Array(Type.String())),
+          deployment_types: Type.Optional(
+            Type.Array(Type.String(), {
+              description:
+                "Deployment type KEYS (e.g. autopilot, copilot, bespoke) — NOT a pricing " +
+                "category. Unknown keys are rejected with the valid list.",
+            }),
+          ),
           is_active: Type.Optional(Type.Boolean()),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
@@ -276,6 +337,8 @@ export function registerPricingTools(api: OpenClawPluginApi, logger: AuditLogger
             const vendorKey = params.vendor_key as string;
             const ptPk = params.project_type_id as number;
             const id = params.id as number;
+            const keyError = await rejectUnknownDeploymentKeys(params);
+            if (keyError) return jsonResult({ ok: false, error: keyError });
             const body = pickBody(params, PRICING_FIELDS);
             if (Object.keys(body).length === 0) {
               return jsonResult({ ok: false, error: "No fields to update." });
