@@ -113,6 +113,9 @@ describe("pricing-tools", () => {
   });
 
   // Core safety guarantee: every write stages, none touch prod during execute().
+  // (Carve-out: when deployment keys are supplied, execute runs ONE read-only
+  // template GET for validation — the WRITE_TOOLS args here omit them, so the
+  // no-fetch assertion stays strict for the mutation path.)
   it("ALL write tools STAGE only — execute() never calls scopelyFetch", async () => {
     const t = buildTools();
     for (const [name, args] of Object.entries(WRITE_TOOLS)) {
@@ -122,8 +125,106 @@ describe("pricing-tools", () => {
     expect(fetchMock, "no write tool may call scopelyFetch before CONFIRM").not.toHaveBeenCalled();
   });
 
+  // Live incident 2026-07-21: asked to "Make it core", the model wrote the
+  // pricing CATEGORY "core" into deployment_types on two dialpad items. The
+  // backend accepted it (validator only checks "list of strings") but the
+  // pricing engine's deployment gate means such rows silently drop from every
+  // quote. Deployment keys are validated pre-stage against the live template
+  // list; the backend stays the loud authority for category.
+  describe("deployment-key validation (silent-drop guard)", () => {
+    const TEMPLATES = {
+      ok: true,
+      status: 200,
+      data: [{ key: "autopilot" }, { key: "copilot" }, { key: "bespoke" }, { key: "tnm" }],
+    };
+    const ITEM_ARGS = {
+      vendor_key: "dialpad",
+      project_type_id: 99,
+      pricing_key: "workflows",
+      display_name: "Workflows",
+      unit_price: "0.00",
+      category: "Core",
+    };
+
+    it("rejects an unknown deployment_types key BEFORE staging (incident regression)", async () => {
+      const t = buildTools();
+      fetchMock.mockResolvedValueOnce(TEMPLATES);
+      const res = parse(
+        await t.scopely_create_pricing_item.execute("x", {
+          ...ITEM_ARGS,
+          deployment_types: ["core"],
+        }),
+      );
+      expect(res.ok).toBe(false);
+      expect(res.error).toContain("Unknown deployment type key(s): core");
+      expect(res.error).toContain("autopilot, copilot, bespoke, tnm");
+      expect(res.error).toContain("pricing CATEGORY");
+      // Nothing staged: no confirm prompt was delivered, only the lookup fired.
+      expect(sendScopelyTextMock).not.toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(String(fetchMock.mock.calls[0][0])).toContain("deployment-type-templates");
+    });
+
+    it("rejects unknown keys in unit_price_by_deployment (same silent-drop key space)", async () => {
+      const t = buildTools();
+      fetchMock.mockResolvedValueOnce(TEMPLATES);
+      const res = parse(
+        await t.scopely_update_pricing_item.execute("x", {
+          vendor_key: "dialpad",
+          project_type_id: 99,
+          id: 1080,
+          unit_price_by_deployment: { prod: "5.00" },
+        }),
+      );
+      expect(res.ok).toBe(false);
+      expect(res.error).toContain("Unknown deployment type key(s): prod");
+      expect(sendScopelyTextMock).not.toHaveBeenCalled();
+    });
+
+    it("valid keys stage normally on defaults and items", async () => {
+      const t = buildTools();
+      fetchMock.mockResolvedValue(TEMPLATES);
+      const item = parse(
+        await t.scopely_create_pricing_item.execute("x", {
+          ...ITEM_ARGS,
+          deployment_types: ["bespoke", "copilot"],
+        }),
+      );
+      expect(item.staged).toBe(true);
+      const dflt = parse(
+        await t.scopely_update_pricing_default.execute("x", {
+          id: 3,
+          deployment_types: ["tnm"],
+        }),
+      );
+      expect(dflt.staged).toBe(true);
+    });
+
+    it("FAILS OPEN when the template lookup errors — never blocks a valid request", async () => {
+      const t = buildTools();
+      fetchMock.mockRejectedValueOnce(new Error("backend down"));
+      const res = parse(
+        await t.scopely_create_pricing_item.execute("x", {
+          ...ITEM_ARGS,
+          deployment_types: ["bespoke"],
+        }),
+      );
+      expect(res.staged).toBe(true);
+    });
+
+    it("skips the lookup entirely when no deployment keys are supplied", async () => {
+      const t = buildTools();
+      const res = parse(await t.scopely_create_pricing_item.execute("x", ITEM_ARGS));
+      expect(res.staged).toBe(true);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
   it("create_pricing_default confirms to POST with supplied fields", async () => {
     const t = buildTools();
+    // deployment_types present → execute runs the read-only template lookup
+    // first; feed it valid keys so staging proceeds.
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, data: [{ key: "autopilot" }] });
     const code = codeOf(
       await t.scopely_create_pricing_default.execute("x", {
         scope_category: "ucaas",
@@ -142,7 +243,7 @@ describe("pricing-tools", () => {
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });
-    const [path, opts] = fetchMock.mock.calls[0];
+    const [path, opts] = fetchMock.mock.calls.at(-1)!;
     expect(path).toBe("/api/admin/pricing-defaults/");
     expect(opts.method).toBe("POST");
     expect(JSON.parse(opts.body)).toEqual({

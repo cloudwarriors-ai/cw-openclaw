@@ -5,6 +5,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
 import type { ScopelyBotConfig } from "./config.js";
+import { fetchDeploymentTypeKeys } from "./deployment-keys.js";
 import { traceScopelyLogs, listScopelyServices } from "./devtools-client.js";
 import { stageWrite } from "./gated.js";
 import { buildQuery, errorResult, jsonResult, scopelyFetch } from "./scopely-api.js";
@@ -215,18 +216,14 @@ export function registerSupportTools(
             // returns all-zero counts for an unknown deployment_type value —
             // observed live 2026-07-21 when the model guessed deployment="prod"
             // and confidently reported "0 sessions" against 713 real ones.
-            // Valid keys are data-defined (deployment-type templates), so we
-            // check against the live list instead of hardcoding an enum. Same
-            // self-correction pattern that fixed the S7 container guessing.
+            // Valid keys are data-defined, fetched via the shared helper
+            // (deployment-keys.ts — also guards pricing writes); an empty
+            // list means the lookup failed and we fail open.
             const deployment =
               typeof params.deployment === "string" ? params.deployment.trim() : "";
             if (deployment) {
-              const templates = await scopelyFetch(`/api/admin/deployment-type-templates/`);
-              const rows = Array.isArray(templates.data)
-                ? templates.data
-                : ((asRecord(templates.data).results as unknown[]) ?? []);
-              const validKeys = rows.map((row) => String(asRecord(row).key ?? "")).filter(Boolean);
-              if (templates.ok && validKeys.length > 0 && !validKeys.includes(deployment)) {
+              const validKeys = await fetchDeploymentTypeKeys();
+              if (validKeys.length > 0 && !validKeys.includes(deployment)) {
                 return jsonResult({
                   ok: false,
                   error:
