@@ -466,28 +466,58 @@ function isFused(fuseKey: string, now: number): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Voice-judge per-run once guard. The harness does not enforce per-check
-// retry budgets (see the revise-return comment), and an LLM judge is
-// non-deterministic across passes — without this cap a picky judge could
-// burn all 3 harness revisions on voice alone. Bounded FIFO so the set
-// cannot grow without limit across a long-lived process.
+// Voice-judge caps. The harness does not enforce per-check retry budgets
+// (see the revise-return comment), and an LLM judge is non-deterministic
+// across passes — without caps a picky judge could burn all 3 harness
+// revisions on voice alone. TWO independent caps (2026-07-21 S23 live find:
+// one logical turn can span MULTIPLE announce runs — the coordinator's
+// completion-event answer re-routes, the second spoke completion starts a
+// FRESH runId — so a per-run guard alone let voice fire twice in one turn,
+// burn the correctness fuse, and post a false "couldn't verify" escalation
+// on a fully-grounded answer):
+//   1. Per-run once guard (bounded FIFO) — at most one voice revise per run.
+//   2. Per-sessionKey cooldown — after a voice revise, the judge is not even
+//      CALLED again for that conversation until the cooldown lapses,
+//      covering the multi-announce-run turn shape.
+// Because these self-caps bound voice churn, voice revises do NOT record
+// into the shared correctness fuse (see superviseFinalize) — a tone opinion
+// must never trip an escalation that claims a verification failure.
 // ---------------------------------------------------------------------------
 
 const VOICE_JUDGED_RUNS_MAX = 200;
 const voiceRevisedRuns = new Set<string>();
 
-function markVoiceRevised(runKey: string): void {
+// sessionKey → epoch-ms until which the voice judge stays quiet. Bounded FIFO.
+const VOICE_COOLDOWN_KEYS_MAX = 200;
+const voiceCooldownUntil = new Map<string, number>();
+
+function voiceCooldownMs(): number {
+  const raw = Number(process.env.SCOPELYBOT_SUPERVISOR_VOICE_COOLDOWN_MS ?? String(180_000));
+  return Number.isFinite(raw) && raw >= 0 ? raw : 180_000;
+}
+
+function markVoiceRevised(runKey: string, sessionKey: string, now: number): void {
   voiceRevisedRuns.add(runKey);
   if (voiceRevisedRuns.size > VOICE_JUDGED_RUNS_MAX) {
     const oldest = voiceRevisedRuns.values().next().value;
     if (oldest !== undefined) voiceRevisedRuns.delete(oldest);
   }
+  voiceCooldownUntil.set(sessionKey, now + voiceCooldownMs());
+  if (voiceCooldownUntil.size > VOICE_COOLDOWN_KEYS_MAX) {
+    const oldest = voiceCooldownUntil.keys().next().value;
+    if (oldest !== undefined) voiceCooldownUntil.delete(oldest);
+  }
+}
+
+function voiceOnCooldown(sessionKey: string, now: number): boolean {
+  return (voiceCooldownUntil.get(sessionKey) ?? 0) > now;
 }
 
 // Test hook: clear all fuse state between test cases.
 export function resetSupervisorStateForTest(): void {
   fuseBySession.clear();
   voiceRevisedRuns.clear();
+  voiceCooldownUntil.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -515,9 +545,11 @@ export async function superviseFinalize(
 
   // Voice lane (v2.1, SCOPELYBOT_SUPERVISOR_VOICE=1): only when the
   // deterministic plane is satisfied, only for human-facing coordinator
-  // drafts, and at most once per run (the harness's revision budget is
-  // global, not per-check — a non-deterministic judge must self-cap).
-  // judgeVoice never throws: error/timeout/malformed output all fail open.
+  // drafts, at most once per run AND once per sessionKey-cooldown window
+  // (one logical turn can span multiple announce runs — the harness's
+  // revision budget is global, not per-check, and a non-deterministic judge
+  // must self-cap). judgeVoice never throws: error/timeout/malformed output
+  // all fail open.
   const runKey = event.runId ?? event.turnId ?? "";
   if (
     verdict.ok &&
@@ -525,11 +557,16 @@ export async function superviseFinalize(
     scope.profile === "coordinator" &&
     deps.llmComplete &&
     runKey &&
-    !voiceRevisedRuns.has(runKey)
+    !voiceRevisedRuns.has(runKey) &&
+    !voiceOnCooldown(sessionKey, now)
   ) {
-    const voice = await judgeVoice(draft, { complete: deps.llmComplete, logger: deps.logger, now: deps.now });
+    const voice = await judgeVoice(draft, {
+      complete: deps.llmComplete,
+      logger: deps.logger,
+      now: deps.now,
+    });
     if (!voice.ok) {
-      markVoiceRevised(runKey);
+      markVoiceRevised(runKey, sessionKey, now);
       verdict = {
         ok: false,
         checkId: "voice",
@@ -539,6 +576,32 @@ export async function superviseFinalize(
     }
   }
   if (verdict.ok) return undefined;
+
+  // Voice revises bypass the shared correctness fuse: they are already
+  // bounded by the per-run + cooldown caps above, and the fuse's escalation
+  // text claims a VERIFICATION failure — which a tone opinion is not
+  // (2026-07-21 S23 live find: a voice re-fire tripped the fuse and posted a
+  // false "couldn't fully verify" escalation on a grounded answer).
+  if (verdict.checkId === "voice") {
+    deps.logger({
+      ts: new Date(now).toISOString(),
+      tool: "scopely_supervisor",
+      actor: "system",
+      params: { checkId: verdict.checkId, sessionKey, profile: scope.profile },
+      resultSummary: `revise: ${verdict.checkId}`,
+    });
+    return {
+      action: "revise",
+      // Same substrate fact as the deterministic return below: only `reason`
+      // reaches the model, so the framed instruction rides there.
+      reason: verdict.instruction,
+      retry: {
+        instruction: verdict.instruction,
+        idempotencyKey: `scopelybot-supervisor:${event.turnId ?? event.runId ?? "turn"}:${verdict.checkId}`,
+        maxAttempts: 1,
+      },
+    };
+  }
 
   const tripped = recordRevisionAndCheckFuse(scope.fuseKey, now);
   deps.logger({
