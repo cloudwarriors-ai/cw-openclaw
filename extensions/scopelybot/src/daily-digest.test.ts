@@ -38,9 +38,7 @@ function mockAllReads() {
       return Promise.resolve(ok({ total_sessions: 713, in_progress: 391, orgs: 12 }));
     if (p === "/api/admin/approvals/") return Promise.resolve(ok({ count: 2, results: [{}, {}] }));
     if (p.startsWith("/api/admin/sessions/"))
-      return Promise.resolve(
-        ok({ count: 1, results: [{ id: 42, company_name: "Globex" }] }),
-      );
+      return Promise.resolve(ok({ count: 1, results: [{ id: 42, company_name: "Globex" }] }));
     if (p.startsWith("/api/extraction-monitor/"))
       return Promise.resolve(ok({ count: 0, results: [] }));
     return Promise.resolve({ ok: false, status: 404, data: "" });
@@ -106,7 +104,8 @@ describe("buildDigest", () => {
   it("a failing section renders unavailable without suppressing the digest", async () => {
     scopelyFetchMock.mockImplementation((p: string) => {
       if (p === "/api/admin/stats/") return Promise.reject(new Error("down"));
-      if (p === "/api/admin/approvals/") return Promise.resolve({ ok: false, status: 502, data: "" });
+      if (p === "/api/admin/approvals/")
+        return Promise.resolve({ ok: false, status: 502, data: "" });
       return Promise.resolve(ok({ count: 0, results: [] }));
     });
     const digest = await buildDigest({});
@@ -127,6 +126,18 @@ describe("chunkDigestText", () => {
       expect(chunk.startsWith("line")).toBe(true); // line-boundary splits
     }
     expect(chunks.join("\n")).toBe(lines.join("\n")); // lossless
+  });
+
+  it("hard-slices a single line longer than the limit — every chunk stays under it (review fix)", () => {
+    // Reviewer repro: one line > 2×limit previously produced an over-limit
+    // chunk ([4000, 5000] for a 9000-char line at limit 4000).
+    const chunks = chunkDigestText("x".repeat(9000), 4000);
+    expect(chunks).toEqual(["x".repeat(4000), "x".repeat(4000), "x".repeat(1000)]);
+    // Oversize line arriving after accumulated content: current is flushed
+    // first, then the line is slice-looped — nothing exceeds the limit.
+    const mixed = chunkDigestText(`header\n${"y".repeat(9000)}\nfooter`, 4000);
+    for (const chunk of mixed) expect(chunk.length).toBeLessThanOrEqual(4000);
+    expect(mixed.join("")).toContain("footer");
   });
 });
 

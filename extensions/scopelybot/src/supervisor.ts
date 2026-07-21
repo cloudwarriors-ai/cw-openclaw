@@ -5,10 +5,10 @@
 // Wired into `before_agent_finalize`: reviews a DRAFT final reply before it is
 // accepted, and either lets it through (`continue`) or requests a bounded
 // revision pass. Bounds: the harness's global MAX_BEFORE_AGENT_FINALIZE_
-// REVISIONS=3 per run (run.ts:217) plus this module's fuse — the harness does
-// NOT enforce per-check retry budgets (retry.{idempotencyKey,maxAttempts} are
-// typed but unconsumed; only `reason` reaches the model, see the revise-return
-// comment below). All checks are DETERMINISTIC string/shape predicates — no
+// REVISIONS=3 per run (run.ts:217), the harness's per-(run, idempotencyKey)
+// maxAttempts budget over the retry block (lifecycle-hook-helpers.ts — audit
+// correction 2026-07-21: the retry fields ARE consumed), plus this module's
+// fuse. All checks are DETERMINISTIC string/shape predicates — no
 // model in the supervisor's own loop (per the v2 research: deterministic
 // claim-vs-evidence is the highest-confidence egress pattern; LLM self-checks
 // are a documented failure mode).
@@ -435,7 +435,15 @@ function resolveScope(sessionKey: string): SessionScope {
 // Fuse — per-fuse-key sliding window of revision timestamps + cooldown.
 // ---------------------------------------------------------------------------
 
+// Leak classes are the SECURITY plane: never suppressed by the fuse cooldown,
+// never charge the fuse (see superviseFinalize). The fuse governs only the
+// churn-prone quality checks.
+const SECURITY_CHECKS = new Set(["confirm_code_leak", "secret_leak"]);
+
 type FuseState = { revisions: number[]; fusedUntil: number };
+// Bounded FIFO (2026-07-21 review finding: this map previously grew one
+// permanent entry per coordinator/spoke fuse key for the process lifetime).
+const FUSE_KEYS_MAX = 500;
 const fuseBySession = new Map<string, FuseState>();
 
 function fuseFor(fuseKey: string): FuseState {
@@ -443,6 +451,10 @@ function fuseFor(fuseKey: string): FuseState {
   if (!s) {
     s = { revisions: [], fusedUntil: 0 };
     fuseBySession.set(fuseKey, s);
+    if (fuseBySession.size > FUSE_KEYS_MAX) {
+      const oldest = fuseBySession.keys().next().value;
+      if (oldest !== undefined) fuseBySession.delete(oldest);
+    }
   }
   return s;
 }
@@ -539,9 +551,42 @@ export async function superviseFinalize(
   if (!draft.trim()) return undefined;
 
   const now = deps.now ? deps.now() : Date.now();
-  if (isFused(scope.fuseKey, now)) return { action: "continue" };
+  const fused = isFused(scope.fuseKey, now);
 
   let verdict = reviewDraft(draft, collectTurnEvidence(event.messages), scope.profile);
+
+  // SECURITY checks (leak classes) bypass the fuse entirely — they neither
+  // charge it nor honor its cooldown (2026-07-21 audit HIGH: the fused
+  // pass-through otherwise suppresses confirm_code_leak/secret_leak for the
+  // whole cooldown window, so a fuse trip would disable the egress security
+  // plane for ~10 min). Churn is still bounded WITHOUT the fuse: the harness
+  // enforces both the global 3-revisions/run cap and a per-(run, checkId)
+  // maxAttempts=1 budget from the retry block below
+  // (src/agents/harness/lifecycle-hook-helpers.ts finalize retry budget), so
+  // a persistently-leaking draft gets at most one revise per check per run,
+  // then finalizes. These checks are low-false-positive by design.
+  if (!verdict.ok && SECURITY_CHECKS.has(verdict.checkId)) {
+    deps.logger({
+      ts: new Date(now).toISOString(),
+      tool: "scopely_supervisor",
+      actor: "system",
+      params: { checkId: verdict.checkId, sessionKey, profile: scope.profile },
+      resultSummary: `revise: ${verdict.checkId}`,
+    });
+    return {
+      action: "revise",
+      reason: verdict.instruction,
+      retry: {
+        instruction: verdict.instruction,
+        idempotencyKey: `scopelybot-supervisor:${event.turnId ?? event.runId ?? "turn"}:${verdict.checkId}`,
+        maxAttempts: 1,
+      },
+    };
+  }
+
+  // Fused cooldown pass-through applies only to the QUALITY lanes (voice +
+  // grounding/format checks) — the churn-prone classes the fuse exists for.
+  if (fused) return { action: "continue" };
 
   // Voice lane (v2.1, SCOPELYBOT_SUPERVISOR_VOICE=1): only when the
   // deterministic plane is satisfied, only for human-facing coordinator
@@ -592,8 +637,9 @@ export async function superviseFinalize(
     });
     return {
       action: "revise",
-      // Same substrate fact as the deterministic return below: only `reason`
-      // reaches the model, so the framed instruction rides there.
+      // Same shape as the deterministic return below: reason carries the full
+      // framed instruction; the retry block adds the harness's per-(run,
+      // checkId) budget (see the corrected substrate-fact comment there).
       reason: verdict.instruction,
       retry: {
         instruction: verdict.instruction,
@@ -632,15 +678,16 @@ export async function superviseFinalize(
 
   return {
     action: "revise",
-    // SUBSTRATE FACT (verified 2026-07-21): the harness feeds ONLY `reason`
-    // back to the model — run.ts builds the retry prompt as
-    // BEFORE_AGENT_FINALIZE_RETRY_PROMPT_PREFIX + "\n\n" + outcome.reason
-    // (src/agents/embedded-agent-runner/run.ts:276, attempt.ts:3193). The
-    // `retry.{instruction,idempotencyKey,maxAttempts}` fields exist in the
-    // typed contract (hook-types.ts:377) but nothing consumes them today, so
-    // the actionable instruction MUST ride in `reason` or it is silently
-    // dropped. The real revision bounds are the harness's global cap
-    // (MAX_BEFORE_AGENT_FINALIZE_REVISIONS=3 per run) plus this module's fuse.
+    // SUBSTRATE FACT (corrected 2026-07-21 after audit): the retry block IS
+    // consumed — src/agents/harness/lifecycle-hook-helpers.ts enforces a
+    // per-(runId, idempotencyKey) budget of maxAttempts and merges
+    // retry.instruction INTO the reason before run.ts builds the retry prompt
+    // (BEFORE_AGENT_FINALIZE_RETRY_PROMPT_PREFIX + reason, run.ts:276,
+    // attempt.ts:3193). So the retry fields are LOAD-BEARING: they give each
+    // checkId a 1-shot-per-run cap on top of the global
+    // MAX_BEFORE_AGENT_FINALIZE_REVISIONS=3. `reason` still carries the full
+    // instruction so the prompt is complete even for a hypothetical consumer
+    // that reads only reason. Do not delete the retry block.
     reason: verdict.instruction,
     retry: {
       instruction: verdict.instruction,

@@ -141,9 +141,7 @@ export async function buildDigest(previousStats: Record<string, unknown>): Promi
   }
 
   try {
-    const cutoff = new Date(Date.now() - STUCK_AFTER_DAYS * 86_400_000)
-      .toISOString()
-      .slice(0, 10);
+    const cutoff = new Date(Date.now() - STUCK_AFTER_DAYS * 86_400_000).toISOString().slice(0, 10);
     const stuck = await scopelyFetch(
       `/api/admin/sessions/?status=in_progress&date_to=${cutoff}&limit=5`,
     );
@@ -200,15 +198,24 @@ export function chunkDigestText(text: string, limit = CHUNK_LIMIT): string[] {
   let current = "";
   for (const line of text.split("\n")) {
     const candidate = current ? `${current}\n${line}` : line;
-    if (candidate.length > limit && current) {
-      chunks.push(current);
-      current = line;
-    } else if (candidate.length > limit) {
-      chunks.push(candidate.slice(0, limit));
-      current = candidate.slice(limit);
-    } else {
+    if (candidate.length <= limit) {
       current = candidate;
+      continue;
     }
+    if (current) {
+      chunks.push(current);
+      current = "";
+    }
+    // A single line can exceed the limit on its own — hard-slice it
+    // repeatedly (review fix 2026-07-21: a one-shot slice let the remainder
+    // exceed the limit whenever one line was > 2×limit, and the
+    // push-current-then-carry path could emit an oversize carried line).
+    let rest = line;
+    while (rest.length > limit) {
+      chunks.push(rest.slice(0, limit));
+      rest = rest.slice(limit);
+    }
+    current = rest;
   }
   if (current) chunks.push(current);
   return chunks;
