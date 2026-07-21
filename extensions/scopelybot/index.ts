@@ -17,6 +17,7 @@ import { registerPassthroughTools } from "./src/passthrough-tools.js";
 import { registerPricingTools } from "./src/pricing-tools.js";
 import { registerScopelyTools } from "./src/scopely-tools.js";
 import { registerScopingCardTools } from "./src/scoping-card-tools.js";
+import { superviseFinalize } from "./src/supervisor.js";
 import { registerSupportTools } from "./src/support-tools.js";
 import { registerUserMaintenanceTools } from "./src/user-maintenance-tools.js";
 import { registerVendorConfigTools } from "./src/vendor-config-tools.js";
@@ -101,6 +102,17 @@ const plugin = {
     // Zoom card bodies do not render Markdown. Keep this rewrite at the Scopely
     // plugin boundary so other agents and channels retain their existing output.
     api.on("message_sending", (event, ctx) => rewriteScopelyBotZoomMessage(event.content, ctx));
+
+    // Runtime supervisor (Slice S): review the coordinator's draft final reply
+    // before it is accepted — deterministic rules/voice/grounding checks with a
+    // harness-budgeted single revision pass and a fuse that escalates to a named
+    // human instead of retrying forever. Opt-in via SCOPELYBOT_SUPERVISOR=1
+    // (checked inside superviseFinalize, at call time); scoped inside to
+    // agent:scopelybot: sessions so other bots' turns are untouched. NOTE: this
+    // is a conversation-typed hook — non-bundled deployments must also set
+    // plugins.entries.scopelybot.hooks.allowConversationAccess=true or the
+    // registry drops it with a warn diagnostic (src/plugins/registry.ts).
+    api.on("before_agent_finalize", (event) => superviseFinalize(event, { logger }));
 
     // Comfort message + thread-anchor capture on inbound. CONFIRM execution is
     // NOT handled here: message_received is a fire-and-forget OBSERVE hook (it
