@@ -1,17 +1,48 @@
-// Runtime supervisor for scopelybot (Slice S — Doug's direction, design in
-// docs/reference/scopely-support-service-design.md §4.2).
+// Runtime supervisor for scopelybot (Slice S v1 + Slice S2 v2 — Doug's
+// direction; design in docs/reference/scopely-support-service-design.md §4.2,
+// v2 research in docs/reference/supervisor-v2-research.md).
 //
-// Wired into `before_agent_finalize`: reviews the coordinator's DRAFT final
-// reply before it is accepted, and either lets it through (`continue`) or
-// requests ONE bounded revision pass (`revise` + retry.maxAttempts=1 — the
-// harness enforces the budget per run+idempotencyKey, so a broken check can
-// never create an unbounded loop). All checks are DETERMINISTIC string/shape
-// predicates — no model in the supervisor's own loop.
+// Wired into `before_agent_finalize`: reviews a DRAFT final reply before it is
+// accepted, and either lets it through (`continue`) or requests ONE bounded
+// revision pass (`revise` + retry.maxAttempts=1 — the harness enforces the
+// budget per run+idempotencyKey, so a broken check can never create an
+// unbounded loop). All checks are DETERMINISTIC string/shape predicates — no
+// model in the supervisor's own loop (per the v2 research: deterministic
+// claim-vs-evidence is the highest-confidence egress pattern; LLM self-checks
+// are a documented failure mode).
+//
+// v2 (SCOPELYBOT_SUPERVISOR_V2=1) extends v1 with:
+//   - an EVIDENCE MODEL that understands how this hub-and-spoke bot is
+//     actually grounded: spoke results reach the coordinator as USER-role
+//     prompts carrying the internal-completion-event markers (verified against
+//     a live prod transcript 2026-07-21 — they are NOT toolResults and never
+//     land in the persisted jsonl). Internal-event user messages count as
+//     grounding evidence; only HUMAN user messages reset the turn boundary.
+//     This also fixes a latent v1 defect where a routed numeric answer would
+//     have tripped unsupported_state_claim (internal events reset the
+//     boundary, leaving zero visible tool activity).
+//   - `ungrounded_claim`: hard tokens in the draft (emails, ids, ≥3-digit
+//     numbers, currency) must appear in the same-turn evidence corpus or the
+//     human's own message. Missing values force a revision that demands FRESH
+//     evidence (per Huang et al. ICLR 2024: self-correction without new
+//     external evidence degrades answers — the instruction never says "try
+//     harder", it says "re-read").
+//   - SPOKE coverage: scopely-* spoke finalize turns get the leak checks plus
+//     both grounding checks. Spokes are the enforcement point for accuracy:
+//     read-only spoke turns have no deterministic side effects, so the
+//     harness's revise path actually runs there — unlike coordinator turns
+//     that spawned spokes (hasAcceptedSessionSpawn blocks revision,
+//     src/agents/embedded-agent-runner/run/attempt.ts side-effect guard), where
+//     this module's verdict is detection/audit only. Write-spokes that already
+//     committed a staged execute are likewise detection-only by construction.
 //
 // The fuse (Doug's requirement): repeated revisions within a window mean the
 // model cannot satisfy the checks — stop retrying, accept the draft, post a
 // plain-language escalation naming a human owner to the bound channel, and
 // cool down (pass-through) so a degraded model can't spam revision churn.
+// Spoke sessions embed a fresh UUID per spawn (agent:<spoke>:subagent:<uuid>),
+// so the spoke fuse keys on the stable `agent:<spokeId>` prefix — a full-key
+// fuse would never accumulate across spawns and could never escalate.
 //
 // Out of reach BY CONSTRUCTION: the confirm gate. This module never touches
 // the pending-confirm store; its only contact with CONFIRM is BLOCKING drafts
@@ -46,12 +77,25 @@ export type SupervisorVerdict =
   | { ok: true }
   | { ok: false; checkId: string; reason: string; instruction: string };
 
+// Which check profile applies to the session under review. Spokes return
+// structured internal evidence packets, so they skip the raw_json_dump
+// voice check but get the full grounding checks.
+export type SupervisorProfile = "coordinator" | "spoke";
+
 // Opt-in via env, same rollout pattern as SCOPELYBOT_CONFIRM_BUNDLE_MS:
 // unset/0 = supervisor disabled (byte-identical legacy behavior), so enabling
 // on prod is an explicit, reversible env line. Read at call time so tests and
 // late-loading env both resolve.
 export function supervisorEnabled(): boolean {
   return process.env.SCOPELYBOT_SUPERVISOR === "1";
+}
+
+// v2 gate: spoke coverage + the ungrounded_claim check. Separate from the
+// base flag because SCOPELYBOT_SUPERVISOR=1 is already live on prod — new
+// check classes must not activate through an already-on switch (audit
+// finding, 2026-07-21).
+export function supervisorV2Enabled(): boolean {
+  return process.env.SCOPELYBOT_SUPERVISOR_V2 === "1";
 }
 
 // Fuse tuning (env-overridable). Defaults: 3 revisions inside 10 minutes trip
@@ -70,7 +114,7 @@ function fuseCooldownMs(): number {
 }
 
 // ---------------------------------------------------------------------------
-// Checks — deterministic predicates over the draft text + turn tool activity.
+// Checks — deterministic predicates over the draft text + turn evidence.
 // Ordered by severity; the first failure wins (one revision instruction per
 // pass keeps the retry prompt unambiguous).
 // ---------------------------------------------------------------------------
@@ -93,8 +137,8 @@ const SECRET_RES: RegExp[] = [
 ];
 
 // State-assertion cues: the draft claims concrete app state (ids, multi-digit
-// counts, currency, percentages, emails). Combined with ZERO tool activity in
-// the turn, this is the hallucinated-state signature T1/S9 was probing for.
+// counts, currency, percentages, emails). Combined with ZERO evidence in the
+// turn, this is the hallucinated-state signature T1/S9 was probing for.
 const STATE_CUE_RES: RegExp[] = [
   /#\d+/,
   /\bid\s*[:=]?\s*\d+/i,
@@ -126,10 +170,167 @@ function looksLikeJsonDump(draft: string): boolean {
   }
 }
 
-// Review one draft. `hadToolActivity` = did the turn include any tool result
-// (spoke dispatches surface as tool results in the coordinator transcript,
-// so routed reads count as grounding).
-export function reviewDraft(draft: string, hadToolActivity: boolean): SupervisorVerdict {
+// ---------------------------------------------------------------------------
+// Turn evidence model.
+//
+// How this bot is ACTUALLY grounded (verified on a live prod coordinator
+// transcript, 2026-07-21): spoke completion packets are delivered to the
+// coordinator as USER-role prompts carrying the internal-event markers below —
+// they are NOT toolResults. So the grounding corpus for a turn is: toolResult
+// content + internal-event user-message content, and the turn boundary is the
+// last HUMAN user message (one without the markers). The marker strings are
+// structural copies of core constants (src/agents/internal-events.ts,
+// src/agents/internal-runtime-context.ts) — test-pinned, not imported, per
+// this extension's no-core-imports convention.
+// ---------------------------------------------------------------------------
+
+const INTERNAL_EVENT_MARKERS = [
+  "[Internal task completion event]",
+  "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>",
+  "OpenClaw runtime event.",
+];
+
+// Extract plain text from a transcript message's content (string or blocks).
+function messageText(msg: unknown): string {
+  const content = (msg as { content?: unknown } | null)?.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((block) => {
+        const b = block as { type?: unknown; text?: unknown } | null;
+        return b && b.type === "text" && typeof b.text === "string" ? b.text : "";
+      })
+      .join("\n");
+  }
+  return "";
+}
+
+function isInternalEventText(text: string): boolean {
+  return INTERNAL_EVENT_MARKERS.some((marker) => text.includes(marker));
+}
+
+export type TurnEvidence = {
+  // True when the turn carries any grounding evidence (toolResults or
+  // internal completion events after the last human message).
+  hadEvidence: boolean;
+  // Concatenated evidence text for claim grounding.
+  corpus: string;
+  // The human's own message — values the user supplied are echoable without
+  // being treated as unverified state claims.
+  humanText: string;
+};
+
+// Walk the transcript: HUMAN user messages reset the turn; toolResults and
+// internal-event user messages accumulate as evidence.
+export function collectTurnEvidence(messages: unknown[] | undefined): TurnEvidence {
+  if (!Array.isArray(messages)) return { hadEvidence: false, corpus: "", humanText: "" };
+  let corpusParts: string[] = [];
+  let humanText = "";
+  for (const msg of messages) {
+    const role = (msg as { role?: unknown } | null)?.role;
+    if (role === "user") {
+      const text = messageText(msg);
+      if (isInternalEventText(text)) {
+        // Spoke packet / runtime event — evidence, not a turn boundary.
+        corpusParts.push(text);
+      } else {
+        // Fresh human message — new turn.
+        corpusParts = [];
+        humanText = text;
+      }
+    } else if (role === "toolResult") {
+      corpusParts.push(messageText(msg));
+    }
+  }
+  return {
+    hadEvidence: corpusParts.length > 0,
+    corpus: corpusParts.join("\n"),
+    humanText,
+  };
+}
+
+// Back-compat convenience used by v1 tests/consumers: "did this turn have any
+// grounding evidence". NOTE (v2 semantics fix): internal completion events now
+// count as evidence and no longer reset the turn — strictly FEWER
+// unsupported_state_claim fires than the v1 walk, never more.
+export function turnHadToolActivity(messages: unknown[] | undefined): boolean {
+  return collectTurnEvidence(messages).hadEvidence;
+}
+
+// ---------------------------------------------------------------------------
+// ungrounded_claim — hard-token extraction + evidence matching (v2).
+// ---------------------------------------------------------------------------
+
+// ISO-8601 dates/timestamps are formatting, not claims — a spoke legitimately
+// renders "2026-07-21T02:10:01Z" from epoch fields the corpus stores
+// differently. Strip them before token extraction.
+const ISO_DATETIME_RE =
+  /\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?\b/g;
+
+const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+// #123 and "id: 123" / "id 123" forms.
+const EXPLICIT_ID_RE = /(?:#|\bid\s*[:=]?\s*)(\d+)/gi;
+// 1,234.56 / 1234 / 149.00 — ≥3 significant digits once separators drop.
+const NUMBER_RE = /\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b|\b\d{3,}(?:\.\d+)?\b/g;
+
+function normalizeNumber(raw: string): string {
+  return raw.replace(/,/g, "");
+}
+
+// 4-digit standalone numbers in the plausible-year range are far more often
+// years than fabricated ids/counts — excluded to keep the false-positive cost
+// down (audit finding: dates/years dominate ordinary evidence packets).
+function isPlausibleYear(normalized: string): boolean {
+  if (!/^\d{4}$/.test(normalized)) return false;
+  const n = Number(normalized);
+  return n >= 1900 && n <= 2100;
+}
+
+// Extract the hard (checkable) claim tokens from a draft.
+export function extractHardTokens(draft: string): string[] {
+  const stripped = draft.replace(ISO_DATETIME_RE, " ");
+  const tokens = new Set<string>();
+  for (const m of stripped.matchAll(EMAIL_RE)) tokens.add(m[0].toLowerCase());
+  for (const m of stripped.matchAll(EXPLICIT_ID_RE)) tokens.add(m[1]);
+  for (const m of stripped.matchAll(NUMBER_RE)) {
+    const normalized = normalizeNumber(m[0]);
+    if (isPlausibleYear(normalized)) continue;
+    tokens.add(normalized);
+  }
+  return [...tokens];
+}
+
+// A token is grounded when it appears in the evidence corpus or the human's
+// own message (user-supplied ids are echoable). Numbers match separator- and
+// case-insensitively; decimals also match on their integer part (rendered
+// "149.00" vs stored "149").
+function tokenGrounded(token: string, haystack: string): boolean {
+  if (haystack.includes(token)) return true;
+  if (/^\d/.test(token) && token.includes(".")) {
+    const integerPart = token.split(".")[0];
+    if (integerPart.length >= 3 && haystack.includes(integerPart)) return true;
+  }
+  return false;
+}
+
+export function findUngroundedTokens(draft: string, evidence: TurnEvidence): string[] {
+  const haystack = normalizeNumber(`${evidence.corpus}\n${evidence.humanText}`).toLowerCase();
+  return extractHardTokens(draft).filter((token) => !tokenGrounded(token.toLowerCase(), haystack));
+}
+
+// ---------------------------------------------------------------------------
+// Draft review.
+// ---------------------------------------------------------------------------
+
+// Review one draft against a profile. Coordinator keeps the v1 check set
+// (+ ungrounded_claim under the v2 flag); spokes get the leak + grounding
+// checks but not the raw_json_dump voice check (their packets are structured
+// by contract).
+export function reviewDraft(
+  draft: string,
+  evidence: TurnEvidence,
+  profile: SupervisorProfile = "coordinator",
+): SupervisorVerdict {
   if (CONFIRM_CODE_RE.test(draft)) {
     return {
       ok: false,
@@ -154,7 +355,7 @@ export function reviewDraft(draft: string, hadToolActivity: boolean): Supervisor
       };
     }
   }
-  if (looksLikeJsonDump(draft)) {
+  if (profile === "coordinator" && looksLikeJsonDump(draft)) {
     return {
       ok: false,
       checkId: "raw_json_dump",
@@ -166,7 +367,7 @@ export function reviewDraft(draft: string, hadToolActivity: boolean): Supervisor
   }
   // A clarifying question back to the human is not a state claim.
   const isShortQuestion = draft.trim().length < 120 && draft.trim().endsWith("?");
-  if (!hadToolActivity && !isShortQuestion && STATE_CUE_RES.some((re) => re.test(draft))) {
+  if (!evidence.hadEvidence && !isShortQuestion && STATE_CUE_RES.some((re) => re.test(draft))) {
     return {
       ok: false,
       checkId: "unsupported_state_claim",
@@ -177,47 +378,75 @@ export function reviewDraft(draft: string, hadToolActivity: boolean): Supervisor
         "answering; if you cannot verify, say what you could not verify instead of guessing.",
     };
   }
+  // v2 grounding: with evidence present, every hard value in the draft must
+  // trace to that evidence (or to the human's own message). The revision
+  // demands NEW evidence, never a re-read of the draft's own reasoning.
+  if (supervisorV2Enabled() && evidence.hadEvidence && !isShortQuestion) {
+    const ungrounded = findUngroundedTokens(draft, evidence);
+    if (ungrounded.length > 0) {
+      const list = ungrounded.slice(0, 8).join(", ");
+      return {
+        ok: false,
+        checkId: "ungrounded_claim",
+        reason: `draft asserts values not present in this turn's evidence: ${list}`,
+        instruction:
+          profile === "spoke"
+            ? `These values in your answer do not appear in any tool result from this turn: ${list}. ` +
+              "Re-run the relevant read tool(s) and restate ONLY values present in fresh tool output; " +
+              "if a value cannot be verified, say so explicitly instead of stating it."
+            : `These values in your answer do not appear in the spoke evidence you received this turn: ${list}. ` +
+              "Restate only values present in the spoke results; if a value is missing, dispatch the " +
+              "appropriate spoke for a fresh read instead of stating it.",
+      };
+    }
+  }
   return { ok: true };
 }
 
 // ---------------------------------------------------------------------------
-// Turn tool-activity detection over the (unknown-typed) transcript messages:
-// any toolResult-role message AFTER the last user message counts.
+// Session scoping.
 // ---------------------------------------------------------------------------
 
-export function turnHadToolActivity(messages: unknown[] | undefined): boolean {
-  if (!Array.isArray(messages)) return false;
-  let sawToolResult = false;
-  for (const msg of messages) {
-    const role = (msg as { role?: unknown } | null)?.role;
-    if (role === "user") {
-      sawToolResult = false; // new turn boundary — reset
-    } else if (role === "toolResult") {
-      sawToolResult = true;
-    }
+const COORDINATOR_PREFIX = "agent:scopelybot:";
+// Spoke sessions: agent:scopely-<domain>:subagent:<uuid> (uuid fresh per
+// spawn — see fuse keying below).
+const SPOKE_KEY_RE = /^agent:(scopely-[a-z]+):/;
+
+type SessionScope = { profile: SupervisorProfile; fuseKey: string } | undefined;
+
+function resolveScope(sessionKey: string): SessionScope {
+  if (sessionKey.startsWith(COORDINATOR_PREFIX)) {
+    return { profile: "coordinator", fuseKey: sessionKey };
   }
-  return sawToolResult;
+  const spoke = SPOKE_KEY_RE.exec(sessionKey);
+  if (spoke && supervisorV2Enabled()) {
+    // Stable per-spoke fuse key: the full session key embeds a per-spawn UUID,
+    // which would give every spawn a fresh (empty) fuse and the escalation
+    // guarantee would never fire.
+    return { profile: "spoke", fuseKey: `agent:${spoke[1]}` };
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
-// Fuse — per-session sliding window of revision timestamps + cooldown.
+// Fuse — per-fuse-key sliding window of revision timestamps + cooldown.
 // ---------------------------------------------------------------------------
 
 type FuseState = { revisions: number[]; fusedUntil: number };
 const fuseBySession = new Map<string, FuseState>();
 
-function fuseFor(sessionKey: string): FuseState {
-  let s = fuseBySession.get(sessionKey);
+function fuseFor(fuseKey: string): FuseState {
+  let s = fuseBySession.get(fuseKey);
   if (!s) {
     s = { revisions: [], fusedUntil: 0 };
-    fuseBySession.set(sessionKey, s);
+    fuseBySession.set(fuseKey, s);
   }
   return s;
 }
 
 // Record a revision; returns true when this one TRIPS the fuse.
-function recordRevisionAndCheckFuse(sessionKey: string, now: number): boolean {
-  const s = fuseFor(sessionKey);
+function recordRevisionAndCheckFuse(fuseKey: string, now: number): boolean {
+  const s = fuseFor(fuseKey);
   const windowStart = now - fuseWindowMs();
   s.revisions = s.revisions.filter((t) => t >= windowStart);
   s.revisions.push(now);
@@ -229,8 +458,8 @@ function recordRevisionAndCheckFuse(sessionKey: string, now: number): boolean {
   return false;
 }
 
-function isFused(sessionKey: string, now: number): boolean {
-  return fuseFor(sessionKey).fusedUntil > now;
+function isFused(fuseKey: string, now: number): boolean {
+  return fuseFor(fuseKey).fusedUntil > now;
 }
 
 // Test hook: clear all fuse state between test cases.
@@ -250,25 +479,24 @@ export async function superviseFinalize(
   deps: { logger: AuditLogger; now?: () => number },
 ): Promise<FinalizeResult | undefined> {
   if (!supervisorEnabled()) return undefined;
-  // Coordinator scope only: spokes return internal packets (reviewed later);
-  // the user-facing surface is the scopelybot coordinator session.
   const sessionKey = event.sessionKey ?? "";
-  if (!sessionKey.startsWith("agent:scopelybot:")) return undefined;
+  const scope = resolveScope(sessionKey);
+  if (!scope) return undefined;
   const draft = typeof event.lastAssistantMessage === "string" ? event.lastAssistantMessage : "";
   if (!draft.trim()) return undefined;
 
   const now = deps.now ? deps.now() : Date.now();
-  if (isFused(sessionKey, now)) return { action: "continue" };
+  if (isFused(scope.fuseKey, now)) return { action: "continue" };
 
-  const verdict = reviewDraft(draft, turnHadToolActivity(event.messages));
+  const verdict = reviewDraft(draft, collectTurnEvidence(event.messages), scope.profile);
   if (verdict.ok) return undefined;
 
-  const tripped = recordRevisionAndCheckFuse(sessionKey, now);
+  const tripped = recordRevisionAndCheckFuse(scope.fuseKey, now);
   deps.logger({
     ts: new Date(now).toISOString(),
     tool: "scopely_supervisor",
     actor: "system",
-    params: { checkId: verdict.checkId, sessionKey },
+    params: { checkId: verdict.checkId, sessionKey, profile: scope.profile },
     resultSummary: tripped ? `fuse_tripped after ${verdict.checkId}` : `revise: ${verdict.checkId}`,
   });
 
