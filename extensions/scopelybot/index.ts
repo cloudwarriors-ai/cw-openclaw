@@ -222,6 +222,19 @@ const plugin = {
       );
     });
 
+    // Interval scheduling pattern (2026-07-21 prod incident + follow-up):
+    //   1. NEVER wire timers to `gateway:startup` — it is emitted exactly once
+    //      ~250ms after boot to listeners that exist AT BOOT
+    //      (src/gateway/server-startup-post-attach.ts), and scopelybot
+    //      registers LAZILY on first inbound, so such a hook never fires here.
+    //   2. `api.registerHook` also THROWS on missing opts.name (registry.ts
+    //      "hook registration missing name"), and a throw in register() fails
+    //      the ENTIRE plugin — the incident that killed every scopelybot tool.
+    //   Instead: start the unref'd interval directly in register() and hand
+    //   cleanup to api.lifecycle.registerRuntimeLifecycle (diagnostic-based
+    //   surface — registration problems log, never throw; cleanup runs on
+    //   plugin disable/reset/delete/restart via runPluginHostCleanup).
+
     // Schedule recurring passthrough test runs.
     // Disabled if PASSTHROUGH_RUNNER_ENABLED is not "1" or SCOPELY_REPO_PATH is unset.
     const runnerEnabled = process.env.PASSTHROUGH_RUNNER_ENABLED === "1";
@@ -231,26 +244,29 @@ const plugin = {
         MIN_INTERVAL_MS,
         Number(process.env.PASSTHROUGH_INTERVAL_MS ?? DEFAULT_INTERVAL_MS),
       );
-      api.registerHook("gateway:startup", () => {
-        // Run once at startup, then on the configured interval
+      // Run once at registration, then on the configured interval.
+      void runPassthroughCycle(workspaceDir, { source: "scheduled" }).catch((err) => {
+        console.error("[scopelybot-passthrough] startup cycle failed:", err);
+      });
+      if (intervalHandle) clearInterval(intervalHandle); // re-register safety
+      intervalHandle = setInterval(() => {
         void runPassthroughCycle(workspaceDir, { source: "scheduled" }).catch((err) => {
-          console.error("[scopelybot-passthrough] startup cycle failed:", err);
+          console.error("[scopelybot-passthrough] scheduled cycle failed:", err);
         });
-        intervalHandle = setInterval(() => {
-          void runPassthroughCycle(workspaceDir, { source: "scheduled" }).catch((err) => {
-            console.error("[scopelybot-passthrough] scheduled cycle failed:", err);
-          });
-        }, interval);
-        // Don't keep the process alive solely for this timer
-        intervalHandle.unref?.();
-        console.log(`[scopelybot-passthrough] runner enabled, interval=${interval}ms`);
+      }, interval);
+      // Don't keep the process alive solely for this timer.
+      intervalHandle.unref?.();
+      api.lifecycle.registerRuntimeLifecycle({
+        id: "scopelybot-passthrough-runner",
+        description: "Clears the scheduled passthrough-cycle interval",
+        cleanup: () => {
+          if (intervalHandle) {
+            clearInterval(intervalHandle);
+            intervalHandle = null;
+          }
+        },
       });
-      api.registerHook("gateway:shutdown", () => {
-        if (intervalHandle) {
-          clearInterval(intervalHandle);
-          intervalHandle = null;
-        }
-      });
+      console.log(`[scopelybot-passthrough] runner enabled, interval=${interval}ms`);
     } else {
       console.log(
         "[scopelybot-passthrough] runner disabled (set PASSTHROUGH_RUNNER_ENABLED=1 and SCOPELY_REPO_PATH to enable)",
@@ -259,24 +275,27 @@ const plugin = {
 
     // Daily digest (Slice 4, SCOPELYBOT_DAILY_DIGEST=1): a minute tick that
     // fires at most once per UTC day past SCOPELYBOT_DIGEST_HOUR_UTC, with the
-    // last-posted date persisted in the workspace (restart-safe). Same
-    // startup/shutdown lifecycle as the passthrough runner.
+    // last-posted date persisted in the workspace (restart-safe). Interval
+    // starts here in register() per the scheduling pattern above.
     if (dailyDigestEnabled()) {
-      api.registerHook("gateway:startup", () => {
-        digestHandle = setInterval(() => {
-          void runDigestTick(workspaceDir).catch((err) => {
-            console.error("[scopelybot-digest] tick failed:", err);
-          });
-        }, 60_000);
-        digestHandle.unref?.();
-        console.log("[scopelybot-digest] daily digest enabled");
+      if (digestHandle) clearInterval(digestHandle); // re-register safety
+      digestHandle = setInterval(() => {
+        void runDigestTick(workspaceDir).catch((err) => {
+          console.error("[scopelybot-digest] tick failed:", err);
+        });
+      }, 60_000);
+      digestHandle.unref?.();
+      api.lifecycle.registerRuntimeLifecycle({
+        id: "scopelybot-daily-digest",
+        description: "Clears the daily-digest minute tick",
+        cleanup: () => {
+          if (digestHandle) {
+            clearInterval(digestHandle);
+            digestHandle = null;
+          }
+        },
       });
-      api.registerHook("gateway:shutdown", () => {
-        if (digestHandle) {
-          clearInterval(digestHandle);
-          digestHandle = null;
-        }
-      });
+      console.log("[scopelybot-digest] daily digest enabled");
     }
 
     console.log(
