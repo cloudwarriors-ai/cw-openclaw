@@ -164,19 +164,21 @@ export async function judgeVoice(
   });
 
   try {
-    const result = await Promise.race([
-      deps.complete({
-        // Redacted draft: PII/secrets never leave for the third-party judge.
-        messages: [{ role: "user", content: redactText(draft, 4000) }],
-        model: voiceJudgeModel(),
-        maxTokens: 120,
-        temperature: 0,
-        systemPrompt: VOICE_SYSTEM_PROMPT,
-        signal: controller.signal,
-        purpose: "scopelybot voice judge",
-      }),
-      timeout,
-    ]);
+    const completion = deps.complete({
+      // Redacted draft: PII/secrets never leave for the third-party judge.
+      messages: [{ role: "user", content: redactText(draft, 4000) }],
+      model: voiceJudgeModel(),
+      maxTokens: 120,
+      temperature: 0,
+      systemPrompt: VOICE_SYSTEM_PROMPT,
+      signal: controller.signal,
+      purpose: "scopelybot voice judge",
+    });
+    // The completion keeps running after losing the race (the abort above is
+    // advisory — the callee may ignore the signal); its eventual rejection
+    // must never surface as an unhandled rejection.
+    completion.catch(() => {});
+    const result = await Promise.race([completion, timeout]);
     const guarded = guardJudgeOutput(result.text ?? "");
     if (guarded.kind === "pass") return { ok: true };
     if (guarded.kind === "revise") return { ok: false, instruction: guarded.instruction };
