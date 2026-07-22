@@ -3,9 +3,11 @@ name: praxis
 description: >
   Support and triage for Praxis, the GitHub-issue resolution orchestrator. Diagnose stuck or
   blocked issues, explain why an issue is where it is, and read its event trace — then escalate any
-  fix to a human (this skill is read-only). Use the praxis_* tools.
+  fix to a human (this skill is read-only). Use the praxis_* tools. Also covers the user-scoped
+  conversation flow ("my issues") when the praxis-write plugin is enabled for the agent.
   Triggers: "why is issue X stuck", "diagnose praxis issue", "what's blocking", "praxis status",
-  "is praxis stuck", "check praxis", "list blocked issues", "praxis issue [id]".
+  "is praxis stuck", "check praxis", "list blocked issues", "praxis issue [id]", "my issues",
+  "what's the status of my stuff", "my open issues".
 metadata:
   openclaw:
     emoji: "🩺"
@@ -70,9 +72,34 @@ fuse is why the issue is blocked.
    **None of those are available in this skill.** Tell the human exactly what action is needed and
    who must take it; do not attempt it yourself.
 
+## User-scoped conversation ("my issues")
+
+When someone asks about **their own** issues in a DM ("what's going on with my stuff?", "any of my
+issues need me?"), use the identity-scoped path from the `praxis-write` plugin (if enabled for this
+agent) — it derives the verified Zoom identity from runtime context and Praxis resolves the linked
+GitHub login server-side, so a user only ever sees their own issues:
+
+1. **List** — `praxis_my_issues` (no arguments). Lead with the items where `needs_user_action` is
+   true; each carries the internal `issue_id`, `ref`, `state`, and `open_question_field`.
+2. **Drill down** — `praxis_my_issue` with that `issue_id`. NEVER use the org-wide
+   `praxis_get_issue` / `praxis_list_issues` for a user asking about their own issues — those are
+   operator tools with no per-user scoping.
+3. **Act** — an issue in `needs_info` with an `open_question_field`: collect the missing detail
+   conversationally, then relay it with `praxis_provide_info`. An issue in `user_uat`: ask for
+   their verdict and submit it with `praxis_submit_verdict` (`pass` / `fail <reason>`).
+4. **Unlinked?** — if any of these return `identity_not_linked`, offer `praxis_link_github` and
+   check with `praxis_link_status` after they tap the link.
+
+**Agent configuration note:** an end-user-facing agent should allowlist the user-scoped tools
+(`praxis_my_issues`, `praxis_my_issue`, `praxis_provide_info`, `praxis_submit_verdict`,
+`praxis_link_github`, `praxis_link_status`) and deliberately EXCLUDE the org-wide reads
+(`praxis_list_issues`, `praxis_get_issue`, `praxis_list_events`, `praxis_diagnose_issue`) and the
+operator writes — the allowlist, not this document, is the enforcement.
+
 ## Boundary (read-only)
 
-This skill and its tools only **read** Praxis. There are no unblock/cancel/override/reply tools here
-by design. If your diagnosis concludes a mutation is needed, surface the recommendation and escalate
-to a human operator — never imply you performed it. (Hardened, opt-in write tools are a separate
-future phase, gated behind explicit policy.)
+This skill's own tools only **read** Praxis. There are no unblock/cancel/override tools here by
+design. If your diagnosis concludes a mutation is needed, surface the recommendation and escalate
+to a human operator — never imply you performed it. Hardened, opt-in write tools (verdicts,
+needs-info relay, unblock/cancel, my-issues) live in the separate `praxis-write` plugin, each
+allowlist-gated and identity-bound.

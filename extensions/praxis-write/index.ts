@@ -15,6 +15,7 @@ import {
   mintRepoConfirmToken,
   mintSelfHealConfirmToken,
   resolveWritePolicyConfig,
+  type ToolRequestContext,
   type WritePolicyConfig,
 } from "./policy.js";
 import {
@@ -22,6 +23,9 @@ import {
   getApiToken,
   getIssue,
   getLinkStatus,
+  getMyIssue,
+  getMyIssues,
+  setMyConsent,
   ingestIssue,
   mapStateToUatKindPrefix,
   onboardRepo,
@@ -1058,6 +1062,148 @@ const plugin = {
             ? `Your Zoom identity is linked to GitHub as ${githubLogin}.`
             : "Your Zoom identity is not linked to a GitHub account yet. Run praxis_link_github to link it.",
         });
+      },
+    }));
+
+    optionalApi.registerTool((toolContext) => ({
+      name: "praxis_my_issues",
+      description:
+        "List the chat user's OWN open Praxis issues (the ones they reported), across repos — " +
+        "use this when someone asks about 'my issues' / 'my stuff'. Uses the verified runtime " +
+        "identity (no model-supplied arguments); Praxis resolves the linked GitHub login " +
+        "server-side, so a user only ever sees their own issues. Each item carries the internal " +
+        "issue_id that praxis_my_issue / praxis_provide_info / praxis_submit_verdict take, plus " +
+        "needs_user_action + open_question_field so you can lead with what is waiting on them. " +
+        "If the identity is not linked, prompt praxis_link_github. Allowlist-gated.",
+      parameters: Type.Object({}),
+      async execute(toolCallId: string, _params: Record<string, unknown>) {
+        const actor = deriveActorContext(toolContext, toolCallId);
+
+        const decision = checkPolicy(actor, config);
+        if (!decision.allowed) {
+          return jsonResult({ ok: false, denied: decision.reason });
+        }
+        const channelUserId = actor.requestedBy;
+        if (!channelUserId) {
+          return jsonResult({ ok: false, denied: "no_requester_identity" });
+        }
+
+        let res: Awaited<ReturnType<typeof getMyIssues>>;
+        try {
+          res = await getMyIssues({ channel: "zoom", channel_user_id: channelUserId });
+        } catch (err) {
+          return errorResult(err);
+        }
+        const body = res.data;
+        if (!res.ok) {
+          const hint =
+            body?.error === "identity_not_linked"
+              ? "The user's Zoom identity is not linked to GitHub — run praxis_link_github."
+              : undefined;
+          return jsonResult({ ok: false, status: res.status, ...body, ...(hint ? { hint } : {}) });
+        }
+        return jsonResult({ ok: true, ...body });
+      },
+    }));
+
+    optionalApi.registerTool((toolContext) => ({
+      name: "praxis_my_issue",
+      description:
+        "Identity-scoped drill-down into ONE of the chat user's own issues (by internal issue_id " +
+        "from praxis_my_issues). Returns 404 unless the resolved user is that issue's reporter — " +
+        "this is the end-user detail path; NEVER use the org-wide praxis_get_issue for a user " +
+        "asking about their own issue. Allowlist-gated.",
+      parameters: Type.Object({
+        issue_id: Type.Number({ description: "Internal Praxis issue id (from praxis_my_issues)." }),
+      }),
+      async execute(toolCallId: string, params: { issue_id?: number }) {
+        const actor = deriveActorContext(toolContext, toolCallId);
+
+        const decision = checkPolicy(actor, config);
+        if (!decision.allowed) {
+          return jsonResult({ ok: false, denied: decision.reason });
+        }
+        const channelUserId = actor.requestedBy;
+        if (!channelUserId) {
+          return jsonResult({ ok: false, denied: "no_requester_identity" });
+        }
+        const issueId = typeof params.issue_id === "number" ? params.issue_id : Number.NaN;
+        if (!Number.isInteger(issueId) || issueId <= 0) {
+          return jsonResult({ ok: false, error: "issue_id_required" });
+        }
+
+        let res: Awaited<ReturnType<typeof getMyIssue>>;
+        try {
+          res = await getMyIssue(issueId, { channel: "zoom", channel_user_id: channelUserId });
+        } catch (err) {
+          return errorResult(err);
+        }
+        const body = res.data;
+        if (!res.ok) {
+          return jsonResult({ ok: false, status: res.status, ...body });
+        }
+        return jsonResult({ ok: true, ...body });
+      },
+    }));
+
+    // Shared body for the two consent tools: identical policy/identity gating, differing only in
+    // opt-in vs opt-out. Takes each tool's own toolContext (registerTool passes it per tool).
+    const runConsentTool = async (
+      toolContext: ToolRequestContext,
+      toolCallId: string,
+      optIn: boolean,
+    ) => {
+      const actor = deriveActorContext(toolContext, toolCallId);
+      const decision = checkPolicy(actor, config);
+      if (!decision.allowed) {
+        return jsonResult({ ok: false, denied: decision.reason });
+      }
+      const channelUserId = actor.requestedBy;
+      if (!channelUserId) {
+        return jsonResult({ ok: false, denied: "no_requester_identity" });
+      }
+      let res: Awaited<ReturnType<typeof setMyConsent>>;
+      try {
+        res = await setMyConsent({
+          channel: "zoom",
+          channel_user_id: channelUserId,
+          opt_in: optIn,
+        });
+      } catch (err) {
+        return errorResult(err);
+      }
+      const body = res.data;
+      if (!res.ok) {
+        return jsonResult({ ok: false, status: res.status, ...body });
+      }
+      return jsonResult({ ok: true, ...body });
+    };
+
+    optionalApi.registerTool((toolContext) => ({
+      name: "praxis_opt_in",
+      description:
+        "Opt the chat user IN to proactive Praxis DMs about their issues (a periodic digest of " +
+        "what's on their plate + what needs them). Call this when the user agrees to be kept " +
+        "posted — e.g. 'yes, keep me updated', 'notify me about my issues'. A verified identity " +
+        "alone is NOT consent; Praxis sends nothing proactively until this is set. Uses the " +
+        "verified runtime identity (no model-supplied arguments) and records the user's OWN " +
+        "opt-in. Reversible with praxis_opt_out. Allowlist-gated.",
+      parameters: Type.Object({}),
+      async execute(toolCallId: string, _params: Record<string, unknown>) {
+        return runConsentTool(toolContext, toolCallId, true);
+      },
+    }));
+
+    optionalApi.registerTool((toolContext) => ({
+      name: "praxis_opt_out",
+      description:
+        "Opt the chat user OUT of proactive Praxis DMs (stop the periodic digest). Call this when " +
+        "the user asks to stop being messaged / unsubscribe. Uses the verified runtime identity; " +
+        "revokes the user's OWN consent. Reactive answers to their questions are unaffected — " +
+        "this only stops Praxis-initiated messages. Allowlist-gated.",
+      parameters: Type.Object({}),
+      async execute(toolCallId: string, _params: Record<string, unknown>) {
+        return runConsentTool(toolContext, toolCallId, false);
       },
     }));
   },

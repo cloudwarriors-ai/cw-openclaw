@@ -1,7 +1,7 @@
 {
   "id": "praxis-write",
   "name": "Praxis Write",
-  "description": "Praxis operator write tools (hardened): onboard a repo, ingest a single untracked GitHub issue, file a self-improvement issue into the Praxis repo, run a self-heal scan that files deduped GitHub issues, unblock or cancel a stuck issue, submit UAT verdicts or relay needs-info answers on behalf of the chat user, or start GitHub account linking. Default-disabled; each call is allowlist-gated, requires a reason, and onboarding/ingest/file-issue/self-heal/destructive ops run a two-step dry-run/confirm. Authorization binds to the server-side operator; the chat requester is recorded as audit context only.",
+  "description": "Praxis operator write tools (hardened): onboard a repo, ingest a single untracked GitHub issue, file a self-improvement issue into the Praxis repo, run a self-heal scan that files deduped GitHub issues, unblock or cancel a stuck issue, submit UAT verdicts or relay needs-info answers on behalf of the chat user, start GitHub account linking, or read the chat user's own issues (identity-scoped my-issues list + drill-down). Default-disabled; each call is allowlist-gated, requires a reason, and onboarding/ingest/file-issue/self-heal/destructive ops run a two-step dry-run/confirm. Authorization binds to the server-side operator; the chat requester is recorded as audit context only.",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -29,7 +29,11 @@
       "praxis_ingest",
       "praxis_link_github",
       "praxis_link_status",
+      "praxis_my_issue",
+      "praxis_my_issues",
       "praxis_onboard",
+      "praxis_opt_in",
+      "praxis_opt_out",
       "praxis_provide_info",
       "praxis_self_heal",
       "praxis_submit_verdict",

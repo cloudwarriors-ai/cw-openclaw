@@ -263,3 +263,47 @@ export async function fileIssue(body: {
     body: JSON.stringify(body),
   });
 }
+
+/** Identity-scoped "my issues" list (Praxis /api/v1/my/issues). The caller forwards only the
+ * verified runtime channel identity; Praxis resolves the GitHub login server-side, so a user can
+ * only ever read their own reported issues. Returns raw result + status for the tool to surface. */
+export async function getMyIssues(params: {
+  channel: string;
+  channel_user_id: string;
+}): Promise<PraxisResponse<Record<string, unknown>>> {
+  const qs = new URLSearchParams({
+    channel: params.channel,
+    channel_user_id: params.channel_user_id,
+  }).toString();
+  return praxisFetch<Record<string, unknown>>(`/api/v1/my/issues?${qs}`);
+}
+
+/** Identity-scoped drill-down (Praxis /api/v1/my/issues/{id}): 404 unless the resolved user is
+ * that issue's reporter — the end-user detail path; org-wide /issues/{id} stays operator-only. */
+export async function getMyIssue(
+  issueId: number,
+  params: { channel: string; channel_user_id: string },
+): Promise<PraxisResponse<Record<string, unknown>>> {
+  const qs = new URLSearchParams({
+    channel: params.channel,
+    channel_user_id: params.channel_user_id,
+  }).toString();
+  return praxisFetch<Record<string, unknown>>(`/api/v1/my/issues/${issueId}?${qs}`);
+}
+
+/** Self-serve proactive-outreach consent for the caller (Praxis /api/v1/my/consent). `opt_in`
+ * true = POST (opt in), false = DELETE (opt out). Only the verified runtime identity is forwarded;
+ * Praxis resolves the login and records the caller's OWN consent as a user opt-in. */
+export async function setMyConsent(params: {
+  channel: string;
+  channel_user_id: string;
+  opt_in: boolean;
+}): Promise<PraxisResponse<Record<string, unknown>>> {
+  return praxisFetch<Record<string, unknown>>("/api/v1/my/consent", {
+    method: params.opt_in ? "POST" : "DELETE",
+    body: JSON.stringify({
+      channel: params.channel,
+      channel_user_id: params.channel_user_id,
+    }),
+  });
+}

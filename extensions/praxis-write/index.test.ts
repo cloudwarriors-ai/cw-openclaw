@@ -78,7 +78,7 @@ afterEach(() => {
 });
 
 describe("praxis-write registration", () => {
-  it("registers exactly the nine write tools, all optional", () => {
+  it("registers exactly the fourteen tools, all optional", () => {
     const { tools, registerOpts } = buildTools();
     expect(Object.keys(tools).toSorted()).toEqual([
       "praxis_cancel",
@@ -86,13 +86,17 @@ describe("praxis-write registration", () => {
       "praxis_ingest",
       "praxis_link_github",
       "praxis_link_status",
+      "praxis_my_issue",
+      "praxis_my_issues",
       "praxis_onboard",
+      "praxis_opt_in",
+      "praxis_opt_out",
       "praxis_provide_info",
       "praxis_self_heal",
       "praxis_submit_verdict",
       "praxis_unblock",
     ]);
-    expect(registerOpts).toHaveLength(10);
+    expect(registerOpts).toHaveLength(14);
     expect(registerOpts.every((o) => o.optional === true)).toBe(true);
   });
 });
@@ -628,7 +632,11 @@ describe("praxis_ingest", () => {
   it("fails closed when the allowlist is unconfigured (no fetch)", async () => {
     const { tools } = buildTools({ pluginConfig: undefined });
     const out = parse(
-      await tools.praxis_ingest.execute("c1", { full_name: REPO, number: 1015, reason: "track it" }),
+      await tools.praxis_ingest.execute("c1", {
+        full_name: REPO,
+        number: 1015,
+        reason: "track it",
+      }),
     );
     expect(out).toEqual({ ok: false, denied: "write_policy_unconfigured" });
     expect(fetchMock).not.toHaveBeenCalled();
@@ -676,7 +684,11 @@ describe("praxis_ingest", () => {
   it("dry-run previews and makes no HTTP call at all", async () => {
     const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
     const out = parse(
-      await tools.praxis_ingest.execute("c1", { full_name: REPO, number: 1015, reason: "track it" }),
+      await tools.praxis_ingest.execute("c1", {
+        full_name: REPO,
+        number: 1015,
+        reason: "track it",
+      }),
     );
     expect(out.preview).toBe(true);
     expect(out.action).toBe("ingest");
@@ -1033,7 +1045,12 @@ describe("praxis_provide_info", () => {
         mockResponse({
           ok: true,
           status: 200,
-          body: { issues: [{ id: 182, source_issue: 65 }, { id: 9, source_issue: 2 }] },
+          body: {
+            issues: [
+              { id: 182, source_issue: 65 },
+              { id: 9, source_issue: 2 },
+            ],
+          },
         }),
       )
       .mockResolvedValueOnce(
@@ -1060,9 +1077,7 @@ describe("praxis_provide_info", () => {
   });
 
   it("returns issue_not_tracked when the ref resolves to nothing", async () => {
-    fetchMock.mockResolvedValueOnce(
-      mockResponse({ ok: true, status: 200, body: { issues: [] } }),
-    );
+    fetchMock.mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: { issues: [] } }));
     const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
     const out = parse(
       await tools.praxis_provide_info.execute("call-8", {
@@ -1101,5 +1116,160 @@ describe("praxis_provide_info", () => {
     expect(out.error).toBe("issue_not_awaiting_info");
     expect(out.state).toBe("in_progress");
     expect(out.message).toContain("in_progress");
+  });
+});
+
+describe("praxis_my_issues", () => {
+  it("denies when no requester identity in runtime context", async () => {
+    const { tools } = buildTools({
+      pluginConfig: ALLOW_ALICE,
+      toolContext: { deliveryContext: { channel: "dev_praxis" } },
+    });
+    const out = parse(await tools.praxis_my_issues.execute("m1", {}));
+    expect(out.denied).toBe("no_requester_identity");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("GETs the identity-scoped my-issues endpoint with the verified runtime identity", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({
+        ok: true,
+        status: 200,
+        body: {
+          github_login: "alice-gh",
+          issues: [
+            {
+              issue_id: 41,
+              ref: "cw/app#10",
+              state: "needs_info",
+              needs_user_action: true,
+              open_question_field: "repro_steps",
+            },
+          ],
+        },
+      }),
+    );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(await tools.praxis_my_issues.execute("m2", {}));
+    expect(out.ok).toBe(true);
+    expect(out.github_login).toBe("alice-gh");
+    expect(out.issues[0].issue_id).toBe(41);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://praxis:8000/api/v1/my/issues?channel=zoom&channel_user_id=alice");
+    expect((init as RequestInit | undefined)?.method ?? "GET").toBe("GET");
+  });
+
+  it("surfaces identity_not_linked with a praxis_link_github hint", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({ ok: false, status: 403, body: { error: "identity_not_linked" } }),
+    );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(await tools.praxis_my_issues.execute("m3", {}));
+    expect(out.ok).toBe(false);
+    expect(out.error).toBe("identity_not_linked");
+    expect(out.hint).toMatch(/praxis_link_github/);
+  });
+
+  it("is blocked by the allowlist gate before any fetch", async () => {
+    const { tools } = buildTools({
+      pluginConfig: { allowedUsers: ["someone-else"], allowedChannels: ["dev_praxis"] },
+    });
+    const out = parse(await tools.praxis_my_issues.execute("m4", {}));
+    expect(out.denied).toBe("requester_not_allowlisted");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("praxis_my_issue", () => {
+  it("requires a positive integer issue_id", async () => {
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(await tools.praxis_my_issue.execute("d1", {}));
+    expect(out.error).toBe("issue_id_required");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("GETs the identity-scoped drill-down and returns the issue", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({
+        ok: true,
+        status: 200,
+        body: { github_login: "alice-gh", issue: { issue_id: 41, state: "needs_info" } },
+      }),
+    );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(await tools.praxis_my_issue.execute("d2", { issue_id: 41 }));
+    expect(out.ok).toBe(true);
+    expect(out.issue.issue_id).toBe(41);
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://praxis:8000/api/v1/my/issues/41?channel=zoom&channel_user_id=alice");
+  });
+
+  it("passes through the scoped 404 (cross-user / nonexistent look identical)", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({ ok: false, status: 404, body: { error: "not_found" } }),
+    );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(await tools.praxis_my_issue.execute("d3", { issue_id: 999 }));
+    expect(out.ok).toBe(false);
+    expect(out.status).toBe(404);
+    expect(out.error).toBe("not_found");
+  });
+});
+
+describe("praxis_opt_in / praxis_opt_out", () => {
+  it("denies opt_in when no requester identity in runtime context", async () => {
+    const { tools } = buildTools({
+      pluginConfig: ALLOW_ALICE,
+      toolContext: { deliveryContext: { channel: "dev_praxis" } },
+    });
+    const out = parse(await tools.praxis_opt_in.execute("o1", {}));
+    expect(out.denied).toBe("no_requester_identity");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("opt_in POSTs the consent endpoint with the verified runtime identity", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({
+        ok: true,
+        status: 200,
+        body: { github_login: "alice-gh", channel: "zoom", consented: true },
+      }),
+    );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(await tools.praxis_opt_in.execute("o2", {}));
+    expect(out.ok).toBe(true);
+    expect(out.consented).toBe(true);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://praxis:8000/api/v1/my/consent");
+    expect((init as RequestInit).method).toBe("POST");
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      channel: "zoom",
+      channel_user_id: "alice",
+    });
+  });
+
+  it("opt_out DELETEs the consent endpoint", async () => {
+    fetchMock.mockResolvedValue(
+      mockResponse({
+        ok: true,
+        status: 200,
+        body: { github_login: "alice-gh", channel: "zoom", consented: false, was_active: true },
+      }),
+    );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(await tools.praxis_opt_out.execute("o3", {}));
+    expect(out.ok).toBe(true);
+    expect(out.consented).toBe(false);
+    const [, init] = fetchMock.mock.calls[0];
+    expect((init as RequestInit).method).toBe("DELETE");
+  });
+
+  it("is blocked by the allowlist gate before any fetch", async () => {
+    const { tools } = buildTools({
+      pluginConfig: { allowedUsers: ["someone-else"], allowedChannels: ["dev_praxis"] },
+    });
+    const out = parse(await tools.praxis_opt_in.execute("o4", {}));
+    expect(out.denied).toBe("requester_not_allowlisted");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
