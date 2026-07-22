@@ -15,6 +15,7 @@ import {
   mintRepoConfirmToken,
   mintSelfHealConfirmToken,
   resolveWritePolicyConfig,
+  type ToolRequestContext,
   type WritePolicyConfig,
 } from "./policy.js";
 import {
@@ -24,6 +25,7 @@ import {
   getLinkStatus,
   getMyIssue,
   getMyIssues,
+  setMyConsent,
   ingestIssue,
   mapStateToUatKindPrefix,
   onboardRepo,
@@ -1141,6 +1143,67 @@ const plugin = {
           return jsonResult({ ok: false, status: res.status, ...body });
         }
         return jsonResult({ ok: true, ...body });
+      },
+    }));
+
+    // Shared body for the two consent tools: identical policy/identity gating, differing only in
+    // opt-in vs opt-out. Takes each tool's own toolContext (registerTool passes it per tool).
+    const runConsentTool = async (
+      toolContext: ToolRequestContext,
+      toolCallId: string,
+      optIn: boolean,
+    ) => {
+      const actor = deriveActorContext(toolContext, toolCallId);
+      const decision = checkPolicy(actor, config);
+      if (!decision.allowed) {
+        return jsonResult({ ok: false, denied: decision.reason });
+      }
+      const channelUserId = actor.requestedBy;
+      if (!channelUserId) {
+        return jsonResult({ ok: false, denied: "no_requester_identity" });
+      }
+      let res: Awaited<ReturnType<typeof setMyConsent>>;
+      try {
+        res = await setMyConsent({
+          channel: "zoom",
+          channel_user_id: channelUserId,
+          opt_in: optIn,
+        });
+      } catch (err) {
+        return errorResult(err);
+      }
+      const body = res.data;
+      if (!res.ok) {
+        return jsonResult({ ok: false, status: res.status, ...body });
+      }
+      return jsonResult({ ok: true, ...body });
+    };
+
+    optionalApi.registerTool((toolContext) => ({
+      name: "praxis_opt_in",
+      description:
+        "Opt the chat user IN to proactive Praxis DMs about their issues (a periodic digest of " +
+        "what's on their plate + what needs them). Call this when the user agrees to be kept " +
+        "posted — e.g. 'yes, keep me updated', 'notify me about my issues'. A verified identity " +
+        "alone is NOT consent; Praxis sends nothing proactively until this is set. Uses the " +
+        "verified runtime identity (no model-supplied arguments) and records the user's OWN " +
+        "opt-in. Reversible with praxis_opt_out. Allowlist-gated.",
+      parameters: Type.Object({}),
+      async execute(toolCallId: string, _params: Record<string, unknown>) {
+        return runConsentTool(toolContext, toolCallId, true);
+      },
+    }));
+
+    optionalApi.registerTool((toolContext) => ({
+      name: "praxis_opt_out",
+      description:
+        "Opt the chat user OUT of proactive Praxis DMs (stop the periodic digest). Call this when " +
+        "the user asks to stop being messaged / unsubscribe. Uses the verified runtime identity; " +
+        "revokes the user's OWN consent. Reactive answers to their questions are unaffected — " +
+        "this only stops Praxis-initiated messages. Allowlist-gated.",
+      parameters: Type.Object({}),
+      async execute(toolCallId: string, _params: Record<string, unknown>) {
+        return runConsentTool(toolContext, toolCallId, false);
       },
     }));
   },

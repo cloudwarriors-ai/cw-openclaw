@@ -290,3 +290,20 @@ export async function getMyIssue(
   }).toString();
   return praxisFetch<Record<string, unknown>>(`/api/v1/my/issues/${issueId}?${qs}`);
 }
+
+/** Self-serve proactive-outreach consent for the caller (Praxis /api/v1/my/consent). `opt_in`
+ * true = POST (opt in), false = DELETE (opt out). Only the verified runtime identity is forwarded;
+ * Praxis resolves the login and records the caller's OWN consent as a user opt-in. */
+export async function setMyConsent(params: {
+  channel: string;
+  channel_user_id: string;
+  opt_in: boolean;
+}): Promise<PraxisResponse<Record<string, unknown>>> {
+  return praxisFetch<Record<string, unknown>>("/api/v1/my/consent", {
+    method: params.opt_in ? "POST" : "DELETE",
+    body: JSON.stringify({
+      channel: params.channel,
+      channel_user_id: params.channel_user_id,
+    }),
+  });
+}
