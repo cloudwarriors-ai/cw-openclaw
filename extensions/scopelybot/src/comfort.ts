@@ -183,6 +183,29 @@ export function rememberChannelThreadAnchor(channelJid: string, messageId?: stri
   threadAnchors.set(channelJid, { messageId, expiresAt: Date.now() + ANCHOR_TTL_MS });
 }
 
+// Resolve which message id a direct send (comfort / CONFIRM prompt) should
+// thread under. Zoom only renders a bot reply inside a thread when its
+// reply_main_message_id is the thread ROOT. For an inbound that is itself a
+// thread reply, metadata.messageId is the CHILD message and metadata.threadId
+// (canonical, from the zoom adapter's MessageThreadId) is the root — anchoring
+// at the child silently orphans the message: it exists via the API but never
+// renders in the thread the humans are watching (live incident 2026-07-22:
+// two CONFIRM prompts "never popped up" and expired unseen). Prefer the root.
+export function resolveInboundThreadAnchor(metadata: {
+  messageId?: unknown;
+  threadId?: unknown;
+}): string | undefined {
+  const threadId =
+    typeof metadata.threadId === "string" && metadata.threadId.trim().length > 0
+      ? metadata.threadId.trim()
+      : undefined;
+  const messageId =
+    typeof metadata.messageId === "string" && metadata.messageId.trim().length > 0
+      ? metadata.messageId.trim()
+      : undefined;
+  return threadId ?? messageId;
+}
+
 export function getChannelThreadAnchor(channelJid: string): string | undefined {
   const entry = threadAnchors.get(channelJid);
   if (!entry) return undefined;
