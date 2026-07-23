@@ -13,7 +13,7 @@ vi.hoisted(() => {
   process.env.SCOPELYBOT_ZOOM_CHANNEL = "chan@conference.xmpp.zoom.us";
 });
 
-import { pickComfortText, sendComfortMessage } from "./comfort.js";
+import { pickComfortText, resolveInboundThreadAnchor, sendComfortMessage } from "./comfort.js";
 
 describe("pickComfortText — deterministic domain classification", () => {
   const cases: Array<[string, string]> = [
@@ -74,5 +74,29 @@ describe("sendComfortMessage greeting skip", () => {
       "hi, how many sessions are in progress?",
     );
     expect(fetchMock).toHaveBeenCalled(); // token fetch happened → send path taken
+  });
+});
+
+describe("resolveInboundThreadAnchor — thread-root anchoring (2026-07-22 incident)", () => {
+  // Zoom renders a bot reply inside a thread ONLY when reply_main_message_id is
+  // the thread ROOT. For a thread-reply inbound, messageId is the child message;
+  // threadId (canonical MessageThreadId from the zoom adapter) is the root.
+  it("prefers threadId (root) when the inbound is a thread reply", () => {
+    expect(
+      resolveInboundThreadAnchor({ messageId: "child-msg-id", threadId: "root-msg-id" }),
+    ).toBe("root-msg-id");
+  });
+
+  it("falls back to messageId for a top-level inbound (no threadId)", () => {
+    expect(resolveInboundThreadAnchor({ messageId: "top-level-id" })).toBe("top-level-id");
+  });
+
+  it("returns undefined when neither id is present", () => {
+    expect(resolveInboundThreadAnchor({})).toBeUndefined();
+  });
+
+  it("ignores non-string / blank values", () => {
+    expect(resolveInboundThreadAnchor({ messageId: 42, threadId: "   " })).toBeUndefined();
+    expect(resolveInboundThreadAnchor({ messageId: "m-1", threadId: 99 })).toBe("m-1");
   });
 });

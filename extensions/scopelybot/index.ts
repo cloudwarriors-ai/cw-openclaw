@@ -3,7 +3,11 @@ import { registerAdminTools } from "./src/admin-tools.js";
 import { createApproverStore } from "./src/approver-store.js";
 import { registerApproverTools } from "./src/approver-tools.js";
 import { createAuditLogger } from "./src/audit.js";
-import { rememberChannelThreadAnchor, sendComfortMessage } from "./src/comfort.js";
+import {
+  rememberChannelThreadAnchor,
+  resolveInboundThreadAnchor,
+  sendComfortMessage,
+} from "./src/comfort.js";
 import type { ScopelyBotConfig } from "./src/config.js";
 import { configuredWriteApprovers, resolveScopelyBotConfig } from "./src/config.js";
 import { tryExecuteConfirm } from "./src/confirm.js";
@@ -155,12 +159,14 @@ const plugin = {
       }
       const text = typeof event.content === "string" ? event.content : "";
       if (CONFIRM_RE.test(text.trim())) return;
-      const messageId =
-        typeof event.metadata?.messageId === "string" ? event.metadata.messageId : undefined;
-      rememberChannelThreadAnchor(ctx.conversationId, messageId);
+      // Thread at the ROOT: for a thread-reply inbound, metadata.messageId is the
+      // child and metadata.threadId is the root — anchoring at the child makes the
+      // comfort message and the CONFIRM prompt invisible in the thread (2026-07-22).
+      const threadAnchor = resolveInboundThreadAnchor(event.metadata ?? {});
+      rememberChannelThreadAnchor(ctx.conversationId, threadAnchor);
       // Slice 4: the inbound text drives deterministic domain classification
       // (context-aware comfort) and the trivial-greeting skip inside comfort.ts.
-      void sendComfortMessage(ctx.conversationId, messageId, text);
+      void sendComfortMessage(ctx.conversationId, threadAnchor, text);
     });
 
     // Confirm gate execution: a human `CONFIRM <code>` reply runs the staged action.
