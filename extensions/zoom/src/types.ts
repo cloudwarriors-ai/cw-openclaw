@@ -4,6 +4,20 @@ export type ZoomChannelConfig = {
   requireMention?: boolean;
   observeMode?: boolean;
   reviewChannelJid?: string;
+  /**
+   * When true, outbound messages to this channel are converted from Markdown to clean plain text
+   * before send. Zoom Team Chat bot cards do NOT render Markdown (is_markdown_support=false), so
+   * raw markdown (**bold**, "- " bullets, ## headers) otherwise shows as literal junk. Opt-in per
+   * channel; defaults to off so existing channels are unchanged. See toPlainTextForZoom in send.ts.
+   */
+  plainText?: boolean;
+  /**
+   * When true, a silent/empty model reply (which OpenClaw normally DROPS silently) is replaced with
+   * a visible fallback message, so an inbound message in this channel never goes unanswered. Opt-in
+   * per channel; defaults to off so channels/bots that intentionally stay silent (NO_REPLY) are
+   * unaffected. Enforced in src/auto-reply/reply/route-reply.ts (shouldFallbackOnSilent).
+   */
+  fallbackOnSilent?: boolean;
   tools?: {
     allow?: string[];
     deny?: string[];

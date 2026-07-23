@@ -39,12 +39,20 @@ services:
     - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
     - CLAWDBOT_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
     - BIGHEAD_API_URL=http://bighead:8000
+    - BIGHEAD_OPS_BASE_URL=${BIGHEAD_OPS_BASE_URL:-http://bighead:8000}
+    - BIGHEAD_OPS_TOKEN=${BIGHEAD_OPS_TOKEN}
+    - PRESALES_PE_OPS_BASE_URL=${PRESALES_PE_OPS_BASE_URL:-http://presales_knowledge_expert:8007}
+    - PRESALES_PE_OPS_TOKEN=${PRESALES_PE_OPS_TOKEN}
     - ZW2_USERNAME=${ZW2_USERNAME}
     - ZW2_PASSWORD=${ZW2_PASSWORD}
     - ZW2_URL=${ZW2_URL}
     - ZOOM_CLIENT_ID=${ZOOM_CLIENT_ID}
     - ZOOM_CLIENT_SECRET=${ZOOM_CLIENT_SECRET}
     - ZOOM_ACCOUNT_ID=${ZOOM_ACCOUNT_ID}
+    # fleet-mcp plugin: zoomteamchat S2S Zoom creds for channel-member lookup
+    - FLEET_ZOOM_CLIENT_ID=${FLEET_ZOOM_CLIENT_ID}
+    - FLEET_ZOOM_CLIENT_SECRET=${FLEET_ZOOM_CLIENT_SECRET}
+    - FLEET_ZOOM_ACCOUNT_ID=${FLEET_ZOOM_ACCOUNT_ID}
     - ZOOM_BOT_JID=${ZOOM_BOT_JID}
     - ZOOM_WEBHOOK_SECRET_TOKEN=${ZOOM_WEBHOOK_SECRET_TOKEN}
     - ZOOM_REPORT_ACCOUNT_ID=${ZOOM_REPORT_ACCOUNT_ID}
@@ -99,16 +107,22 @@ services:
     - PASSTHROUGH_INTERVAL_MS=${PASSTHROUGH_INTERVAL_MS:-}
     - PASSTHROUGH_TEST_TIMEOUT_MS=${PASSTHROUGH_TEST_TIMEOUT_MS:-}
     - OPENCLAW_BUNDLED_PLUGINS_DIR=/app/extensions
+    - PRAXIS_API_URL=http://praxis:8000
+    - PRAXIS_API_TOKEN=${PRAXIS_API_TOKEN}
     - DEVRELAY_URL=${DEVRELAY_URL}
     - DEVRELAY_INSECURE_TLS=${DEVRELAY_INSECURE_TLS}
     - DEVRELAY_TOKEN=${DEVRELAY_TOKEN}
+    - DEVRELAY_IDENTITY=${DEVRELAY_IDENTITY}
     - DEVRELAY_ACTIVITY_ZOOM_CHANNEL=${DEVRELAY_ACTIVITY_ZOOM_CHANNEL}
+    - DEVRELAY_AGENT_ZOOM_CHANNEL=${DEVRELAY_AGENT_ZOOM_CHANNEL}
     volumes:
     - ./extensions:/app/extensions
     - ./src:/app/src
     - ./.data/openclaw:/root/.openclaw
     - ./.data/claude-mem:/root/.claude-mem
     - ./code:/app/code
+    # DevRelay app source, READ-ONLY, for devrelay-bot troubleshooting (read code to locate errors). No write access.
+    - /root/web/devrelay:/app/code/devrelay:ro
     - ./scripts/tests:/app/tests
     ports:
     - 18789:18789
@@ -129,6 +143,9 @@ services:
     # 2048m mirrors the noob-root box's deliberate cap (memory-pressured host).
     # Node heap allows 3072m — the cgroup cap wins; OOM-restart is the accepted
     # tradeoff on the dev box.
+    networks:
+    - default
+    - devrelay_default
     mem_limit: 2048m
     memswap_limit: 4g
     cpus: '4.0'
@@ -142,6 +159,7 @@ services:
     - "noob-root.tailcc6c5f.ts.net:100.114.142.100"
     labels:
     - traefik.enable=true
+    - traefik.docker.network=proxy
     - traefik.http.routers.openclaw.rule=Host(`molty-dev.cloudwarriors.ai`)
     - traefik.http.routers.openclaw.entrypoints=websecure
     - traefik.http.routers.openclaw.tls.certresolver=letsencrypt
@@ -160,4 +178,6 @@ services:
 networks:
   default:
     name: proxy
+    external: true
+  devrelay_default:
     external: true
