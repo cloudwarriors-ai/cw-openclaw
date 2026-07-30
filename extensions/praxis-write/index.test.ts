@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import plugin from "./index.js";
 import {
+  conversationIdempotencyKey,
   mintConfirmToken,
   mintFileIssueConfirmToken,
   mintIngestConfirmToken,
@@ -16,9 +17,17 @@ type ToolDef = {
   ) => Promise<{ content: { text: string }[] }>;
 };
 
-const ISSUE = { id: 5, state: "blocked", state_reason: "no_response", version: 12 };
-const ISSUE_DEV_UAT = { id: 7, state: "dev_uat", state_reason: "", version: 3 };
-const ISSUE_USER_UAT = { id: 8, state: "user_uat", state_reason: "", version: 5 };
+const ISSUE = {
+  id: 5,
+  repo: "cw/app",
+  source_issue: 5,
+  state: "blocked",
+  state_reason: "no_response",
+  version: 12,
+  contracts: ["conversation_ack_v1"],
+};
+const ISSUE_DEV_UAT = { ...ISSUE, id: 7, source_issue: 70, state: "dev_uat", version: 3 };
+const ISSUE_USER_UAT = { ...ISSUE, id: 8, source_issue: 80, state: "user_uat", version: 5 };
 
 function mockResponse(opts: { ok: boolean; status: number; body: unknown }): Response {
   return {
@@ -35,6 +44,7 @@ function mockResponse(opts: { ok: boolean; status: number; body: unknown }): Res
 const DEFAULT_CTX = {
   requesterSenderId: "alice",
   deliveryContext: { channel: "dev_praxis", threadId: 1 },
+  currentMessageId: "1",
   sessionId: "s1",
 };
 
@@ -62,6 +72,16 @@ function parse(res: { content: { text: string }[] }) {
 }
 
 const ALLOW_ALICE = { allowedUsers: ["alice"], allowedChannels: ["dev_praxis"] };
+
+function expectedConversationKey(purpose: "verdict" | "info", issueId: number, toolCallId: string) {
+  return conversationIdempotencyKey(purpose, issueId, {
+    requestedBy: "alice",
+    channel: "dev_praxis",
+    messageId: "1",
+    inboundMessageId: "1",
+    toolCallId,
+  });
+}
 
 let fetchMock: ReturnType<typeof vi.fn>;
 
@@ -150,7 +170,12 @@ describe("two-step dry-run / confirm", () => {
 
     expect(out.preview).toBe(true);
     expect(out.action).toBe("unblock");
-    expect(out.issue).toEqual(ISSUE);
+    expect(out.issue).toEqual({
+      id: ISSUE.id,
+      state: ISSUE.state,
+      state_reason: ISSUE.state_reason,
+      version: ISSUE.version,
+    });
     expect(typeof out.confirm_token).toBe("string");
     // Exactly one call (the GET) — no POST mutation.
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -269,16 +294,57 @@ describe("praxis_submit_verdict", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("rejects a missing reason before any fetch", async () => {
+  it("requires a concrete summary for fail before any fetch", async () => {
     const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
     const out = parse(
       await tools.praxis_submit_verdict.execute("c1", {
         issue_id: 7,
-        verdict: "pass",
+        verdict: "fail",
         reason: "  ",
       }),
     );
-    expect(out).toEqual({ ok: false, error: "reason_required" });
+    expect(out).toEqual({ ok: false, error: "failure_summary_required" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("fails before mutation when the server does not advertise the acknowledgement contract", async () => {
+    fetchMock.mockResolvedValueOnce(
+      mockResponse({
+        ok: true,
+        status: 200,
+        body: { ...ISSUE_DEV_UAT, contracts: undefined },
+      }),
+    );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_submit_verdict.execute("contract-gate", {
+        issue_id: 7,
+        verdict: "pass",
+      }),
+    );
+
+    expect(out.denied).toBe("server_contract_unconfirmed");
+    expect(out.message).toContain("Upgrade Praxis");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails before mutation when the transport omits a trusted inbound message id", async () => {
+    const { tools } = buildTools({
+      pluginConfig: ALLOW_ALICE,
+      toolContext: {
+        requesterSenderId: "alice",
+        deliveryContext: { channel: "dev_praxis", threadId: 1 },
+        sessionId: "s1",
+      },
+    });
+    const out = parse(
+      await tools.praxis_submit_verdict.execute("missing-message-id", {
+        issue_id: 7,
+        verdict: "pass",
+      }),
+    );
+
+    expect(out.denied).toBe("inbound_message_id_required");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -303,21 +369,37 @@ describe("praxis_submit_verdict", () => {
     ).toBe(true);
   });
 
-  it("submits uat1_pass for a dev_uat issue with verified Zoom identity", async () => {
+  it("submits a stage-neutral pass for a dev_uat issue with verified Zoom identity", async () => {
     fetchMock
       .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: ISSUE_DEV_UAT }))
       .mockResolvedValueOnce(
-        mockResponse({ ok: true, status: 200, body: { applied: true, state: "done" } }),
+        mockResponse({
+          ok: true,
+          status: 200,
+          body: {
+            applied: true,
+            state: "user_uat",
+            message:
+              "Thanks - I recorded your development pass for cw/app#70. Praxis is moving it to user validation now.",
+          },
+        }),
       );
     const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
     const out = parse(
       await tools.praxis_submit_verdict.execute("c2", {
         issue_id: 7,
         verdict: "pass",
-        reason: "UAT complete, feature verified",
+        reason: "Validated checkout against build 2026.07.29.",
       }),
     );
-    expect(out).toEqual({ ok: true, status: 200, applied: true, state: "done" });
+    expect(out).toEqual({
+      ok: true,
+      status: 200,
+      applied: true,
+      state: "user_uat",
+      message:
+        "Thanks - I recorded your development pass for cw/app#70. Praxis is moving it to user validation now.",
+    });
 
     const post = fetchMock.mock.calls.find(
       (c: unknown[]) => (c[1] as RequestInit | undefined)?.method === "POST",
@@ -328,26 +410,233 @@ describe("praxis_submit_verdict", () => {
     expect(post[0]).toBe("http://praxis:8000/api/v1/issues/7/events");
     const body = JSON.parse((post[1] as RequestInit).body as string);
     expect(body).toEqual({
-      kind: "uat1_pass",
-      reason: "UAT complete, feature verified",
+      kind: "uat_pass",
+      reason: "Validated checkout against build 2026.07.29.",
       requested_by: "alice",
       channel: "zoom",
       channel_user_id: "alice",
+      message_id: "1",
+      idempotency_key: expectedConversationKey("verdict", 7, "c2"),
+      expected_state: "dev_uat",
+      expected_version: 3,
     });
   });
 
-  it("submits uat2_fail for a user_uat issue", async () => {
+  it("accepts a bare user pass and returns the frozen acknowledgement", async () => {
     fetchMock
       .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: ISSUE_USER_UAT }))
       .mockResolvedValueOnce(
-        mockResponse({ ok: true, status: 200, body: { applied: true, state: "in_progress" } }),
+        mockResponse({
+          ok: true,
+          status: 200,
+          body: {
+            applied: true,
+            state: "done",
+            message: "Thanks - I recorded your pass for cw/app#80. This Praxis run is complete.",
+          },
+        }),
+      );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_submit_verdict.execute("bare-pass", {
+        issue_id: 8,
+        verdict: "pass",
+      }),
+    );
+
+    expect(out.message).toBe(
+      "Thanks - I recorded your pass for cw/app#80. This Praxis run is complete.",
+    );
+    const post = fetchMock.mock.calls.find(
+      (call: unknown[]) => (call[1] as RequestInit | undefined)?.method === "POST",
+    );
+    expect(post).toBeDefined();
+    if (!post) {
+      throw new Error("expected verdict POST");
+    }
+    const body = JSON.parse((post[1] as RequestInit).body as string);
+    expect(body.reason).toBe("Pass verdict submitted without additional rationale.");
+    expect(body.message_id).toBe("1");
+    expect(body.idempotency_key).toBe(expectedConversationKey("verdict", 8, "bare-pass"));
+  });
+
+  it("relays the server acknowledgement verbatim without deriving identity from the GET response", async () => {
+    const canonical = "Praxis supplied this acknowledgement from its authoritative issue record.";
+    fetchMock
+      .mockResolvedValueOnce(
+        mockResponse({
+          ok: true,
+          status: 200,
+          body: { ...ISSUE_USER_UAT, repo: undefined, source_issue: undefined },
+        }),
+      )
+      .mockResolvedValueOnce(
+        mockResponse({
+          ok: true,
+          status: 200,
+          body: { applied: true, state: "done", message: canonical },
+        }),
+      );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_submit_verdict.execute("fallback-ref", {
+        issue_id: 8,
+        verdict: "pass",
+      }),
+    );
+
+    expect(out.message).toBe(canonical);
+  });
+
+  it.each([
+    "api_key=super-secret-value",
+    "gho_123456789012",
+    "github_pat_12345678901234567890",
+    "Bearer abcdefghijklmnop12345678",
+  ])("surfaces Praxis rejection of a secret-shaped failure summary", async (reason) => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: ISSUE_USER_UAT }))
+      .mockResolvedValueOnce(
+        mockResponse({
+          ok: false,
+          status: 400,
+          body: { error: "invalid_failure_summary" },
+        }),
+      );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_submit_verdict.execute("unsafe", {
+        issue_id: 8,
+        verdict: "fail",
+        reason,
+      }),
+    );
+    expect(out).toMatchObject({
+      ok: false,
+      status: 400,
+      error: "invalid_failure_summary",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("allows a server-rejected failure summary to be corrected for the same inbound message", async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: ISSUE_USER_UAT }))
+      .mockResolvedValueOnce(
+        mockResponse({
+          ok: false,
+          status: 400,
+          body: { error: "invalid_failure_summary" },
+        }),
+      )
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: ISSUE_USER_UAT }))
+      .mockResolvedValueOnce(
+        mockResponse({
+          ok: true,
+          status: 200,
+          body: {
+            applied: true,
+            state: "in_progress",
+            message:
+              "Thanks - I recorded the failed check for cw/app#80: Checkout remains disabled after reload.\n\nPraxis is sending it back for rework. I'll notify you when another version is ready.",
+          },
+        }),
+      );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+
+    const rejected = parse(
+      await tools.praxis_submit_verdict.execute("invalid-summary", {
+        issue_id: 8,
+        verdict: "fail",
+        reason: "works as expected",
+      }),
+    );
+    const corrected = parse(
+      await tools.praxis_submit_verdict.execute("corrected-summary", {
+        issue_id: 8,
+        verdict: "fail",
+        reason: "Checkout remains disabled after reload.",
+      }),
+    );
+
+    expect(rejected.error).toBe("invalid_failure_summary");
+    expect(corrected.ok).toBe(true);
+    const posts = fetchMock.mock.calls.filter(
+      (call: unknown[]) => (call[1] as RequestInit | undefined)?.method === "POST",
+    );
+    const firstBody = JSON.parse((posts[0][1] as RequestInit).body as string);
+    const correctedBody = JSON.parse((posts[1][1] as RequestInit).body as string);
+    expect(correctedBody.idempotency_key).toBe(firstBody.idempotency_key);
+    expect(correctedBody.reason).toBe("Checkout remains disabled after reload.");
+  });
+
+  it("surfaces Praxis rejection of a control character in a failure summary", async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: ISSUE_USER_UAT }))
+      .mockResolvedValueOnce(
+        mockResponse({
+          ok: false,
+          status: 400,
+          body: { error: "invalid_failure_summary" },
+        }),
+      );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_submit_verdict.execute("unsafe-control", {
+        issue_id: 8,
+        verdict: "fail",
+        reason: "screen went blank\u0001after save",
+      }),
+    );
+    expect(out).toMatchObject({
+      ok: false,
+      status: 400,
+      error: "invalid_failure_summary",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not claim a verdict was recorded without applied or idempotent confirmation", async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: ISSUE_USER_UAT }))
+      .mockResolvedValueOnce(
+        mockResponse({ ok: true, status: 200, body: { applied: false, state: "user_uat" } }),
+      );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_submit_verdict.execute("unconfirmed", {
+        issue_id: 8,
+        verdict: "pass",
+      }),
+    );
+
+    expect(out.ok).toBe(false);
+    expect(out.error).toBe("verdict_not_confirmed");
+    expect(out.retryable).toBe(false);
+    expect(out.message).toContain("Do not retry");
+  });
+
+  it("submits a stage-neutral fail for a user_uat issue", async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: ISSUE_USER_UAT }))
+      .mockResolvedValueOnce(
+        mockResponse({
+          ok: true,
+          status: 200,
+          body: {
+            applied: true,
+            state: "in_progress",
+            message:
+              "Thanks - I recorded the failed check for cw/app#80: Bearer token refresh still fails after login\n\nPraxis is sending it back for rework. I'll notify you when another version is ready.",
+          },
+        }),
       );
     const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
     const out = parse(
       await tools.praxis_submit_verdict.execute("c3", {
         issue_id: 8,
         verdict: "fail",
-        reason: "button still broken",
+        reason: "Bearer token refresh still fails after login",
       }),
     );
     expect(out.ok).toBe(true);
@@ -359,9 +648,84 @@ describe("praxis_submit_verdict", () => {
       throw new Error("expected a POST call");
     }
     const body = JSON.parse((post[1] as RequestInit).body as string);
-    expect(body.kind).toBe("uat2_fail");
+    expect(body.kind).toBe("uat_fail");
+    expect(out.message).toContain("cw/app#80: Bearer token refresh still fails after login");
     expect(body.channel).toBe("zoom");
     expect(body.channel_user_id).toBe("alice");
+    expect(body.message_id).toBe("1");
+    expect(body.idempotency_key).toBe(expectedConversationKey("verdict", 8, "c3"));
+  });
+
+  it("fails closed when Praxis confirms the verdict but omits canonical acknowledgement copy", async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: ISSUE_USER_UAT }))
+      .mockResolvedValueOnce(
+        mockResponse({ ok: true, status: 200, body: { applied: true, state: "done" } }),
+      );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_submit_verdict.execute("missing-ack", {
+        issue_id: 8,
+        verdict: "pass",
+      }),
+    );
+
+    expect(out.ok).toBe(false);
+    expect(out.error).toBe("acknowledgement_missing");
+    expect(out.mutation_recorded).toBe(true);
+    expect(out.retryable).toBe(false);
+    expect(out.message).toContain("did not return canonical acknowledgement");
+  });
+
+  it("keeps the same idempotency key when an ambiguous dev pass is retried after state advances", async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: ISSUE_DEV_UAT }))
+      .mockResolvedValueOnce(
+        mockResponse({ ok: true, status: 200, body: { applied: true, state: "user_uat" } }),
+      )
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: ISSUE_USER_UAT }))
+      .mockResolvedValueOnce(
+        mockResponse({
+          ok: true,
+          status: 200,
+          body: {
+            applied: false,
+            idempotent: true,
+            state: "user_uat",
+            message:
+              "Thanks - I recorded your development pass for cw/app#70. Praxis is moving it to user validation now.",
+          },
+        }),
+      );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+
+    const first = parse(
+      await tools.praxis_submit_verdict.execute("tool-first", {
+        issue_id: 7,
+        verdict: "pass",
+      }),
+    );
+    const retry = parse(
+      await tools.praxis_submit_verdict.execute("tool-retry", {
+        issue_id: 7,
+        verdict: "fail",
+        reason: "A regenerated tool call misread the same human message.",
+      }),
+    );
+
+    expect(first.error).toBe("acknowledgement_missing");
+    expect(retry.ok).toBe(true);
+    expect(retry.message).toContain("development pass");
+    const posts = fetchMock.mock.calls.filter(
+      (call: unknown[]) => (call[1] as RequestInit | undefined)?.method === "POST",
+    );
+    const firstBody = JSON.parse((posts[0][1] as RequestInit).body as string);
+    const retryBody = JSON.parse((posts[1][1] as RequestInit).body as string);
+    expect(firstBody.kind).toBe("uat_pass");
+    expect(firstBody.reason).toBe("Pass verdict submitted without additional rationale.");
+    expect(retryBody.kind).toBe("uat_pass");
+    expect(retryBody).toEqual(firstBody);
+    expect(retryBody.idempotency_key).toBe(firstBody.idempotency_key);
   });
 
   it("surfaces identity_not_linked with a link instruction", async () => {
@@ -1011,10 +1375,63 @@ describe("praxis_provide_info", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("posts kind=info_provided with the trusted Zoom identity and the toolCallId as idempotency key", async () => {
-    fetchMock.mockResolvedValue(
-      mockResponse({ ok: true, status: 200, body: { applied: true, state: "assessing" } }),
+  it("fails before mutation when the server does not advertise the acknowledgement contract", async () => {
+    fetchMock.mockResolvedValueOnce(
+      mockResponse({
+        ok: true,
+        status: 200,
+        body: { ...ISSUE, id: 7, contracts: undefined },
+      }),
     );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_provide_info.execute("contract-gate", {
+        issue_id: 7,
+        answer: "the checkout page",
+      }),
+    );
+
+    expect(out.denied).toBe("server_contract_unconfirmed");
+    expect(out.message).toContain("Upgrade Praxis");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails before mutation when the transport omits a trusted inbound message id", async () => {
+    const { tools } = buildTools({
+      pluginConfig: ALLOW_ALICE,
+      toolContext: {
+        requesterSenderId: "alice",
+        deliveryContext: { channel: "dev_praxis", threadId: 1 },
+        sessionId: "s1",
+      },
+    });
+    const out = parse(
+      await tools.praxis_provide_info.execute("missing-message-id", {
+        issue_id: 7,
+        answer: "the checkout page",
+      }),
+    );
+
+    expect(out.denied).toBe("inbound_message_id_required");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("posts info with trusted Zoom identity and inbound-message idempotency", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        mockResponse({ ok: true, status: 200, body: { ...ISSUE, id: 7, source_issue: 70 } }),
+      )
+      .mockResolvedValueOnce(
+        mockResponse({
+          ok: true,
+          status: 200,
+          body: {
+            applied: true,
+            state: "assessing",
+            message: "Thanks - I recorded that information. Praxis is reassessing cw/app#70 now.",
+          },
+        }),
+      );
     const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
     const out = parse(
       await tools.praxis_provide_info.execute("call-42", {
@@ -1024,8 +1441,12 @@ describe("praxis_provide_info", () => {
     );
     expect(out.ok).toBe(true);
     expect(out.applied).toBe(true);
+    expect(out.message).toBe(
+      "Thanks - I recorded that information. Praxis is reassessing cw/app#70 now.",
+    );
 
-    const [url, init] = fetchMock.mock.calls[0];
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [url, init] = fetchMock.mock.calls[1];
     expect(url).toBe("http://praxis:8000/api/v1/issues/7/events");
     expect((init as RequestInit).method).toBe("POST");
     const sent = JSON.parse((init as RequestInit).body as string);
@@ -1035,7 +1456,8 @@ describe("praxis_provide_info", () => {
       requested_by: "alice",
       channel: "zoom",
       channel_user_id: "alice",
-      idempotency_key: "call-42",
+      message_id: "1",
+      idempotency_key: expectedConversationKey("info", 7, "call-42"),
     });
   });
 
@@ -1053,8 +1475,18 @@ describe("praxis_provide_info", () => {
           },
         }),
       )
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: { ...ISSUE, id: 182 } }))
       .mockResolvedValueOnce(
-        mockResponse({ ok: true, status: 200, body: { applied: true, state: "assessing" } }),
+        mockResponse({
+          ok: true,
+          status: 200,
+          body: {
+            applied: true,
+            state: "assessing",
+            message:
+              "Thanks - I recorded that information. Praxis is reassessing cloudwarriors-ai/praxis-e2e-sandbox#65 now.",
+          },
+        }),
       );
     const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
     const out = parse(
@@ -1069,11 +1501,135 @@ describe("praxis_provide_info", () => {
     expect(lookupUrl).toBe(
       "http://praxis:8000/api/v1/issues?repo=cloudwarriors-ai%2Fpraxis-e2e-sandbox",
     );
-    const [postUrl, postInit] = fetchMock.mock.calls[1];
+    const [capabilityUrl] = fetchMock.mock.calls[1];
+    expect(capabilityUrl).toBe("http://praxis:8000/api/v1/issues/182");
+    const [postUrl, postInit] = fetchMock.mock.calls[2];
     expect(postUrl).toBe("http://praxis:8000/api/v1/issues/182/events");
     const sent = JSON.parse((postInit as RequestInit).body as string);
     expect(sent.kind).toBe("info_provided");
     expect(sent.channel_user_id).toBe("alice");
+    expect(out.message).toBe(
+      "Thanks - I recorded that information. Praxis is reassessing cloudwarriors-ai/praxis-e2e-sandbox#65 now.",
+    );
+  });
+
+  it("does not mislabel an issue-id write with a conflicting model-supplied ref", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        mockResponse({ ok: true, status: 200, body: { ...ISSUE, id: 7, source_issue: 70 } }),
+      )
+      .mockResolvedValueOnce(
+        mockResponse({
+          ok: true,
+          status: 200,
+          body: {
+            applied: true,
+            state: "assessing",
+            message: "Thanks - I recorded that information. Praxis is reassessing cw/app#70 now.",
+          },
+        }),
+      );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_provide_info.execute("call-8", {
+        issue_id: 7,
+        issue: "cw/wrong#999",
+        answer: "the checkout page",
+      }),
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toBe("http://praxis:8000/api/v1/issues/7");
+    expect(fetchMock.mock.calls[1][0]).toBe("http://praxis:8000/api/v1/issues/7/events");
+    expect(out.message).toBe(
+      "Thanks - I recorded that information. Praxis is reassessing cw/app#70 now.",
+    );
+  });
+
+  it("does not claim an answer was recorded without applied or idempotent confirmation", async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: { ...ISSUE, id: 7 } }))
+      .mockResolvedValueOnce(
+        mockResponse({ ok: true, status: 200, body: { applied: false, state: "needs_info" } }),
+      );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_provide_info.execute("unconfirmed", {
+        issue_id: 7,
+        answer: "the checkout page",
+      }),
+    );
+
+    expect(out.ok).toBe(false);
+    expect(out.error).toBe("answer_not_confirmed");
+    expect(out.retryable).toBe(false);
+    expect(out.message).toContain("Do not retry");
+  });
+
+  it("fails closed when Praxis confirms the answer but omits canonical acknowledgement copy", async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: { ...ISSUE, id: 7 } }))
+      .mockResolvedValueOnce(
+        mockResponse({ ok: true, status: 200, body: { applied: true, state: "assessing" } }),
+      );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_provide_info.execute("missing-info-ack", {
+        issue_id: 7,
+        answer: "the checkout page",
+      }),
+    );
+
+    expect(out.ok).toBe(false);
+    expect(out.error).toBe("acknowledgement_missing");
+    expect(out.mutation_recorded).toBe(true);
+    expect(out.retryable).toBe(false);
+    expect(out.message).toContain("did not return canonical acknowledgement");
+  });
+
+  it("reuses the first answer payload when the same inbound message is retried differently", async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: { ...ISSUE, id: 7 } }))
+      .mockResolvedValueOnce(
+        mockResponse({ ok: true, status: 200, body: { applied: false, state: "needs_info" } }),
+      )
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: { ...ISSUE, id: 7 } }))
+      .mockResolvedValueOnce(
+        mockResponse({
+          ok: true,
+          status: 200,
+          body: {
+            applied: false,
+            idempotent: true,
+            state: "assessing",
+            message: "Thanks - I recorded that information. Praxis is reassessing cw/app#70 now.",
+          },
+        }),
+      );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+
+    const first = parse(
+      await tools.praxis_provide_info.execute("info-first", {
+        issue_id: 7,
+        answer: "Checkout fails after selecting annual billing.",
+      }),
+    );
+    const retry = parse(
+      await tools.praxis_provide_info.execute("info-retry", {
+        issue_id: 7,
+        answer: "A regenerated tool call paraphrased the human differently.",
+      }),
+    );
+
+    expect(first.error).toBe("answer_not_confirmed");
+    expect(retry.ok).toBe(true);
+    const posts = fetchMock.mock.calls.filter(
+      (call: unknown[]) => (call[1] as RequestInit | undefined)?.method === "POST",
+    );
+    const firstBody = JSON.parse((posts[0][1] as RequestInit).body as string);
+    const retryBody = JSON.parse((posts[1][1] as RequestInit).body as string);
+    expect(retryBody).toEqual(firstBody);
+    expect(firstBody.reason).toBe("Checkout fails after selecting annual billing.");
   });
 
   it("returns issue_not_tracked when the ref resolves to nothing", async () => {
@@ -1089,10 +1645,33 @@ describe("praxis_provide_info", () => {
     expect(out.message).toContain("cw/app#404");
   });
 
-  it("surfaces identity_not_linked with the link instruction", async () => {
-    fetchMock.mockResolvedValue(
-      mockResponse({ ok: false, status: 403, body: { error: "identity_not_linked" } }),
+  it("preserves the structured 404 body for a stale numeric issue id", async () => {
+    fetchMock.mockResolvedValueOnce(
+      mockResponse({ ok: false, status: 404, body: { detail: "Not found." } }),
     );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_provide_info.execute("stale-id", {
+        issue_id: 999999,
+        answer: "the checkout page",
+      }),
+    );
+
+    expect(out).toEqual({
+      ok: false,
+      status: 404,
+      detail: "Not found.",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("http://praxis:8000/api/v1/issues/999999");
+  });
+
+  it("surfaces identity_not_linked with the link instruction", async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: { ...ISSUE, id: 7 } }))
+      .mockResolvedValueOnce(
+        mockResponse({ ok: false, status: 403, body: { error: "identity_not_linked" } }),
+      );
     const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
     const out = parse(
       await tools.praxis_provide_info.execute("c3", { issue_id: 7, answer: "the login page" }),
@@ -1102,13 +1681,15 @@ describe("praxis_provide_info", () => {
   });
 
   it("surfaces issue_not_awaiting_info with the issue state", async () => {
-    fetchMock.mockResolvedValue(
-      mockResponse({
-        ok: false,
-        status: 409,
-        body: { error: "issue_not_awaiting_info", state: "in_progress" },
-      }),
-    );
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: { ...ISSUE, id: 7 } }))
+      .mockResolvedValueOnce(
+        mockResponse({
+          ok: false,
+          status: 409,
+          body: { error: "issue_not_awaiting_info", state: "in_progress" },
+        }),
+      );
     const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
     const out = parse(
       await tools.praxis_provide_info.execute("c4", { issue_id: 7, answer: "the login page" }),

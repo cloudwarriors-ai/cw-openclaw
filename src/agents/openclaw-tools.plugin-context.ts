@@ -25,6 +25,7 @@ export type OpenClawPluginToolOptions = {
   modelProvider?: string;
   modelId?: string;
   requesterSenderId?: string | null;
+  currentMessageId?: string | number;
   requesterAgentIdOverride?: string;
   sessionId?: string;
   sandboxBrowserBridgeUrl?: string;
@@ -90,6 +91,8 @@ export function resolveOpenClawPluginToolInputs(params: {
       agentAccountId: options?.agentAccountId,
       deliveryContext,
       requesterSenderId: options?.requesterSenderId ?? undefined,
+      currentMessageId:
+        options?.currentMessageId === undefined ? undefined : String(options.currentMessageId),
       sandboxed: options?.sandboxed,
     },
     allowGatewaySubagentBinding: options?.allowGatewaySubagentBinding,

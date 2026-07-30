@@ -6,6 +6,7 @@ import { z } from "zod";
 import {
   type ActorContext,
   checkPolicy,
+  conversationIdempotencyKey,
   confirmTokenMatches,
   deriveActorContext,
   idempotencyKey,
@@ -22,6 +23,7 @@ import {
   fileIssue,
   getApiToken,
   getIssue,
+  getIssueResponse,
   getLinkStatus,
   getMyIssue,
   getMyIssues,
@@ -44,10 +46,9 @@ import {
 // rejected server-side too. `unblock` is its own tool.
 const CANCEL_KINDS = ["cancelled", "duplicate", "superseded", "source_closed"] as const;
 
-// The verdict values the model may supply; the tool maps them to the full kind
-// (uat1_pass / uat2_pass etc.) after reading the issue state.
+// The verdict values the model may supply; the tool maps them to a stage-neutral wire kind.
+// Praxis resolves the persisted uat1/uat2 event after idempotency lookup.
 const VERDICT_VALUES = ["pass", "fail"] as const;
-type VerdictValue = (typeof VERDICT_VALUES)[number];
 
 // Default target for praxis_file_issue: the Praxis repo itself, so a self-improvement issue Praxis
 // can then work lands in its own repo. Mirrors the server's PRAXIS_SELF_HEAL_REPO default; kept
@@ -61,6 +62,14 @@ const PraxisWriteConfigSchema = z.strictObject({
 
 function jsonResult(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
+}
+
+function mutationWasRecorded(data: Record<string, unknown>): boolean {
+  return data.applied === true || data.idempotent === true;
+}
+
+function supportsConversationAckV1(issue: PraxisIssueState): boolean {
+  return issue.contracts?.includes("conversation_ack_v1") === true;
 }
 
 function errorResult(err: unknown) {
@@ -169,6 +178,18 @@ const plugin = {
 
   register(api: OpenClawPluginApi) {
     const config = resolveWritePolicyConfig(api.pluginConfig);
+    // Freeze the first full UAT intent for each inbound human message so model retries resend an
+    // identical stage-neutral command. The server also checks the optimistic state/version token.
+    const verdictIntents = new Map<
+      string,
+      {
+        kind: UatVerdictKind;
+        reason: string;
+        expected_state: "dev_uat" | "user_uat";
+        expected_version: number;
+      }
+    >();
+    const infoAnswers = new Map<string, string>();
 
     // Register every tool as `optional: true` so per-agent allowlists scope them — an operator
     // must name the tool / plugin id / "group:plugins" in an agent's `tools.allow`. Combined with
@@ -406,7 +427,7 @@ const plugin = {
 
         // Surface Praxis's structured guards as actionable messages.
         if (!res.ok) {
-          const body = res.data as Record<string, unknown>;
+          const body = res.data;
           if (body.error === "repo_not_onboarded") {
             return jsonResult({
               ok: false,
@@ -719,9 +740,9 @@ const plugin = {
           description:
             "pass — UAT succeeded; fail — UAT failed and the issue should return for fixes",
         }),
-        reason: Type.String({
-          description: "Human-readable UAT verdict rationale (required, recorded for audit)",
-        }),
+        reason: Type.Optional(
+          Type.String({ description: "Required failure summary for fail; optional for pass" }),
+        ),
       }),
       async execute(toolCallId: string, params: Record<string, unknown>) {
         const actor = deriveActorContext(toolContext, toolCallId);
@@ -748,24 +769,46 @@ const plugin = {
           });
         }
 
-        const reason = typeof params.reason === "string" ? params.reason.trim() : "";
-        if (!reason) {
-          return jsonResult({ ok: false, error: "reason_required" });
+        const suppliedReason = typeof params.reason === "string" ? params.reason.trim() : "";
+        if (verdictValue === "fail" && suppliedReason.length < 3) {
+          return jsonResult({ ok: false, error: "failure_summary_required" });
         }
-
         const issueId = Number(params.issue_id);
         if (!Number.isInteger(issueId) || issueId <= 0) {
           return jsonResult({ ok: false, error: "invalid_issue_id" });
         }
-
+        if (!actor.inboundMessageId) {
+          return jsonResult({
+            ok: false,
+            denied: "inbound_message_id_required",
+            message:
+              "This transport did not provide a trusted inbound message id, so Praxis refused to mutate without retry-safe idempotency.",
+          });
+        }
         // Read the issue state to determine the UAT kind prefix (uat1 or uat2).
         // UAT states only exit on a human verdict, so reading then submitting is
         // race-safe for this surface.
-        let issue: PraxisIssueState;
+        let issueResponse: Awaited<ReturnType<typeof getIssueResponse>>;
         try {
-          issue = await getIssue(issueId);
+          issueResponse = await getIssueResponse(issueId);
         } catch (err) {
           return errorResult(err);
+        }
+        if (!issueResponse.ok) {
+          return jsonResult({
+            ok: false,
+            status: issueResponse.status,
+            ...issueResponse.data,
+          });
+        }
+        const issue = issueResponse.data;
+        if (!supportsConversationAckV1(issue)) {
+          return jsonResult({
+            ok: false,
+            denied: "server_contract_unconfirmed",
+            message:
+              "The connected Praxis server does not advertise conversation_ack_v1. Upgrade Praxis before submitting channel replies.",
+          });
         }
 
         const kindPrefix = mapStateToUatKindPrefix(issue.state);
@@ -778,16 +821,41 @@ const plugin = {
           });
         }
 
-        const kind: UatVerdictKind = `${kindPrefix}_${verdictValue as VerdictValue}`;
+        const proposedKind: UatVerdictKind = verdictValue === "pass" ? "uat_pass" : "uat_fail";
+        // Keep bare pass convenient without writing false audit evidence about who validated.
+        const proposedReason =
+          verdictValue === "fail"
+            ? suppliedReason
+            : suppliedReason || "Pass verdict submitted without additional rationale.";
+        const conversationKey = conversationIdempotencyKey("verdict", issueId, actor);
+        let intent = verdictIntents.get(conversationKey);
+        if (!intent) {
+          intent = {
+            kind: proposedKind,
+            reason: proposedReason,
+            expected_state: issue.state as "dev_uat" | "user_uat",
+            expected_version: issue.version,
+          };
+          verdictIntents.set(conversationKey, intent);
+          if (verdictIntents.size > 2048) {
+            const oldest = verdictIntents.keys().next().value;
+            if (oldest) {
+              verdictIntents.delete(oldest);
+            }
+          }
+        }
 
         let res: Awaited<ReturnType<typeof submitVerdict>>;
         try {
           res = await submitVerdict(issueId, {
-            kind,
-            reason,
+            kind: intent.kind,
+            reason: intent.reason,
             requested_by: channelUserId,
             channel: "zoom",
             channel_user_id: channelUserId,
+            message_id: actor.inboundMessageId,
+            idempotency_key: conversationKey,
+            ...intent,
           });
         } catch (err) {
           return errorResult(err);
@@ -795,7 +863,12 @@ const plugin = {
 
         // Surface structured Praxis errors as user-friendly messages.
         if (!res.ok) {
-          const body = res.data as Record<string, unknown>;
+          const body = res.data;
+          // These server validations happen before an event is written. Forget the proposed
+          // payload so the model can correct its interpretation of the same inbound human message.
+          if (body.error === "invalid_failure_summary" || body.error === "invalid_verdict_reason") {
+            verdictIntents.delete(conversationKey);
+          }
           if (body.error === "identity_not_linked") {
             return jsonResult({
               ok: false,
@@ -822,8 +895,31 @@ const plugin = {
                 "No verified identity was forwarded to Praxis. This is a configuration error.",
             });
           }
+          return jsonResult({ ok: false, status: res.status, ...res.data });
         }
-
+        if (!mutationWasRecorded(res.data)) {
+          return jsonResult({
+            ...res.data,
+            ok: false,
+            status: res.status,
+            error: "verdict_not_confirmed",
+            retryable: false,
+            message:
+              "Praxis did not confirm whether the verdict was recorded. Do not retry this message; check issue status first.",
+          });
+        }
+        if (typeof res.data.message !== "string" || !res.data.message.trim()) {
+          return jsonResult({
+            ...res.data,
+            ok: false,
+            status: res.status,
+            error: "acknowledgement_missing",
+            mutation_recorded: true,
+            retryable: false,
+            message:
+              "Praxis recorded the verdict but did not return canonical acknowledgement copy. Do not retry this message; check issue status.",
+          });
+        }
         return jsonResult({ ok: res.ok, status: res.status, ...res.data });
       },
     }));
@@ -872,7 +968,14 @@ const plugin = {
         if (!answer) {
           return jsonResult({ ok: false, error: "answer_required" });
         }
-
+        if (!actor.inboundMessageId) {
+          return jsonResult({
+            ok: false,
+            denied: "inbound_message_id_required",
+            message:
+              "This transport did not provide a trusted inbound message id, so Praxis refused to mutate without retry-safe idempotency.",
+          });
+        }
         // Resolve the issue: prefer the thread-root "owner/repo#N" ref (what humans and the
         // root card speak); fall back to an explicit praxis id.
         let issueId = Number(params.issue_id);
@@ -896,24 +999,60 @@ const plugin = {
         if (!Number.isInteger(issueId) || issueId <= 0) {
           return jsonResult({ ok: false, error: "invalid_issue_id" });
         }
+        let issueResponse: Awaited<ReturnType<typeof getIssueResponse>>;
+        try {
+          issueResponse = await getIssueResponse(issueId);
+        } catch (err) {
+          return errorResult(err);
+        }
+        if (!issueResponse.ok) {
+          return jsonResult({
+            ok: false,
+            status: issueResponse.status,
+            ...issueResponse.data,
+          });
+        }
+        const issue = issueResponse.data;
+        if (!supportsConversationAckV1(issue)) {
+          return jsonResult({
+            ok: false,
+            denied: "server_contract_unconfirmed",
+            message:
+              "The connected Praxis server does not advertise conversation_ack_v1. Upgrade Praxis before submitting channel replies.",
+          });
+        }
+
+        const conversationKey = conversationIdempotencyKey("info", issueId, actor);
+        let frozenAnswer = infoAnswers.get(conversationKey);
+        if (frozenAnswer === undefined) {
+          frozenAnswer = answer;
+          infoAnswers.set(conversationKey, frozenAnswer);
+          if (infoAnswers.size > 2048) {
+            const oldest = infoAnswers.keys().next().value;
+            if (oldest) {
+              infoAnswers.delete(oldest);
+            }
+          }
+        }
 
         let res: Awaited<ReturnType<typeof submitNeedsInfoAnswer>>;
         try {
-          // toolCallId as idempotency key: a model retry of the same call never
-          // double-applies the answer.
+          // The trusted inbound provider message, not the model tool call, binds idempotency.
+          // A model retry or a replay after state advancement cannot double-apply the answer.
           res = await submitNeedsInfoAnswer(issueId, {
-            reason: answer,
+            reason: frozenAnswer,
             requested_by: channelUserId,
             channel: "zoom",
             channel_user_id: channelUserId,
-            idempotency_key: toolCallId,
+            message_id: actor.inboundMessageId,
+            idempotency_key: conversationKey,
           });
         } catch (err) {
           return errorResult(err);
         }
 
         if (!res.ok) {
-          const body = res.data as Record<string, unknown>;
+          const body = res.data;
           if (body.error === "identity_not_linked") {
             return jsonResult({
               ok: false,
@@ -939,8 +1078,31 @@ const plugin = {
                 "Your linked GitHub account is not the asked reporter or a maintainer for this issue.",
             });
           }
+          return jsonResult({ ok: false, status: res.status, ...res.data });
         }
-
+        if (!mutationWasRecorded(res.data)) {
+          return jsonResult({
+            ...res.data,
+            ok: false,
+            status: res.status,
+            error: "answer_not_confirmed",
+            retryable: false,
+            message:
+              "Praxis did not confirm whether the information was recorded. Do not retry this message; check issue status first.",
+          });
+        }
+        if (typeof res.data.message !== "string" || !res.data.message.trim()) {
+          return jsonResult({
+            ...res.data,
+            ok: false,
+            status: res.status,
+            error: "acknowledgement_missing",
+            mutation_recorded: true,
+            retryable: false,
+            message:
+              "Praxis recorded the information but did not return canonical acknowledgement copy. Do not retry this message; check issue status.",
+          });
+        }
         return jsonResult({ ok: res.ok, status: res.status, ...res.data });
       },
     }));
@@ -976,7 +1138,7 @@ const plugin = {
         }
 
         if (!res.ok) {
-          const body = res.data as Record<string, unknown>;
+          const body = res.data;
           if (body.error === "linking_not_configured") {
             return jsonResult({
               ok: false,
@@ -996,7 +1158,7 @@ const plugin = {
           }
         }
 
-        const body = res.data as Record<string, unknown>;
+        const body = res.data;
         const url = typeof body.url === "string" ? body.url : undefined;
         if (!url) {
           return jsonResult({
@@ -1047,11 +1209,11 @@ const plugin = {
           return jsonResult({
             ok: false,
             status: res.status,
-            ...(res.data as Record<string, unknown>),
+            ...res.data,
           });
         }
 
-        const body = res.data as Record<string, unknown>;
+        const body = res.data;
         const linked = body.linked === true;
         const githubLogin = typeof body.github_login === "string" ? body.github_login : undefined;
         return jsonResult({

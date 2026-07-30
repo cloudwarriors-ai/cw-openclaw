@@ -36,6 +36,7 @@ export interface PraxisIssueState {
   state: string;
   state_reason: string;
   version: number;
+  contracts?: string[];
 }
 
 /** The audit context recorded on the event row. Authorization is NOT here — it
@@ -84,6 +85,13 @@ export async function getIssue(issueId: number): Promise<PraxisIssueState> {
   return praxisGet<PraxisIssueState>(`/api/v1/issues/${issueId}`);
 }
 
+/** Non-throwing issue lookup for user-facing flows that must preserve structured 4xx bodies. */
+export async function getIssueResponse(
+  issueId: number,
+): Promise<PraxisResponse<PraxisIssueState & Record<string, unknown>>> {
+  return praxisFetch<PraxisIssueState & Record<string, unknown>>(`/api/v1/issues/${issueId}`);
+}
+
 /** Submit an operator command. Returns the raw structured result + HTTP status so
  * the tool surfaces Praxis's own error/applied/rejected/idempotent outcome verbatim.
  * The server derives any payload and binds authorization to its operator; we send
@@ -98,10 +106,10 @@ export async function submitCommand(
   });
 }
 
-/** The UAT verdict kinds accepted by the events endpoint. uat1 = dev_uat stage,
- * uat2 = user_uat stage. The correct kind is determined from the issue's current
- * state, not passed by the model. */
-export type UatVerdictKind = "uat1_pass" | "uat1_fail" | "uat2_pass" | "uat2_fail";
+/** Stage-neutral verdict kinds accepted by the conversation-aware events endpoint.
+ * Praxis resolves the persisted uat1/uat2 event server-side after first checking the
+ * inbound-message idempotency key, so a retry cannot change stages. */
+export type UatVerdictKind = "uat_pass" | "uat_fail";
 
 /** Map a Praxis issue state to its UAT kind prefix, or undefined when the issue
  * is not currently awaiting a UAT verdict. Exported for testing. */
@@ -125,6 +133,10 @@ export async function submitVerdict(
     requested_by: string;
     channel: string;
     channel_user_id: string;
+    message_id: string;
+    idempotency_key: string;
+    expected_state: "dev_uat" | "user_uat";
+    expected_version: number;
   },
 ): Promise<PraxisResponse<Record<string, unknown>>> {
   return praxisFetch<Record<string, unknown>>(`/api/v1/issues/${issueId}/events`, {
@@ -137,7 +149,9 @@ export async function submitVerdict(
  * (issue_dict exposes id + repo + source_issue). Returns undefined when not tracked. */
 export async function resolveIssueRef(ref: string): Promise<number | undefined> {
   const m = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(ref.trim());
-  if (!m) return undefined;
+  if (!m) {
+    return undefined;
+  }
   const repo = m[1];
   const number = Number(m[2]);
   const res = await praxisGet<{ issues: Array<{ id: number; source_issue: number }> }>(
@@ -158,7 +172,8 @@ export async function submitNeedsInfoAnswer(
     requested_by: string;
     channel: string;
     channel_user_id: string;
-    idempotency_key?: string;
+    message_id: string;
+    idempotency_key: string;
   },
 ): Promise<PraxisResponse<Record<string, unknown>>> {
   return praxisFetch<Record<string, unknown>>(`/api/v1/issues/${issueId}/events`, {

@@ -192,6 +192,17 @@ describe("openclaw plugin tool context", () => {
     });
   });
 
+  it("forwards the trusted current inbound message id to plugin tools", () => {
+    const result = resolveOpenClawPluginToolInputs({
+      options: {
+        config: {} as never,
+        currentMessageId: 9821,
+      },
+    });
+
+    expect(result.context.currentMessageId).toBe("9821");
+  });
+
   it("does not inject ambient thread defaults into plugin tools", async () => {
     const executeMock = vi.fn(async () => ({
       content: [{ type: "text" as const, text: "ok" }],

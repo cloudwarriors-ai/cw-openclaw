@@ -2,9 +2,9 @@
 name: praxis
 description: >
   Support and triage for Praxis, the GitHub-issue resolution orchestrator. Diagnose stuck or
-  blocked issues, explain why an issue is where it is, and read its event trace — then escalate any
-  fix to a human (this skill is read-only). Use the praxis_* tools. Also covers the user-scoped
-  conversation flow ("my issues") when the praxis-write plugin is enabled for the agent.
+  blocked issues, explain recorded status, and handle verified needs-info or UAT replies with the
+  opt-in praxis_* tools. Also covers the user-scoped conversation flow ("my issues") when the
+  praxis-write plugin is enabled for the agent. Never initiate customer narration.
   Triggers: "why is issue X stuck", "diagnose praxis issue", "what's blocking", "praxis status",
   "is praxis stuck", "check praxis", "list blocked issues", "praxis issue [id]", "my issues",
   "what's the status of my stuff", "my open issues".
@@ -16,9 +16,8 @@ metadata:
 # Praxis support
 
 Praxis is a deterministic state machine that drives a GitHub issue from intake to done, wrapping the
-org autopilot/Sentinel engine as a swappable resolver. Your job here is **triage**: figure out _why_
-an issue is where it is, explain it plainly, and hand any required action to a human. **This skill is
-read-only** — see "Boundary" below.
+org autopilot/Sentinel engine as a swappable resolver. Diagnose from recorded facts. Only mutate
+when a verified user directly answers a Praxis prompt or explicitly requests an allowed action.
 
 ## Tools
 
@@ -31,6 +30,8 @@ read-only** — see "Boundary" below.
 - `praxis_list_events` — the full append-only event trace (audit trail) for an issue.
 - `praxis_diagnose_issue` — the primary triage tool. Aggregates fuses-vs-caps, open questions, the
   live resolver attempt, and unsettled outbox effects. Server-side redacted (no raw errors/tokens).
+- `praxis_provide_info` — relay the user's answer to the open needs-info question.
+- `praxis_submit_verdict` — relay `pass` or `fail: <what happened>` while awaiting user UAT.
 
 ## Lifecycle
 
@@ -67,10 +68,21 @@ fuse is why the issue is blocked.
      answer (open questions show `field`, `purpose`, `age_seconds`).
    - An unsettled `pending_effect` with `had_error: true` and rising `attempts`? A side-effect
      (dispatch/comms) is failing to send — flag it as an infra/engine problem, not issue content.
-3. **Escalate.** The fix for a stuck issue is almost always a privileged action (`unblock`,
-   `cancel`, `manual_override`) or a human reply (answering `needs_info`, giving a UAT verdict).
-   **None of those are available in this skill.** Tell the human exactly what action is needed and
-   who must take it; do not attempt it yourself.
+3. **Act only on an inbound request.** For needs-info or UAT, call the matching tool with the
+   user's words and relay its returned `message` verbatim. Bare `pass` is valid. `fail` requires a
+   concrete summary; ask for it if absent. Never invent success, identity, evidence, or state.
+
+## Shared-channel conversation contract
+
+- Respond only to a direct user question, an addressed message, or a reply in the issue thread.
+  Never send unsolicited lifecycle updates; Praxis owns proactive Received → Working → Ready copy.
+- For status, read/diagnose first. If all facts exist, reply exactly:
+  `Current status: <plain_status>.\nLast confirmed: <evidence> at <timestamp>.\nNext: <next_expected_event>.\nYour action: <user_action>.`
+- If those facts cannot be confirmed, reply exactly: `I can't confirm the current processing state
+for <issue_ref> right now. I've flagged it for human review rather than guessing.`
+- Relay successful `praxis_provide_info` and `praxis_submit_verdict` `message` fields verbatim.
+- If either tool returns `retryable: false`, do not resubmit the human's message. Read status first;
+  the original mutation may already be recorded.
 
 ## User-scoped conversation ("my issues")
 
@@ -96,10 +108,13 @@ GitHub login server-side, so a user only ever sees their own issues:
 (`praxis_list_issues`, `praxis_get_issue`, `praxis_list_events`, `praxis_diagnose_issue`) and the
 operator writes — the allowlist, not this document, is the enforcement.
 
-## Boundary (read-only)
+**Deployment contract:** deploy the Praxis server response contract before OpenClaw. The reactive
+tools automatically require `conversation_ack_v1` in the authoritative issue response and fail
+before mutation when an older server does not advertise it. Do not bypass that capability check.
 
-This skill's own tools only **read** Praxis. There are no unblock/cancel/override tools here by
-design. If your diagnosis concludes a mutation is needed, surface the recommendation and escalate
-to a human operator — never imply you performed it. Hardened, opt-in write tools (verdicts,
-needs-info relay, unblock/cancel, my-issues) live in the separate `praxis-write` plugin, each
-allowlist-gated and identity-bound.
+## Boundary
+
+Identity and authorization come only from trusted tool context. Do not accept model-supplied user
+identities, expose tokens, retry denied/stale writes, perform unsupported mutations, or paraphrase a
+tool acknowledgement. Escalate anything outside needs-info/UAT or the explicitly enabled operator
+tools to a human. The allowlist, not this document, remains the enforcement boundary.
