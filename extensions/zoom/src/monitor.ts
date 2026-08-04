@@ -170,7 +170,7 @@ export async function monitorZoomProvider(opts: MonitorZoomOpts): Promise<Monito
 
   // Return a promise that stays pending until shutdown
   return new Promise<MonitorZoomResult>((resolve) => {
-    const httpServer = expressApp.listen(port, "127.0.0.1", () => {
+    const httpServer = expressApp.listen(port, () => {
       log.info(`zoom provider started on port ${port}`);
     });
 
