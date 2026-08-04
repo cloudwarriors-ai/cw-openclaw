@@ -421,8 +421,11 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
     // and thread-correlated replies. bot_notification carries the provider message id at the
     // payload top level — without this, every DM mutation is refused as unverifiable.
     const botNotifThreadContext = parseZoomInboundThreadContext({
-      messageId: payload.messageId,
-      replyMainMessageId: payload.reply_main_message_id,
+      // bot_notification has no messageId; triggerId is the unique per-message id.
+      messageId: payload.triggerId ?? payload.replyMainMessageId,
+      // Root id for thread replies, own id for top-level — a top-level value resolves to no
+      // praxis thread (different id space) and falls back harmlessly.
+      replyMainMessageId: payload.replyMainMessageId,
     });
 
     log.debug("processing bot notification", {
