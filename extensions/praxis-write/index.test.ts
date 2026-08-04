@@ -1854,3 +1854,116 @@ describe("praxis_opt_in / praxis_opt_out", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe("thread-correlated issue resolution", () => {
+  const THREAD_RESOLVED = {
+    github_login: "alice-gh",
+    issue: { issue_id: 8, ref: "cw/app#80", state: "user_uat", needs_user_action: true },
+  };
+
+  it("submit_verdict resolves the issue from the trusted reply thread when issue_id is omitted", async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: THREAD_RESOLVED }))
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: ISSUE_USER_UAT }))
+      .mockResolvedValueOnce(
+        mockResponse({
+          ok: true,
+          status: 200,
+          body: { applied: true, state: "done", message: "Recorded your pass for cw/app#80." },
+        }),
+      );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_submit_verdict.execute("thread-pass", { verdict: "pass" }),
+    );
+
+    expect(out.ok).toBe(true);
+    expect(out.resolved_from_thread).toBe("cw/app#80");
+    // First call resolves the thread with the runtime-provided id, never a model value.
+    const resolveUrl = String(fetchMock.mock.calls[0][0]);
+    expect(resolveUrl).toContain("/api/v1/my/thread-issue");
+    expect(resolveUrl).toContain("thread_ref=1");
+    expect(resolveUrl).toContain("channel_user_id=alice");
+    // The verdict lands on the RESOLVED issue id.
+    const post = fetchMock.mock.calls.find(
+      (call: unknown[]) => (call[1] as RequestInit | undefined)?.method === "POST",
+    );
+    expect(String(post?.[0])).toContain("/api/v1/issues/8/events");
+  });
+
+  it("submit_verdict with an explicit issue_id never queries the thread resolver", async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: ISSUE_USER_UAT }))
+      .mockResolvedValueOnce(
+        mockResponse({
+          ok: true,
+          status: 200,
+          body: { applied: true, state: "done", message: "Recorded." },
+        }),
+      );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_submit_verdict.execute("explicit-wins", { issue_id: 8, verdict: "pass" }),
+    );
+    expect(out.ok).toBe(true);
+    const urls = fetchMock.mock.calls.map((c: unknown[]) => String(c[0]));
+    expect(urls.some((u: string) => u.includes("/my/thread-issue"))).toBe(false);
+  });
+
+  it("submit_verdict without issue_id outside a resolvable thread asks for lookup", async () => {
+    // Unknown thread: resolver 404s -> fail closed with guidance, nothing mutated.
+    fetchMock.mockResolvedValueOnce(
+      mockResponse({ ok: false, status: 404, body: { error: "not_found" } }),
+    );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(await tools.praxis_submit_verdict.execute("no-thread", { verdict: "pass" }));
+    expect(out.ok).toBe(false);
+    expect(out.error).toBe("issue_required");
+    expect(fetchMock.mock.calls.length).toBe(1);
+  });
+
+  it("submit_verdict without issue_id and without a threadId in context asks for lookup without any fetch", async () => {
+    const { tools } = buildTools({
+      pluginConfig: ALLOW_ALICE,
+      toolContext: {
+        requesterSenderId: "alice",
+        deliveryContext: { channel: "dev_praxis" },
+        currentMessageId: "1",
+        sessionId: "s1",
+      },
+    });
+    const out = parse(await tools.praxis_submit_verdict.execute("no-ctx", { verdict: "pass" }));
+    expect(out.ok).toBe(false);
+    expect(out.error).toBe("issue_required");
+    expect(fetchMock.mock.calls.length).toBe(0);
+  });
+
+  it("provide_info resolves the issue from the trusted reply thread when no ref is given", async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: THREAD_RESOLVED }))
+      .mockResolvedValueOnce(
+        mockResponse({ ok: true, status: 200, body: { ...ISSUE, id: 8, state: "needs_info" } }),
+      )
+      .mockResolvedValueOnce(
+        mockResponse({
+          ok: true,
+          status: 200,
+          body: { applied: true, state: "assessing", message: "Answer recorded for cw/app#80." },
+        }),
+      );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(
+      await tools.praxis_provide_info.execute("thread-answer", {
+        answer: "Expected: the timer freezes at the final time.",
+      }),
+    );
+    expect(out.ok).toBe(true);
+    expect(out.resolved_from_thread).toBe("cw/app#80");
+    const post = fetchMock.mock.calls.find(
+      (call: unknown[]) => (call[1] as RequestInit | undefined)?.method === "POST",
+    );
+    expect(String(post?.[0])).toContain("/api/v1/issues/8/events");
+    const body = JSON.parse((post?.[1] as RequestInit).body as string);
+    expect(body.reason).toBe("Expected: the timer freezes at the final time.");
+  });
+});

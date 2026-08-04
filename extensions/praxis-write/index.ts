@@ -36,6 +36,7 @@ import {
   startGithubLink,
   submitCommand,
   resolveIssueRef,
+  resolveThreadIssue,
   submitNeedsInfoAnswer,
   submitVerdict,
   type UatVerdictKind,
@@ -70,6 +71,41 @@ function mutationWasRecorded(data: Record<string, unknown>): boolean {
 
 function supportsConversationAckV1(issue: PraxisIssueState): boolean {
   return issue.contracts?.includes("conversation_ack_v1") === true;
+}
+
+/** Resolve the praxis issue from the runtime-provided reply thread. TRUSTED context only —
+ * the thread id comes from deliveryContext (never model-supplied), and Praxis role-gates the
+ * resolution server-side (unknown/foreign threads are undisclosed 404s). Returns null when the
+ * message was not a threaded reply or the thread does not resolve for this identity; callers
+ * fall back to explicit refs. */
+async function resolveIssueFromReplyThread(
+  toolContext: ToolRequestContext,
+  channelUserId: string,
+): Promise<{ issueId: number; ref: string } | null> {
+  const raw = toolContext.deliveryContext?.threadId;
+  const threadRef = raw === undefined || raw === null ? "" : String(raw).trim();
+  if (!threadRef) {
+    return null;
+  }
+  let res: Awaited<ReturnType<typeof resolveThreadIssue>>;
+  try {
+    res = await resolveThreadIssue({
+      channel: "zoom",
+      channel_user_id: channelUserId,
+      thread_ref: threadRef,
+    });
+  } catch {
+    return null;
+  }
+  if (!res.ok) {
+    return null;
+  }
+  const issue = (res.data as { issue?: Record<string, unknown> }).issue;
+  const issueId = Number(issue?.issue_id);
+  if (!Number.isInteger(issueId) || issueId <= 0) {
+    return null;
+  }
+  return { issueId, ref: String(issue?.ref ?? "") };
 }
 
 function errorResult(err: unknown) {
@@ -735,7 +771,13 @@ const plugin = {
         "Allowlist-gated; no dry-run/confirm step (UAT states only exit on a human verdict, so " +
         "the read→submit is race-safe). For needs-info answers use praxis_provide_info.",
       parameters: Type.Object({
-        issue_id: Type.Number({ description: "The Praxis issue id (not the GitHub issue number)" }),
+        issue_id: Type.Optional(
+          Type.Number({
+            description:
+              "The Praxis issue id (not the GitHub issue number). OMIT when the user replied " +
+              "in the ask's own thread — the trusted reply thread resolves the issue.",
+          }),
+        ),
         verdict: Type.String({
           description:
             "pass — UAT succeeded; fail — UAT failed and the issue should return for fixes",
@@ -773,9 +815,23 @@ const plugin = {
         if (verdictValue === "fail" && suppliedReason.length < 3) {
           return jsonResult({ ok: false, error: "failure_summary_required" });
         }
-        const issueId = Number(params.issue_id);
+        // Issue resolution: an explicit issue_id wins (non-thread flows, byte-compatible with
+        // the pre-thread contract); otherwise the TRUSTED reply thread resolves it server-side —
+        // a user replying in the ask's own thread never has to name an issue.
+        const explicitId = Number(params.issue_id);
+        const hasExplicit = Number.isInteger(explicitId) && explicitId > 0;
+        const fromThread = hasExplicit
+          ? null
+          : await resolveIssueFromReplyThread(toolContext, channelUserId);
+        const issueId = hasExplicit ? explicitId : (fromThread?.issueId ?? 0);
         if (!Number.isInteger(issueId) || issueId <= 0) {
-          return jsonResult({ ok: false, error: "invalid_issue_id" });
+          return jsonResult({
+            ok: false,
+            error: "issue_required",
+            message:
+              "No issue_id was given and this message is not a reply in a Praxis ask's thread. " +
+              "Call praxis_my_issues to find the issue awaiting a verdict, then retry.",
+          });
         }
         if (!actor.inboundMessageId) {
           return jsonResult({
@@ -920,7 +976,12 @@ const plugin = {
               "Praxis recorded the verdict but did not return canonical acknowledgement copy. Do not retry this message; check issue status.",
           });
         }
-        return jsonResult({ ok: res.ok, status: res.status, ...res.data });
+        return jsonResult({
+          ok: res.ok,
+          status: res.status,
+          ...(fromThread ? { resolved_from_thread: fromThread.ref } : {}),
+          ...res.data,
+        });
       },
     }));
 
@@ -938,7 +999,7 @@ const plugin = {
         issue: Type.Optional(
           Type.String({
             description:
-              'The GitHub issue ref "owner/repo#N" (as shown in the thread root) — preferred',
+              'The GitHub issue ref "owner/repo#N". OMIT when the user replied in the ask\'s own thread — the trusted reply thread resolves the issue',
           }),
         ),
         issue_id: Type.Optional(
@@ -976,8 +1037,9 @@ const plugin = {
               "This transport did not provide a trusted inbound message id, so Praxis refused to mutate without retry-safe idempotency.",
           });
         }
-        // Resolve the issue: prefer the thread-root "owner/repo#N" ref (what humans and the
-        // root card speak); fall back to an explicit praxis id.
+        // Resolve the issue. Ladder: explicit praxis id, then the explicit "owner/repo#N" ref,
+        // then the TRUSTED reply thread (runtime-provided — a user answering in the ask's own
+        // thread never needs to name anything).
         let issueId = Number(params.issue_id);
         const ref = typeof params.issue === "string" ? params.issue.trim() : "";
         if ((!Number.isInteger(issueId) || issueId <= 0) && ref) {
@@ -996,8 +1058,21 @@ const plugin = {
           }
           issueId = resolved;
         }
+        const hasExplicit = Number.isInteger(issueId) && issueId > 0;
+        const fromThread = hasExplicit
+          ? null
+          : await resolveIssueFromReplyThread(toolContext, channelUserId);
+        if (!hasExplicit && fromThread) {
+          issueId = fromThread.issueId;
+        }
         if (!Number.isInteger(issueId) || issueId <= 0) {
-          return jsonResult({ ok: false, error: "invalid_issue_id" });
+          return jsonResult({
+            ok: false,
+            error: "issue_required",
+            message:
+              "No issue was given and this message is not a reply in a Praxis ask's thread. " +
+              "Call praxis_my_issues to find the issue with the open question, then retry.",
+          });
         }
         let issueResponse: Awaited<ReturnType<typeof getIssueResponse>>;
         try {
@@ -1103,7 +1178,12 @@ const plugin = {
               "Praxis recorded the information but did not return canonical acknowledgement copy. Do not retry this message; check issue status.",
           });
         }
-        return jsonResult({ ok: res.ok, status: res.status, ...res.data });
+        return jsonResult({
+          ok: res.ok,
+          status: res.status,
+          ...(fromThread ? { resolved_from_thread: fromThread.ref } : {}),
+          ...res.data,
+        });
       },
     }));
 

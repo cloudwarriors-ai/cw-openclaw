@@ -293,6 +293,23 @@ export async function getMyIssues(params: {
   return praxisFetch<Record<string, unknown>>(`/api/v1/my/issues?${qs}`);
 }
 
+/** Thread-correlated resolution (Praxis /api/v1/my/thread-issue): map the TRUSTED reply thread
+ * root id to the one issue whose comms live in that thread, identity-scoped and role-gated.
+ * Unknown/foreign threads are undisclosed 404s. The caller forwards only the runtime-provided
+ * thread id — never a model-chosen value. */
+export async function resolveThreadIssue(params: {
+  channel: string;
+  channel_user_id: string;
+  thread_ref: string;
+}): Promise<PraxisResponse<Record<string, unknown>>> {
+  const qs = new URLSearchParams({
+    channel: params.channel,
+    channel_user_id: params.channel_user_id,
+    thread_ref: params.thread_ref,
+  }).toString();
+  return praxisFetch<Record<string, unknown>>(`/api/v1/my/thread-issue?${qs}`);
+}
+
 /** Identity-scoped drill-down (Praxis /api/v1/my/issues/{id}): 404 unless the resolved user is
  * that issue's reporter — the end-user detail path; org-wide /issues/{id} stays operator-only. */
 export async function getMyIssue(
