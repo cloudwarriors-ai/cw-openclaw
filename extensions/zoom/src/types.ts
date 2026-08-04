@@ -118,6 +118,8 @@ export type ZoomWebhookEvent = {
       selectedItem?: { value?: string; text?: string };
       toJid?: string;
       messageId?: string;
+      /** Present when the inbound message is a reply inside a thread. */
+      reply_main_message_id?: string;
       original?: { body?: Array<Record<string, unknown>> };
       userName?: string;
       channelName?: string;

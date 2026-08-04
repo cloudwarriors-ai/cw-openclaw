@@ -417,6 +417,14 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
     const isChannelMessage = toJid?.includes("@conference.") ?? false;
     const conversationId = isChannelMessage ? toJid : userJid;
 
+    // Trusted inbound identity for plugin-tool idempotency (praxis-write's retry-safe gate)
+    // and thread-correlated replies. bot_notification carries the provider message id at the
+    // payload top level — without this, every DM mutation is refused as unverifiable.
+    const botNotifThreadContext = parseZoomInboundThreadContext({
+      messageId: payload.messageId,
+      replyMainMessageId: payload.reply_main_message_id,
+    });
+
     log.debug("processing bot notification", {
       userJid,
       userName,
@@ -613,6 +621,7 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
         isDirect: false,
         channelJid: toJid,
         channelName,
+        threadContext: botNotifThreadContext,
       });
     } else {
       // Handle /channel-mode DM command (admin-only)
@@ -718,6 +727,7 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
         senderEmail: userEmail,
         text: messageText,
         isDirect: true,
+        threadContext: botNotifThreadContext,
       });
     }
   }
