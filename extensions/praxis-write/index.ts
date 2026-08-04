@@ -36,6 +36,7 @@ import {
   startGithubLink,
   submitCommand,
   resolveIssueRef,
+  resolveOpenAsk,
   resolveThreadIssue,
   submitNeedsInfoAnswer,
   submitVerdict,
@@ -98,6 +99,34 @@ async function resolveIssueFromReplyThread(
     return null;
   }
   if (!res.ok) {
+    return null;
+  }
+  const issue = (res.data as { issue?: Record<string, unknown> }).issue;
+  const issueId = Number(issue?.issue_id);
+  if (!Number.isInteger(issueId) || issueId <= 0) {
+    return null;
+  }
+  return { issueId, ref: String(issue?.ref ?? "") };
+}
+
+/** Resolve the issue from the server's OPEN-ASK set — the last inference removed from the model.
+ * Praxis returns the single issue with a question addressed to this identity; several candidates
+ * refuse (ambiguous) rather than pick, and the caller surfaces the list to the human. Returns
+ * {issueId, ref} on a clean resolve, {ambiguous} when the human must choose, null otherwise. */
+async function resolveIssueFromOpenAsk(
+  channelUserId: string,
+): Promise<{ issueId?: number; ref?: string; ambiguous?: string[] } | null> {
+  let res: Awaited<ReturnType<typeof resolveOpenAsk>>;
+  try {
+    res = await resolveOpenAsk({ channel: "zoom", channel_user_id: channelUserId });
+  } catch {
+    return null;
+  }
+  if (!res.ok) {
+    const data = res.data as { error?: string; candidates?: { ref?: string }[] };
+    if (data?.error === "ambiguous_open_ask") {
+      return { ambiguous: (data.candidates ?? []).map((c) => String(c.ref ?? "")).filter(Boolean) };
+    }
     return null;
   }
   const issue = (res.data as { issue?: Record<string, unknown> }).issue;
@@ -1065,13 +1094,34 @@ const plugin = {
         if (!hasExplicit && fromThread) {
           issueId = fromThread.issueId;
         }
+        // Last rung: the server's open-ask set. An answer with no thread and no named issue
+        // belongs to whichever issue is actually WAITING on this person — resolved from data,
+        // never from the model's memory of the conversation.
+        let fromOpenAsk: Awaited<ReturnType<typeof resolveIssueFromOpenAsk>> = null;
+        if (!hasExplicit && !fromThread) {
+          fromOpenAsk = await resolveIssueFromOpenAsk(channelUserId);
+          if (fromOpenAsk?.ambiguous?.length) {
+            return jsonResult({
+              ok: false,
+              error: "ambiguous_open_ask",
+              candidates: fromOpenAsk.ambiguous,
+              message:
+                "More than one issue is waiting on you: " +
+                `${fromOpenAsk.ambiguous.join(", ")}. Ask which one this answers, then call ` +
+                "again with that issue.",
+            });
+          }
+          if (fromOpenAsk?.issueId) {
+            issueId = fromOpenAsk.issueId;
+          }
+        }
         if (!Number.isInteger(issueId) || issueId <= 0) {
           return jsonResult({
             ok: false,
             error: "issue_required",
             message:
-              "No issue was given and this message is not a reply in a Praxis ask's thread. " +
-              "Call praxis_my_issues to find the issue with the open question, then retry.",
+              "No issue was given, this message is not a reply in a Praxis ask's thread, and " +
+              "nothing is currently waiting on you. Call praxis_my_issues to check status.",
           });
         }
         let issueResponse: Awaited<ReturnType<typeof getIssueResponse>>;
@@ -1182,6 +1232,7 @@ const plugin = {
           ok: res.ok,
           status: res.status,
           ...(fromThread ? { resolved_from_thread: fromThread.ref } : {}),
+          ...(fromOpenAsk?.ref ? { resolved_from_open_ask: fromOpenAsk.ref } : {}),
           ...res.data,
         });
       },

@@ -310,6 +310,20 @@ export async function resolveThreadIssue(params: {
   return praxisFetch<Record<string, unknown>>(`/api/v1/my/thread-issue?${qs}`);
 }
 
+/** Open-ask resolution (Praxis /api/v1/my/open-ask): the ONE issue with a question addressed to
+ * this identity, resolved server-side. 404 = nothing waiting; 409 = several (body carries the
+ * candidate list). Removes the model's need to guess which issue a bare reply answers. */
+export async function resolveOpenAsk(params: {
+  channel: string;
+  channel_user_id: string;
+}): Promise<PraxisResponse<Record<string, unknown>>> {
+  const qs = new URLSearchParams({
+    channel: params.channel,
+    channel_user_id: params.channel_user_id,
+  }).toString();
+  return praxisFetch<Record<string, unknown>>(`/api/v1/my/open-ask?${qs}`);
+}
+
 /** Identity-scoped drill-down (Praxis /api/v1/my/issues/{id}): 404 unless the resolved user is
  * that issue's reporter — the end-user detail path; org-wide /issues/{id} stays operator-only. */
 export async function getMyIssue(

@@ -1967,3 +1967,98 @@ describe("thread-correlated issue resolution", () => {
     expect(body.reason).toBe("Expected: the timer freezes at the final time.");
   });
 });
+
+describe("open-ask issue resolution (no thread, no explicit issue)", () => {
+  const OPEN_ASK = {
+    github_login: "alice-gh",
+    issue: { issue_id: 42, ref: "cw/app#420", state: "needs_info" },
+  };
+  // No threadId in context: forces the ladder down to the open-ask rung.
+  const CTX_NO_THREAD = {
+    requesterSenderId: "alice",
+    deliveryContext: { channel: "dev_praxis" },
+    currentMessageId: "1",
+    sessionId: "s1",
+  };
+
+  it("resolves the waiting issue from the server instead of guessing", async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: true, status: 200, body: OPEN_ASK }))
+      .mockResolvedValueOnce(
+        mockResponse({ ok: true, status: 200, body: { ...ISSUE, id: 42, state: "needs_info" } }),
+      )
+      .mockResolvedValueOnce(
+        mockResponse({
+          ok: true,
+          status: 200,
+          body: { applied: true, state: "assessing", message: "Answer recorded for cw/app#420." },
+        }),
+      );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE, toolContext: CTX_NO_THREAD });
+    const out = parse(
+      await tools.praxis_provide_info.execute("open-ask", { answer: "the right face is blue" }),
+    );
+    expect(out.ok).toBe(true);
+    expect(out.resolved_from_open_ask).toBe("cw/app#420");
+    expect(String(fetchMock.mock.calls[0][0])).toContain("/api/v1/my/open-ask");
+    const post = fetchMock.mock.calls.find(
+      (call: unknown[]) => (call[1] as RequestInit | undefined)?.method === "POST",
+    );
+    expect(String(post?.[0])).toContain("/api/v1/issues/42/events");
+  });
+
+  it("refuses with the candidate list when two issues are waiting, and mutates nothing", async () => {
+    fetchMock.mockResolvedValueOnce(
+      mockResponse({
+        ok: false,
+        status: 409,
+        body: {
+          error: "ambiguous_open_ask",
+          candidates: [{ ref: "cw/app#420" }, { ref: "cw/app#421" }],
+        },
+      }),
+    );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE, toolContext: CTX_NO_THREAD });
+    const out = parse(
+      await tools.praxis_provide_info.execute("ambiguous", { answer: "colors are wrong" }),
+    );
+    expect(out.ok).toBe(false);
+    expect(out.error).toBe("ambiguous_open_ask");
+    expect(out.candidates).toEqual(["cw/app#420", "cw/app#421"]);
+    // Exactly one call: the resolver. No issue GET, no event POST.
+    expect(fetchMock.mock.calls.length).toBe(1);
+  });
+
+  it("refuses when nothing is waiting on the user", async () => {
+    fetchMock.mockResolvedValueOnce(
+      mockResponse({ ok: false, status: 404, body: { error: "no_open_ask" } }),
+    );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE, toolContext: CTX_NO_THREAD });
+    const out = parse(
+      await tools.praxis_provide_info.execute("none-waiting", { answer: "anything" }),
+    );
+    expect(out.ok).toBe(false);
+    expect(out.error).toBe("issue_required");
+  });
+
+  it("an explicit issue_id still short-circuits the resolver entirely", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        mockResponse({ ok: true, status: 200, body: { ...ISSUE, id: 5, state: "needs_info" } }),
+      )
+      .mockResolvedValueOnce(
+        mockResponse({
+          ok: true,
+          status: 200,
+          body: { applied: true, state: "assessing", message: "Recorded." },
+        }),
+      );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE, toolContext: CTX_NO_THREAD });
+    const out = parse(
+      await tools.praxis_provide_info.execute("explicit", { issue_id: 5, answer: "detail" }),
+    );
+    expect(out.ok).toBe(true);
+    const urls = fetchMock.mock.calls.map((c: unknown[]) => String(c[0]));
+    expect(urls.some((u: string) => u.includes("/my/open-ask"))).toBe(false);
+  });
+});
