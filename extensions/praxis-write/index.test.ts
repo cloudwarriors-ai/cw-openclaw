@@ -1911,15 +1911,63 @@ describe("thread-correlated issue resolution", () => {
   });
 
   it("submit_verdict without issue_id outside a resolvable thread asks for lookup", async () => {
-    // Unknown thread: resolver 404s -> fail closed with guidance, nothing mutated.
-    fetchMock.mockResolvedValueOnce(
-      mockResponse({ ok: false, status: 404, body: { error: "not_found" } }),
-    );
+    // Unknown thread: resolver 404s, then the open-ask rung also finds nothing -> fail closed
+    // with guidance, nothing mutated. TWO probes now (thread, then open-ask) — the second rung
+    // was added 2026-08-05 so a wrong-tool guess still finds the waiting issue.
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: false, status: 404, body: { error: "not_found" } }))
+      .mockResolvedValueOnce(
+        mockResponse({ ok: false, status: 404, body: { error: "no_open_ask" } }),
+      );
     const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
     const out = parse(await tools.praxis_submit_verdict.execute("no-thread", { verdict: "pass" }));
     expect(out.ok).toBe(false);
     expect(out.error).toBe("issue_required");
-    expect(fetchMock.mock.calls.length).toBe(1);
+    expect(fetchMock.mock.calls.length).toBe(2);
+  });
+
+  it("submit_verdict redirects to provide_info when the issue awaits an ANSWER", async () => {
+    // A PraxisQuestion row only ever exists for a needs-info ask (UAT asks create none), so an
+    // open-ask hit PROVES this is an answer misfiled as a verdict. Redirect instead of submitting
+    // something the reducer would refuse — and never make the user repeat themselves.
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: false, status: 404, body: { error: "not_found" } }))
+      .mockResolvedValueOnce(
+        mockResponse({
+          ok: true,
+          status: 200,
+          body: { issue: { issue_id: 225, ref: "cw/app#36", state: "needs_info" } },
+        }),
+      );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(await tools.praxis_submit_verdict.execute("redirect", { verdict: "pass" }));
+    expect(out.ok).toBe(false);
+    expect(out.error).toBe("answer_expected");
+    expect(out.issue_id).toBe(225);
+    expect(out.ref).toBe("cw/app#36");
+    expect(String(out.message)).toContain("praxis_provide_info");
+    // Nothing was mutated: only the two resolution probes ran.
+    expect(fetchMock.mock.calls.length).toBe(2);
+  });
+
+  it("submit_verdict surfaces candidates instead of guessing when the open ask is ambiguous", async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ ok: false, status: 404, body: { error: "not_found" } }))
+      .mockResolvedValueOnce(
+        mockResponse({
+          ok: false,
+          status: 409,
+          body: {
+            error: "ambiguous_open_ask",
+            candidates: [{ ref: "cw/app#36" }, { ref: "cw/app#41" }],
+          },
+        }),
+      );
+    const { tools } = buildTools({ pluginConfig: ALLOW_ALICE });
+    const out = parse(await tools.praxis_submit_verdict.execute("ambig", { verdict: "pass" }));
+    expect(out.ok).toBe(false);
+    expect(out.error).toBe("ambiguous_open_ask");
+    expect(out.candidates).toEqual(["cw/app#36", "cw/app#41"]);
   });
 
   it("submit_verdict without issue_id and without a threadId in context asks for lookup without any fetch", async () => {
@@ -1932,10 +1980,15 @@ describe("thread-correlated issue resolution", () => {
         sessionId: "s1",
       },
     });
+    // No thread context at all, so the thread rung is skipped entirely; the open-ask rung still
+    // runs (one probe) before failing closed. Was 0 probes before 2026-08-05.
+    fetchMock.mockResolvedValueOnce(
+      mockResponse({ ok: false, status: 404, body: { error: "no_open_ask" } }),
+    );
     const out = parse(await tools.praxis_submit_verdict.execute("no-ctx", { verdict: "pass" }));
     expect(out.ok).toBe(false);
     expect(out.error).toBe("issue_required");
-    expect(fetchMock.mock.calls.length).toBe(0);
+    expect(fetchMock.mock.calls.length).toBe(1);
   });
 
   it("provide_info resolves the issue from the trusted reply thread when no ref is given", async () => {

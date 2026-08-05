@@ -854,12 +854,42 @@ const plugin = {
           : await resolveIssueFromReplyThread(toolContext, channelUserId);
         const issueId = hasExplicit ? explicitId : (fromThread?.issueId ?? 0);
         if (!Number.isInteger(issueId) || issueId <= 0) {
+          // Last rung, and it is a REDIRECT rather than parity with praxis_provide_info.
+          // `PraxisQuestion` rows are only ever created for needs-info asks (UAT verdict asks
+          // create none), so an open-ask hit PROVES the issue is waiting on an ANSWER, not a
+          // verdict — submitting one here would just be refused by the reducer. Turning the
+          // wrong-tool guess into the right instruction is the whole point: on 2026-08-05 the
+          // model chose this tool for an answer and the user had to be asked twice.
+          const fromOpenAsk = await resolveIssueFromOpenAsk(channelUserId);
+          if (fromOpenAsk?.ambiguous?.length) {
+            return jsonResult({
+              ok: false,
+              error: "ambiguous_open_ask",
+              candidates: fromOpenAsk.ambiguous,
+              message:
+                "More than one issue is waiting on you: " +
+                `${fromOpenAsk.ambiguous.join(", ")}. Ask which one this refers to, then call again.`,
+            });
+          }
+          if (fromOpenAsk?.issueId) {
+            return jsonResult({
+              ok: false,
+              error: "answer_expected",
+              issue_id: fromOpenAsk.issueId,
+              ref: fromOpenAsk.ref,
+              message:
+                `${fromOpenAsk.ref || "That issue"} is waiting for an ANSWER to an open question, ` +
+                "not a UAT verdict. Call praxis_provide_info with the user's message verbatim — " +
+                "do not ask them to repeat it.",
+            });
+          }
           return jsonResult({
             ok: false,
             error: "issue_required",
             message:
-              "No issue_id was given and this message is not a reply in a Praxis ask's thread. " +
-              "Call praxis_my_issues to find the issue awaiting a verdict, then retry.",
+              "No issue_id was given, the reply thread did not resolve to a Praxis ask, and " +
+              "nothing is waiting on you. Call praxis_my_issues to find the issue awaiting a " +
+              "verdict, then retry with its issue_id.",
           });
         }
         if (!actor.inboundMessageId) {
