@@ -192,6 +192,19 @@ function parseCrossTrainingArg(text: string): boolean | null {
   return match[1] === "on";
 }
 
+/**
+ * Agents whose own instructions define a strict relay/tool contract, and which must therefore NOT
+ * receive the "Respond as a general-purpose assistant" half of the DM context prefix.
+ *
+ * That directive lands in the most recency-privileged position — immediately above the user's words
+ * — and is replayed once per turn, so it accumulates and outranks the agent's own AGENTS.md. Live
+ * failure 2026-08-05: `praxis-dm` answered a Praxis needs-info question conversationally with ZERO
+ * tool calls (its AGENTS.md rules were present in the trajectory 4x; the injected clause appeared
+ * 13x). These agents still get the "not a customer support conversation" context, which is the part
+ * the prefix exists for — only the behavioural override is dropped.
+ */
+const DM_CONTRACT_AGENTS = new Set(["praxis-dm"]);
+
 const ADMIN_DOMAIN = process.env.ADMIN_DOMAIN?.toLowerCase().trim();
 
 /** Check if a sender (email or identifier) is from the admin domain. */
@@ -1833,13 +1846,29 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
     threadContext?: ZoomInboundThreadContext;
     threadStarterBody?: string;
   }) {
-    // For DMs, add context prefix so the agent knows this is NOT a customer support conversation
+    // For DMs, add context prefix so the agent knows this is NOT a customer support conversation.
+    // Contract agents (see DM_CONTRACT_AGENTS) get the context WITHOUT the behavioural override,
+    // which otherwise outranks their own instructions on recency and repetition.
     if (params.isDirect) {
-      params.text = [
+      const dmRoute = resolveZoomAgentRoute({
+        runtime: core,
+        cfg: core.config.loadConfig(),
+        senderId: params.senderId,
+        conversationId: params.conversationId,
+        channelJid: params.channelJid,
+        isDirect: true,
+        log,
+      });
+      const lines = [
         "[ADMIN DM] This is a direct message from an authorized team member, NOT a customer support conversation.",
-        "Do NOT use memory_search for customer training data. Respond as a general-purpose assistant.",
-        `Message: ${params.text}`,
-      ].join("\n");
+      ];
+      if (!DM_CONTRACT_AGENTS.has(dmRoute.agentId ?? "")) {
+        lines.push(
+          "Do NOT use memory_search for customer training data. Respond as a general-purpose assistant.",
+        );
+      }
+      lines.push(`Message: ${params.text}`);
+      params.text = lines.join("\n");
     }
     await routeMessageToAgent({ deps, ...params });
   }
