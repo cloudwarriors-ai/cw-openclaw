@@ -113,12 +113,16 @@ export type UatVerdictKind = "uat_pass" | "uat_fail";
 
 /** Map a Praxis issue state to its UAT kind prefix, or undefined when the issue
  * is not currently awaiting a UAT verdict. Exported for testing. */
-export function mapStateToUatKindPrefix(state: string): "uat1" | "uat2" | undefined {
+export function mapStateToUatKindPrefix(state: string): "uat1" | "uat2" | "uat3" | undefined {
   if (state === "dev_uat") {
     return "uat1";
   }
   if (state === "user_uat") {
     return "uat2";
+  }
+  if (state === "prod_uat") {
+    // Prod round (repo opt-in): the reporter's prod confirmation. Server maps uat_pass -> uat3.
+    return "uat3";
   }
   return undefined;
 }

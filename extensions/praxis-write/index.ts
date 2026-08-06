@@ -250,7 +250,7 @@ const plugin = {
       {
         kind: UatVerdictKind;
         reason: string;
-        expected_state: "dev_uat" | "user_uat";
+        expected_state: "dev_uat" | "user_uat" | "prod_uat";
         expected_version: number;
       }
     >();
@@ -932,7 +932,7 @@ const plugin = {
             ok: false,
             error: "issue_not_awaiting_verdict",
             state: issue.state,
-            message: `Issue #${issueId} is not awaiting a UAT verdict (state=${issue.state}). Only issues in dev_uat or user_uat can receive a verdict.`,
+            message: `Issue #${issueId} is not awaiting a UAT verdict (state=${issue.state}). Only issues in dev_uat, user_uat, or prod_uat can receive a verdict.`,
           });
         }
 
@@ -948,7 +948,7 @@ const plugin = {
           intent = {
             kind: proposedKind,
             reason: proposedReason,
-            expected_state: issue.state as "dev_uat" | "user_uat",
+            expected_state: issue.state as "dev_uat" | "user_uat" | "prod_uat",
             expected_version: issue.version,
           };
           verdictIntents.set(conversationKey, intent);
