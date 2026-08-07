@@ -3,6 +3,7 @@ import {
   type ActorContext,
   checkPolicy,
   confirmTokenMatches,
+  conversationIdempotencyKey,
   deriveActorContext,
   idempotencyKey,
   mintConfirmToken,
@@ -24,6 +25,7 @@ function actor(overrides: Partial<ActorContext> = {}): ActorContext {
     requestedBy: "alice",
     channel: "dev_praxis",
     messageId: "m-1",
+    inboundMessageId: "m-1",
     toolCallId: "call-1",
     ...overrides,
   };
@@ -31,7 +33,10 @@ function actor(overrides: Partial<ActorContext> = {}): ActorContext {
 
 describe("resolveWritePolicyConfig", () => {
   it("defaults to empty allowlists when unset or malformed", () => {
-    expect(resolveWritePolicyConfig(undefined)).toEqual({ allowedUsers: [], allowedChannels: [] });
+    expect(resolveWritePolicyConfig(undefined)).toEqual({
+      allowedUsers: [],
+      allowedChannels: [],
+    });
     expect(resolveWritePolicyConfig({ allowedUsers: "nope" })).toEqual({
       allowedUsers: [],
       allowedChannels: [],
@@ -41,7 +46,10 @@ describe("resolveWritePolicyConfig", () => {
   it("keeps only non-empty string entries", () => {
     expect(
       resolveWritePolicyConfig({ allowedUsers: ["alice", "", 7, "bob"], allowedChannels: ["c1"] }),
-    ).toEqual({ allowedUsers: ["alice", "bob"], allowedChannels: ["c1"] });
+    ).toEqual({
+      allowedUsers: ["alice", "bob"],
+      allowedChannels: ["c1"],
+    });
   });
 });
 
@@ -55,7 +63,12 @@ describe("checkPolicy", () => {
   });
 
   it("fails closed when neither allowlist is configured", () => {
-    expect(checkPolicy(actor(), { allowedUsers: [], allowedChannels: [] })).toEqual({
+    expect(
+      checkPolicy(actor(), {
+        allowedUsers: [],
+        allowedChannels: [],
+      }),
+    ).toEqual({
       allowed: false,
       reason: "write_policy_unconfigured",
     });
@@ -81,7 +94,10 @@ describe("checkPolicy", () => {
 
   it("allows when every configured dimension matches", () => {
     expect(
-      checkPolicy(actor(), { allowedUsers: ["alice"], allowedChannels: ["dev_praxis"] }),
+      checkPolicy(actor(), {
+        allowedUsers: ["alice"],
+        allowedChannels: ["dev_praxis"],
+      }),
     ).toEqual({ allowed: true });
   });
 
@@ -106,8 +122,21 @@ describe("deriveActorContext", () => {
       requestedBy: "alice",
       channel: "dev_praxis",
       messageId: "99",
+      inboundMessageId: "",
       toolCallId: "call-7",
     });
+  });
+
+  it("prefers the trusted inbound message id over the thread id", () => {
+    const ctx = {
+      requesterSenderId: "alice",
+      currentMessageId: "zoom-message-17",
+      deliveryContext: { channel: "dev_praxis", threadId: 99 },
+      sessionId: "sess-1",
+    };
+
+    expect(deriveActorContext(ctx, "call-7").messageId).toBe("zoom-message-17");
+    expect(deriveActorContext(ctx, "call-7").inboundMessageId).toBe("zoom-message-17");
   });
 
   it("falls back to messageChannel and sessionId, empty requester when absent", () => {
@@ -115,6 +144,7 @@ describe("deriveActorContext", () => {
       requestedBy: "",
       channel: "zoom",
       messageId: "sess-2",
+      inboundMessageId: "",
       toolCallId: "call-8",
     });
   });
@@ -129,6 +159,30 @@ describe("deriveActorContext", () => {
       deliveryContext: { channel: "zoom", to: "room-jid@conference.xmpp.zoom.us", threadId: 1 },
     };
     expect(deriveActorContext(ctx, "call-9").channel).toBe("room-jid@conference.xmpp.zoom.us");
+  });
+});
+
+describe("conversationIdempotencyKey", () => {
+  it("is stable across tool retries and changes with the inbound human message", () => {
+    const first = actor({ inboundMessageId: "zoom-message-17", toolCallId: "tool-a" });
+    const retry = actor({ inboundMessageId: "zoom-message-17", toolCallId: "tool-b" });
+    const later = actor({ inboundMessageId: "zoom-message-18", toolCallId: "tool-c" });
+
+    expect(conversationIdempotencyKey("verdict", 7, first)).toBe(
+      conversationIdempotencyKey("verdict", 7, retry),
+    );
+    expect(conversationIdempotencyKey("verdict", 7, first)).not.toBe(
+      conversationIdempotencyKey("verdict", 7, later),
+    );
+    expect(conversationIdempotencyKey("verdict", 7, first)).not.toBe(
+      conversationIdempotencyKey("info", 7, first),
+    );
+  });
+
+  it("fails closed when the transport did not provide a true inbound message id", () => {
+    expect(() => conversationIdempotencyKey("verdict", 7, actor({ inboundMessageId: "" }))).toThrow(
+      /inbound message id required/,
+    );
   });
 });
 
@@ -214,7 +268,11 @@ describe("mintFileIssueConfirmToken", () => {
   it("is bound to the repo and cannot be forged without the secret", () => {
     const a = mintFileIssueConfirmToken({ secret, fullName: "cw/praxis", title: "Fix x" });
     const otherRepo = mintFileIssueConfirmToken({ secret, fullName: "cw/other", title: "Fix x" });
-    const otherSecret = mintFileIssueConfirmToken({ secret: "x", fullName: "cw/praxis", title: "Fix x" });
+    const otherSecret = mintFileIssueConfirmToken({
+      secret: "x",
+      fullName: "cw/praxis",
+      title: "Fix x",
+    });
     expect(a).not.toBe(otherRepo);
     expect(a).not.toBe(otherSecret);
   });

@@ -42,6 +42,7 @@ type SkillDispatchMessageContext = {
   originatingTo?: string;
   to?: string;
   messageThreadId?: string | number;
+  currentMessageId?: string | number;
   memberRoleIds?: string[];
 };
 
@@ -173,6 +174,7 @@ export function resolveSkillDispatchTools(params: {
     agentAccountId: params.message.accountId,
     agentTo: params.message.originatingTo ?? params.message.to,
     agentThreadId: params.message.messageThreadId ?? undefined,
+    currentMessageId: params.message.currentMessageId,
     agentGroupId: groupId,
     agentGroupChannel: params.sessionEntry?.groupChannel,
     agentGroupSpace: params.sessionEntry?.space,

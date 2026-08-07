@@ -6,6 +6,7 @@ import { z } from "zod";
 import {
   type ActorContext,
   checkPolicy,
+  conversationIdempotencyKey,
   confirmTokenMatches,
   deriveActorContext,
   idempotencyKey,
@@ -22,6 +23,7 @@ import {
   fileIssue,
   getApiToken,
   getIssue,
+  getIssueResponse,
   getLinkStatus,
   getMyIssue,
   getMyIssues,
@@ -34,6 +36,8 @@ import {
   startGithubLink,
   submitCommand,
   resolveIssueRef,
+  resolveOpenAsk,
+  resolveThreadIssue,
   submitNeedsInfoAnswer,
   submitVerdict,
   type UatVerdictKind,
@@ -44,10 +48,9 @@ import {
 // rejected server-side too. `unblock` is its own tool.
 const CANCEL_KINDS = ["cancelled", "duplicate", "superseded", "source_closed"] as const;
 
-// The verdict values the model may supply; the tool maps them to the full kind
-// (uat1_pass / uat2_pass etc.) after reading the issue state.
+// The verdict values the model may supply; the tool maps them to a stage-neutral wire kind.
+// Praxis resolves the persisted uat1/uat2 event after idempotency lookup.
 const VERDICT_VALUES = ["pass", "fail"] as const;
-type VerdictValue = (typeof VERDICT_VALUES)[number];
 
 // Default target for praxis_file_issue: the Praxis repo itself, so a self-improvement issue Praxis
 // can then work lands in its own repo. Mirrors the server's PRAXIS_SELF_HEAL_REPO default; kept
@@ -61,6 +64,77 @@ const PraxisWriteConfigSchema = z.strictObject({
 
 function jsonResult(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
+}
+
+function mutationWasRecorded(data: Record<string, unknown>): boolean {
+  return data.applied === true || data.idempotent === true;
+}
+
+function supportsConversationAckV1(issue: PraxisIssueState): boolean {
+  return issue.contracts?.includes("conversation_ack_v1") === true;
+}
+
+/** Resolve the praxis issue from the runtime-provided reply thread. TRUSTED context only —
+ * the thread id comes from deliveryContext (never model-supplied), and Praxis role-gates the
+ * resolution server-side (unknown/foreign threads are undisclosed 404s). Returns null when the
+ * message was not a threaded reply or the thread does not resolve for this identity; callers
+ * fall back to explicit refs. */
+async function resolveIssueFromReplyThread(
+  toolContext: ToolRequestContext,
+  channelUserId: string,
+): Promise<{ issueId: number; ref: string } | null> {
+  const raw = toolContext.deliveryContext?.threadId;
+  const threadRef = raw === undefined || raw === null ? "" : String(raw).trim();
+  if (!threadRef) {
+    return null;
+  }
+  let res: Awaited<ReturnType<typeof resolveThreadIssue>>;
+  try {
+    res = await resolveThreadIssue({
+      channel: "zoom",
+      channel_user_id: channelUserId,
+      thread_ref: threadRef,
+    });
+  } catch {
+    return null;
+  }
+  if (!res.ok) {
+    return null;
+  }
+  const issue = (res.data as { issue?: Record<string, unknown> }).issue;
+  const issueId = Number(issue?.issue_id);
+  if (!Number.isInteger(issueId) || issueId <= 0) {
+    return null;
+  }
+  return { issueId, ref: String(issue?.ref ?? "") };
+}
+
+/** Resolve the issue from the server's OPEN-ASK set — the last inference removed from the model.
+ * Praxis returns the single issue with a question addressed to this identity; several candidates
+ * refuse (ambiguous) rather than pick, and the caller surfaces the list to the human. Returns
+ * {issueId, ref} on a clean resolve, {ambiguous} when the human must choose, null otherwise. */
+async function resolveIssueFromOpenAsk(
+  channelUserId: string,
+): Promise<{ issueId?: number; ref?: string; ambiguous?: string[] } | null> {
+  let res: Awaited<ReturnType<typeof resolveOpenAsk>>;
+  try {
+    res = await resolveOpenAsk({ channel: "zoom", channel_user_id: channelUserId });
+  } catch {
+    return null;
+  }
+  if (!res.ok) {
+    const data = res.data as { error?: string; candidates?: { ref?: string }[] };
+    if (data?.error === "ambiguous_open_ask") {
+      return { ambiguous: (data.candidates ?? []).map((c) => String(c.ref ?? "")).filter(Boolean) };
+    }
+    return null;
+  }
+  const issue = (res.data as { issue?: Record<string, unknown> }).issue;
+  const issueId = Number(issue?.issue_id);
+  if (!Number.isInteger(issueId) || issueId <= 0) {
+    return null;
+  }
+  return { issueId, ref: String(issue?.ref ?? "") };
 }
 
 function errorResult(err: unknown) {
@@ -169,6 +243,18 @@ const plugin = {
 
   register(api: OpenClawPluginApi) {
     const config = resolveWritePolicyConfig(api.pluginConfig);
+    // Freeze the first full UAT intent for each inbound human message so model retries resend an
+    // identical stage-neutral command. The server also checks the optimistic state/version token.
+    const verdictIntents = new Map<
+      string,
+      {
+        kind: UatVerdictKind;
+        reason: string;
+        expected_state: "dev_uat" | "user_uat" | "prod_uat";
+        expected_version: number;
+      }
+    >();
+    const infoAnswers = new Map<string, string>();
 
     // Register every tool as `optional: true` so per-agent allowlists scope them — an operator
     // must name the tool / plugin id / "group:plugins" in an agent's `tools.allow`. Combined with
@@ -406,7 +492,7 @@ const plugin = {
 
         // Surface Praxis's structured guards as actionable messages.
         if (!res.ok) {
-          const body = res.data as Record<string, unknown>;
+          const body = res.data;
           if (body.error === "repo_not_onboarded") {
             return jsonResult({
               ok: false,
@@ -714,14 +800,20 @@ const plugin = {
         "Allowlist-gated; no dry-run/confirm step (UAT states only exit on a human verdict, so " +
         "the read→submit is race-safe). For needs-info answers use praxis_provide_info.",
       parameters: Type.Object({
-        issue_id: Type.Number({ description: "The Praxis issue id (not the GitHub issue number)" }),
+        issue_id: Type.Optional(
+          Type.Number({
+            description:
+              "The Praxis issue id (not the GitHub issue number). OMIT when the user replied " +
+              "in the ask's own thread — the trusted reply thread resolves the issue.",
+          }),
+        ),
         verdict: Type.String({
           description:
             "pass — UAT succeeded; fail — UAT failed and the issue should return for fixes",
         }),
-        reason: Type.String({
-          description: "Human-readable UAT verdict rationale (required, recorded for audit)",
-        }),
+        reason: Type.Optional(
+          Type.String({ description: "Required failure summary for fail; optional for pass" }),
+        ),
       }),
       async execute(toolCallId: string, params: Record<string, unknown>) {
         const actor = deriveActorContext(toolContext, toolCallId);
@@ -748,24 +840,90 @@ const plugin = {
           });
         }
 
-        const reason = typeof params.reason === "string" ? params.reason.trim() : "";
-        if (!reason) {
-          return jsonResult({ ok: false, error: "reason_required" });
+        const suppliedReason = typeof params.reason === "string" ? params.reason.trim() : "";
+        if (verdictValue === "fail" && suppliedReason.length < 3) {
+          return jsonResult({ ok: false, error: "failure_summary_required" });
         }
-
-        const issueId = Number(params.issue_id);
+        // Issue resolution: an explicit issue_id wins (non-thread flows, byte-compatible with
+        // the pre-thread contract); otherwise the TRUSTED reply thread resolves it server-side —
+        // a user replying in the ask's own thread never has to name an issue.
+        const explicitId = Number(params.issue_id);
+        const hasExplicit = Number.isInteger(explicitId) && explicitId > 0;
+        const fromThread = hasExplicit
+          ? null
+          : await resolveIssueFromReplyThread(toolContext, channelUserId);
+        const issueId = hasExplicit ? explicitId : (fromThread?.issueId ?? 0);
         if (!Number.isInteger(issueId) || issueId <= 0) {
-          return jsonResult({ ok: false, error: "invalid_issue_id" });
+          // Last rung, and it is a REDIRECT rather than parity with praxis_provide_info.
+          // `PraxisQuestion` rows are only ever created for needs-info asks (UAT verdict asks
+          // create none), so an open-ask hit PROVES the issue is waiting on an ANSWER, not a
+          // verdict — submitting one here would just be refused by the reducer. Turning the
+          // wrong-tool guess into the right instruction is the whole point: on 2026-08-05 the
+          // model chose this tool for an answer and the user had to be asked twice.
+          const fromOpenAsk = await resolveIssueFromOpenAsk(channelUserId);
+          if (fromOpenAsk?.ambiguous?.length) {
+            return jsonResult({
+              ok: false,
+              error: "ambiguous_open_ask",
+              candidates: fromOpenAsk.ambiguous,
+              message:
+                "More than one issue is waiting on you: " +
+                `${fromOpenAsk.ambiguous.join(", ")}. Ask which one this refers to, then call again.`,
+            });
+          }
+          if (fromOpenAsk?.issueId) {
+            return jsonResult({
+              ok: false,
+              error: "answer_expected",
+              issue_id: fromOpenAsk.issueId,
+              ref: fromOpenAsk.ref,
+              message:
+                `${fromOpenAsk.ref || "That issue"} is waiting for an ANSWER to an open question, ` +
+                "not a UAT verdict. Call praxis_provide_info with the user's message verbatim — " +
+                "do not ask them to repeat it.",
+            });
+          }
+          return jsonResult({
+            ok: false,
+            error: "issue_required",
+            message:
+              "No issue_id was given, the reply thread did not resolve to a Praxis ask, and " +
+              "nothing is waiting on you. Call praxis_my_issues to find the issue awaiting a " +
+              "verdict, then retry with its issue_id.",
+          });
         }
-
+        if (!actor.inboundMessageId) {
+          return jsonResult({
+            ok: false,
+            denied: "inbound_message_id_required",
+            message:
+              "This transport did not provide a trusted inbound message id, so Praxis refused to mutate without retry-safe idempotency.",
+          });
+        }
         // Read the issue state to determine the UAT kind prefix (uat1 or uat2).
         // UAT states only exit on a human verdict, so reading then submitting is
         // race-safe for this surface.
-        let issue: PraxisIssueState;
+        let issueResponse: Awaited<ReturnType<typeof getIssueResponse>>;
         try {
-          issue = await getIssue(issueId);
+          issueResponse = await getIssueResponse(issueId);
         } catch (err) {
           return errorResult(err);
+        }
+        if (!issueResponse.ok) {
+          return jsonResult({
+            ok: false,
+            status: issueResponse.status,
+            ...issueResponse.data,
+          });
+        }
+        const issue = issueResponse.data;
+        if (!supportsConversationAckV1(issue)) {
+          return jsonResult({
+            ok: false,
+            denied: "server_contract_unconfirmed",
+            message:
+              "The connected Praxis server does not advertise conversation_ack_v1. Upgrade Praxis before submitting channel replies.",
+          });
         }
 
         const kindPrefix = mapStateToUatKindPrefix(issue.state);
@@ -774,20 +932,45 @@ const plugin = {
             ok: false,
             error: "issue_not_awaiting_verdict",
             state: issue.state,
-            message: `Issue #${issueId} is not awaiting a UAT verdict (state=${issue.state}). Only issues in dev_uat or user_uat can receive a verdict.`,
+            message: `Issue #${issueId} is not awaiting a UAT verdict (state=${issue.state}). Only issues in dev_uat, user_uat, or prod_uat can receive a verdict.`,
           });
         }
 
-        const kind: UatVerdictKind = `${kindPrefix}_${verdictValue as VerdictValue}`;
+        const proposedKind: UatVerdictKind = verdictValue === "pass" ? "uat_pass" : "uat_fail";
+        // Keep bare pass convenient without writing false audit evidence about who validated.
+        const proposedReason =
+          verdictValue === "fail"
+            ? suppliedReason
+            : suppliedReason || "Pass verdict submitted without additional rationale.";
+        const conversationKey = conversationIdempotencyKey("verdict", issueId, actor);
+        let intent = verdictIntents.get(conversationKey);
+        if (!intent) {
+          intent = {
+            kind: proposedKind,
+            reason: proposedReason,
+            expected_state: issue.state as "dev_uat" | "user_uat" | "prod_uat",
+            expected_version: issue.version,
+          };
+          verdictIntents.set(conversationKey, intent);
+          if (verdictIntents.size > 2048) {
+            const oldest = verdictIntents.keys().next().value;
+            if (oldest) {
+              verdictIntents.delete(oldest);
+            }
+          }
+        }
 
         let res: Awaited<ReturnType<typeof submitVerdict>>;
         try {
           res = await submitVerdict(issueId, {
-            kind,
-            reason,
+            kind: intent.kind,
+            reason: intent.reason,
             requested_by: channelUserId,
             channel: "zoom",
             channel_user_id: channelUserId,
+            message_id: actor.inboundMessageId,
+            idempotency_key: conversationKey,
+            ...intent,
           });
         } catch (err) {
           return errorResult(err);
@@ -795,7 +978,12 @@ const plugin = {
 
         // Surface structured Praxis errors as user-friendly messages.
         if (!res.ok) {
-          const body = res.data as Record<string, unknown>;
+          const body = res.data;
+          // These server validations happen before an event is written. Forget the proposed
+          // payload so the model can correct its interpretation of the same inbound human message.
+          if (body.error === "invalid_failure_summary" || body.error === "invalid_verdict_reason") {
+            verdictIntents.delete(conversationKey);
+          }
           if (body.error === "identity_not_linked") {
             return jsonResult({
               ok: false,
@@ -822,9 +1010,37 @@ const plugin = {
                 "No verified identity was forwarded to Praxis. This is a configuration error.",
             });
           }
+          return jsonResult({ ok: false, status: res.status, ...res.data });
         }
-
-        return jsonResult({ ok: res.ok, status: res.status, ...res.data });
+        if (!mutationWasRecorded(res.data)) {
+          return jsonResult({
+            ...res.data,
+            ok: false,
+            status: res.status,
+            error: "verdict_not_confirmed",
+            retryable: false,
+            message:
+              "Praxis did not confirm whether the verdict was recorded. Do not retry this message; check issue status first.",
+          });
+        }
+        if (typeof res.data.message !== "string" || !res.data.message.trim()) {
+          return jsonResult({
+            ...res.data,
+            ok: false,
+            status: res.status,
+            error: "acknowledgement_missing",
+            mutation_recorded: true,
+            retryable: false,
+            message:
+              "Praxis recorded the verdict but did not return canonical acknowledgement copy. Do not retry this message; check issue status.",
+          });
+        }
+        return jsonResult({
+          ok: res.ok,
+          status: res.status,
+          ...(fromThread ? { resolved_from_thread: fromThread.ref } : {}),
+          ...res.data,
+        });
       },
     }));
 
@@ -842,7 +1058,7 @@ const plugin = {
         issue: Type.Optional(
           Type.String({
             description:
-              'The GitHub issue ref "owner/repo#N" (as shown in the thread root) — preferred',
+              'The GitHub issue ref "owner/repo#N". OMIT when the user replied in the ask\'s own thread — the trusted reply thread resolves the issue',
           }),
         ),
         issue_id: Type.Optional(
@@ -872,9 +1088,17 @@ const plugin = {
         if (!answer) {
           return jsonResult({ ok: false, error: "answer_required" });
         }
-
-        // Resolve the issue: prefer the thread-root "owner/repo#N" ref (what humans and the
-        // root card speak); fall back to an explicit praxis id.
+        if (!actor.inboundMessageId) {
+          return jsonResult({
+            ok: false,
+            denied: "inbound_message_id_required",
+            message:
+              "This transport did not provide a trusted inbound message id, so Praxis refused to mutate without retry-safe idempotency.",
+          });
+        }
+        // Resolve the issue. Ladder: explicit praxis id, then the explicit "owner/repo#N" ref,
+        // then the TRUSTED reply thread (runtime-provided — a user answering in the ask's own
+        // thread never needs to name anything).
         let issueId = Number(params.issue_id);
         const ref = typeof params.issue === "string" ? params.issue.trim() : "";
         if ((!Number.isInteger(issueId) || issueId <= 0) && ref) {
@@ -893,27 +1117,97 @@ const plugin = {
           }
           issueId = resolved;
         }
+        const hasExplicit = Number.isInteger(issueId) && issueId > 0;
+        const fromThread = hasExplicit
+          ? null
+          : await resolveIssueFromReplyThread(toolContext, channelUserId);
+        if (!hasExplicit && fromThread) {
+          issueId = fromThread.issueId;
+        }
+        // Last rung: the server's open-ask set. An answer with no thread and no named issue
+        // belongs to whichever issue is actually WAITING on this person — resolved from data,
+        // never from the model's memory of the conversation.
+        let fromOpenAsk: Awaited<ReturnType<typeof resolveIssueFromOpenAsk>> = null;
+        if (!hasExplicit && !fromThread) {
+          fromOpenAsk = await resolveIssueFromOpenAsk(channelUserId);
+          if (fromOpenAsk?.ambiguous?.length) {
+            return jsonResult({
+              ok: false,
+              error: "ambiguous_open_ask",
+              candidates: fromOpenAsk.ambiguous,
+              message:
+                "More than one issue is waiting on you: " +
+                `${fromOpenAsk.ambiguous.join(", ")}. Ask which one this answers, then call ` +
+                "again with that issue.",
+            });
+          }
+          if (fromOpenAsk?.issueId) {
+            issueId = fromOpenAsk.issueId;
+          }
+        }
         if (!Number.isInteger(issueId) || issueId <= 0) {
-          return jsonResult({ ok: false, error: "invalid_issue_id" });
+          return jsonResult({
+            ok: false,
+            error: "issue_required",
+            message:
+              "No issue was given, this message is not a reply in a Praxis ask's thread, and " +
+              "nothing is currently waiting on you. Call praxis_my_issues to check status.",
+          });
+        }
+        let issueResponse: Awaited<ReturnType<typeof getIssueResponse>>;
+        try {
+          issueResponse = await getIssueResponse(issueId);
+        } catch (err) {
+          return errorResult(err);
+        }
+        if (!issueResponse.ok) {
+          return jsonResult({
+            ok: false,
+            status: issueResponse.status,
+            ...issueResponse.data,
+          });
+        }
+        const issue = issueResponse.data;
+        if (!supportsConversationAckV1(issue)) {
+          return jsonResult({
+            ok: false,
+            denied: "server_contract_unconfirmed",
+            message:
+              "The connected Praxis server does not advertise conversation_ack_v1. Upgrade Praxis before submitting channel replies.",
+          });
+        }
+
+        const conversationKey = conversationIdempotencyKey("info", issueId, actor);
+        let frozenAnswer = infoAnswers.get(conversationKey);
+        if (frozenAnswer === undefined) {
+          frozenAnswer = answer;
+          infoAnswers.set(conversationKey, frozenAnswer);
+          if (infoAnswers.size > 2048) {
+            const oldest = infoAnswers.keys().next().value;
+            if (oldest) {
+              infoAnswers.delete(oldest);
+            }
+          }
         }
 
         let res: Awaited<ReturnType<typeof submitNeedsInfoAnswer>>;
         try {
-          // toolCallId as idempotency key: a model retry of the same call never
-          // double-applies the answer.
+          // The trusted inbound provider message, not the model tool call, binds idempotency.
+          // A model retry or a replay after state advancement cannot double-apply the answer.
           res = await submitNeedsInfoAnswer(issueId, {
-            reason: answer,
+            reason: frozenAnswer,
             requested_by: channelUserId,
             channel: "zoom",
             channel_user_id: channelUserId,
-            idempotency_key: toolCallId,
+            message_id: actor.inboundMessageId,
+            idempotency_key: conversationKey,
           });
         } catch (err) {
           return errorResult(err);
         }
 
         if (!res.ok) {
-          const body = res.data as Record<string, unknown>;
+          const body = res.data;
           if (body.error === "identity_not_linked") {
             return jsonResult({
               ok: false,
@@ -939,9 +1233,38 @@ const plugin = {
                 "Your linked GitHub account is not the asked reporter or a maintainer for this issue.",
             });
           }
+          return jsonResult({ ok: false, status: res.status, ...res.data });
         }
-
-        return jsonResult({ ok: res.ok, status: res.status, ...res.data });
+        if (!mutationWasRecorded(res.data)) {
+          return jsonResult({
+            ...res.data,
+            ok: false,
+            status: res.status,
+            error: "answer_not_confirmed",
+            retryable: false,
+            message:
+              "Praxis did not confirm whether the information was recorded. Do not retry this message; check issue status first.",
+          });
+        }
+        if (typeof res.data.message !== "string" || !res.data.message.trim()) {
+          return jsonResult({
+            ...res.data,
+            ok: false,
+            status: res.status,
+            error: "acknowledgement_missing",
+            mutation_recorded: true,
+            retryable: false,
+            message:
+              "Praxis recorded the information but did not return canonical acknowledgement copy. Do not retry this message; check issue status.",
+          });
+        }
+        return jsonResult({
+          ok: res.ok,
+          status: res.status,
+          ...(fromThread ? { resolved_from_thread: fromThread.ref } : {}),
+          ...(fromOpenAsk?.ref ? { resolved_from_open_ask: fromOpenAsk.ref } : {}),
+          ...res.data,
+        });
       },
     }));
 
@@ -976,7 +1299,7 @@ const plugin = {
         }
 
         if (!res.ok) {
-          const body = res.data as Record<string, unknown>;
+          const body = res.data;
           if (body.error === "linking_not_configured") {
             return jsonResult({
               ok: false,
@@ -996,7 +1319,7 @@ const plugin = {
           }
         }
 
-        const body = res.data as Record<string, unknown>;
+        const body = res.data;
         const url = typeof body.url === "string" ? body.url : undefined;
         if (!url) {
           return jsonResult({
@@ -1047,11 +1370,11 @@ const plugin = {
           return jsonResult({
             ok: false,
             status: res.status,
-            ...(res.data as Record<string, unknown>),
+            ...res.data,
           });
         }
 
-        const body = res.data as Record<string, unknown>;
+        const body = res.data;
         const linked = body.linked === true;
         const githubLogin = typeof body.github_login === "string" ? body.github_login : undefined;
         return jsonResult({

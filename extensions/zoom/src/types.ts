@@ -118,6 +118,11 @@ export type ZoomWebhookEvent = {
       selectedItem?: { value?: string; text?: string };
       toJid?: string;
       messageId?: string;
+      /** Unique per-message trigger id on bot_notification events — the trusted inbound id. */
+      triggerId?: string;
+      /** The id a bot reply should thread under: the thread ROOT for thread replies, the
+       * message's own id for top-level messages. (Bot-event UUID space, not REST message ids.) */
+      replyMainMessageId?: string;
       original?: { body?: Array<Record<string, unknown>> };
       userName?: string;
       channelName?: string;
