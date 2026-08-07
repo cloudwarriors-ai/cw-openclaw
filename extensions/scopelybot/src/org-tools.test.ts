@@ -55,8 +55,14 @@ const CHANNEL = "vipbot@conference.xmpp.zoom.us";
 const codeOf = (_res: { content: { text: string }[] }) =>
   String(sendScopelyTextMock.mock.calls.at(-1)?.[1] ?? "").match(/CONFIRM (\d{4})/)?.[1];
 
-const READ_TOOLS = ["scopely_list_orgs", "scopely_get_org", "scopely_list_org_domains"];
+const READ_TOOLS = [
+  "scopely_list_orgs",
+  "scopely_get_org",
+  "scopely_list_org_domains",
+  "scopely_get_org_destination_lock",
+];
 const WRITE_TOOLS = [
+  "scopely_set_org_destination_lock",
   "scopely_create_org",
   "scopely_update_org",
   "scopely_delete_org",
@@ -83,12 +89,25 @@ describe("org-tools", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/auth/orgs/5/");
     await t.scopely_list_org_domains.execute("x", { org_id: 5 });
     expect(fetchMock).toHaveBeenCalledWith("/api/auth/orgs/5/domains/");
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, data: { experience_profile: 8 } });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      data: { locked_destination_vendor_key: "dialpad" },
+    });
+    const lock = parse(await t.scopely_get_org_destination_lock.execute("x", { org_id: 5 }));
+    expect(lock.data.locked_destination_vendor_key).toBe("dialpad");
+    expect(fetchMock).toHaveBeenLastCalledWith("/api/admin/experience-profiles/8/");
+    expect(lock.data.experience_profile_configured).toBe(true);
   });
 
-  // The core safety guarantee: NO write tool touches prod during execute().
-  it("write tools STAGE only — execute() never calls scopelyFetch", async () => {
+  // The core safety guarantee: execute() may read current state, but never mutates.
+  it("write tools STAGE only — execute() never sends a mutating request", async () => {
     const t = buildTools();
+    fetchMock.mockResolvedValue({ ok: true, status: 200, data: { experience_profile: 8 } });
+    const mutatingMethods = new Set(["POST", "PATCH", "DELETE"]);
     const args: Record<string, Record<string, unknown>> = {
+      scopely_set_org_destination_lock: { org_id: 3, vendor_key: "dialpad" },
       scopely_create_org: { name: "Acme", slug: "acme" },
       scopely_update_org: { org_id: 3, name: "New" },
       scopely_delete_org: { org_id: 3 },
@@ -99,7 +118,78 @@ describe("org-tools", () => {
       const res = parse(await t[name].execute("x", args[name]));
       expect(res.staged, `${name} must stage`).toBe(true);
     }
-    expect(fetchMock, "no write tool may call scopelyFetch before CONFIRM").not.toHaveBeenCalled();
+    expect(
+      fetchMock.mock.calls.some(([, opts]) => mutatingMethods.has(opts?.method)),
+      "no write tool may send a mutating request before CONFIRM",
+    ).toBe(false);
+  });
+
+  it("refuses a destination lock when Custom branding is absent", async () => {
+    const t = buildTools();
+    fetchMock.mockResolvedValue({ ok: true, status: 200, data: { experience_profile: null } });
+    const result = parse(
+      await t.scopely_set_org_destination_lock.execute("x", { org_id: 3, vendor_key: "dialpad" }),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("Configure Custom branding first");
+    expect(sendScopelyTextMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("stages an existing-profile lock and confirms only the branding payload", async () => {
+    const t = buildTools();
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, data: { experience_profile: 8 } });
+    const staged = await t.scopely_set_org_destination_lock.execute("x", {
+      org_id: 3,
+      vendor_key: "dialpad",
+    });
+    expect(parse(staged).staged).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const code = codeOf(staged);
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, data: {} });
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      approverIds: ["t"],
+      conversationId: CHANNEL,
+      logger: noopLogger as never,
+    });
+    const [path, opts] = fetchMock.mock.calls.at(-1)!;
+    expect(path).toBe("/api/admin/orgs/3/branding/");
+    expect(opts.method).toBe("PATCH");
+    expect(JSON.parse(opts.body)).toEqual({
+      mode: "custom",
+      profile: { locked_destination_vendor_key: "dialpad" },
+    });
+  });
+
+  it("stages an explicit lock clear without a profile mutation", async () => {
+    const t = buildTools();
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, data: { experience_profile: 8 } });
+    const staged = await t.scopely_set_org_destination_lock.execute("x", {
+      org_id: 3,
+      clear: true,
+    });
+    const code = codeOf(staged);
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, data: {} });
+    await tryExecuteConfirm({
+      text: `CONFIRM ${code}`,
+      actor: "t",
+      approverIds: ["t"],
+      conversationId: CHANNEL,
+      logger: noopLogger as never,
+    });
+    expect(JSON.parse(fetchMock.mock.calls.at(-1)![1].body)).toEqual({
+      mode: "custom",
+      profile: { locked_destination_vendor_key: "" },
+    });
+  });
+
+  it("requires exactly one lock action", async () => {
+    const t = buildTools();
+    const result = parse(await t.scopely_set_org_destination_lock.execute("x", { org_id: 3 }));
+    expect(result.ok).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("create_org confirms to POST /api/auth/orgs/ with only supplied fields", async () => {
