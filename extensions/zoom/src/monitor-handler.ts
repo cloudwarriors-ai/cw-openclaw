@@ -627,7 +627,14 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
         return;
       }
 
-      // Route to agent with channel context (non-observe)
+      // Route to agent with channel context (non-observe).
+      // Deliberately NOT passing threadContext on the channel path: with the live
+      // threading config (enabled + sessionScope thread), a thread id here flips the
+      // route peer from channel-scoped to thread-scoped, which would change session
+      // scoping for every Zoom channel agent on this gateway. The DM path below is
+      // unaffected by that (thread scoping requires !isDirect), so praxis-dm still gets
+      // the correlation + idempotency id it needs. Revisit deliberately if thread-scoped
+      // channel sessions are wanted.
       await routeToAgent({
         conversationId: toJid,
         senderId: userJid,
@@ -637,7 +644,6 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
         isDirect: false,
         channelJid: toJid,
         channelName,
-        threadContext: botNotifThreadContext,
       });
     } else {
       // Handle /channel-mode DM command (admin-only)
