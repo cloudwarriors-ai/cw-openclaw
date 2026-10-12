@@ -1,13 +1,25 @@
-/** Confirm authorization tests ensure shared-channel codes remain actor-bound. */
+/**
+ * Confirm authorization tests ensure shared-channel codes remain actor-bound,
+ * and that a CONFIRM runs nothing unless the live backend profile is
+ * read-write (PK-7a: the kill switch and read-only also stop staged actions).
+ */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const takePendingMock = vi.fn();
 vi.mock("./pending-confirm.js", () => ({
   takePending: (...args: unknown[]) => takePendingMock(...args),
 }));
 
+import { setBackendProfileForTest } from "./backend-profile.js";
 import { isApprovedWriteActor, tryExecuteConfirm } from "./confirm.js";
+
+// Most tests exercise the CONFIRM execution path, which only exists while the
+// live backend profile is read-write (dev-only); the read-only block resets it.
+setBackendProfileForTest({ mode: "read-write" });
 
 const logger = vi.fn();
 const approver = "Mb4vcQ4YQUaQKJjoY4vntQ";
@@ -153,5 +165,63 @@ describe("backend error detail on 4xx", () => {
     });
     expect(result).toContain("HTTP 404");
     expect(result).not.toContain("<html>");
+  });
+});
+
+describe("read-only refusal before the pending store (INV-2, INV-8)", () => {
+  const run = vi.fn();
+  let workspace: string;
+
+  beforeEach(() => {
+    takePendingMock.mockReset();
+    takePendingMock.mockReturnValue({ summary: "unlock user 7", run });
+    run.mockReset();
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), "confirm-ro-"));
+    process.env.OPENCLAW_WORKSPACE = workspace;
+  });
+  afterEach(() => {
+    setBackendProfileForTest({ mode: "read-write" });
+    delete process.env.OPENCLAW_WORKSPACE;
+    fs.rmSync(workspace, { recursive: true, force: true });
+  });
+
+  it.each([
+    ["read-only", () => setBackendProfileForTest({ mode: "read-only" })],
+    ["off (kill switch thrown after staging)", () => setBackendProfileForTest({ mode: "off" })],
+    ["missing profile file (fail-closed default)", () => setBackendProfileForTest(null)],
+  ])("profile %s: an approver's CONFIRM neither consumes nor runs the action", async (_l, set) => {
+    set();
+    const result = await tryExecuteConfirm({
+      text: "CONFIRM 1234",
+      actor: approver,
+      conversationId: "vipbot_prod",
+      approverIds: [approver],
+      logger,
+    });
+    expect(result).toBe("Changes are paused: the bot is read-only, so nothing was run.");
+    expect(takePendingMock).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+    const rows = fs
+      .readFileSync(path.join(workspace, "scopelybot", "audit.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(rows.at(-1)).toMatchObject({
+      resultSummary: "write_blocked_read_only",
+      params: { via: "confirm" },
+    });
+  });
+
+  it("an unauthorized actor still gets the authorization refusal first", async () => {
+    setBackendProfileForTest({ mode: "read-only" });
+    const result = await tryExecuteConfirm({
+      text: "CONFIRM 1234",
+      actor: "someone-else",
+      conversationId: "vipbot_prod",
+      approverIds: [approver],
+      logger,
+    });
+    expect(result).toContain("not authorized");
+    expect(takePendingMock).not.toHaveBeenCalled();
   });
 });

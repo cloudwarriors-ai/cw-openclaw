@@ -16,8 +16,13 @@ vi.mock("./comfort.js", () => ({
   sendComfortMessage: () => {},
 }));
 
+import { setBackendProfileForTest } from "./backend-profile.js";
 import { tryExecuteConfirm } from "./confirm.js";
 import { flushStagedBundlesForTest, stageWrite } from "./gated.js";
+
+// These tests exercise the CONFIRM staging path, which exists only while the
+// live backend profile is read-write (gated.ts refuses staging otherwise).
+setBackendProfileForTest({ mode: "read-write" });
 
 const CHANNEL = "vipbot@conference.xmpp.zoom.us";
 const APPROVER = "Mb4vcQ4YQUaQKJjoY4vntQ";
@@ -174,5 +179,17 @@ describe("stageWrite bundling", () => {
     expect(body.ok).toBe(false);
     expect(body.error).toMatch(/SCOPELYBOT_ZOOM_CHANNEL/);
     expect(sendScopelyTextMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("test hook (F6)", () => {
+  it("flushStagedBundlesForTest throws outside a Vitest worker", async () => {
+    const saved = process.env.VITEST;
+    delete process.env.VITEST;
+    try {
+      await expect(flushStagedBundlesForTest()).rejects.toThrow(/test-only/);
+    } finally {
+      process.env.VITEST = saved;
+    }
   });
 });

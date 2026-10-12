@@ -25,8 +25,13 @@ vi.mock("./comfort.js", () => ({
   sendComfortMessage: () => {},
 }));
 
+import { setBackendProfileForTest } from "./backend-profile.js";
 import { tryExecuteConfirm } from "./confirm.js";
 import { registerOrgTools } from "./org-tools.js";
+
+// These tests exercise the CONFIRM staging path, which exists only while the
+// live backend profile is read-write (gated.ts refuses staging otherwise).
+setBackendProfileForTest({ mode: "read-write" });
 
 type ToolDef = {
   name: string;

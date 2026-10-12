@@ -3,6 +3,12 @@ import { registerAdminTools } from "./src/admin-tools.js";
 import { createApproverStore } from "./src/approver-store.js";
 import { registerApproverTools } from "./src/approver-tools.js";
 import { createAuditLogger } from "./src/audit.js";
+import { readBackendProfile, resolveWorkspaceDir } from "./src/backend-profile.js";
+import {
+  applyCapabilityRegistry,
+  capabilityFor,
+  registryTools,
+} from "./src/capability-registry.js";
 import {
   rememberChannelThreadAnchor,
   resolveInboundThreadAnchor,
@@ -18,7 +24,6 @@ import { registerGhTools } from "./src/gh-tools.js";
 import { guardInboundMessage } from "./src/inbound-guard.js";
 import { registerMonitoringTools } from "./src/monitoring-tools.js";
 import { registerOrgTools } from "./src/org-tools.js";
-import { runPassthroughCycle } from "./src/passthrough-runner-cycle.js";
 import { registerPassthroughTools } from "./src/passthrough-tools.js";
 import { registerPricingTools } from "./src/pricing-tools.js";
 import { registerScopelyTools } from "./src/scopely-tools.js";
@@ -36,12 +41,6 @@ import { isScopelyBotZoomMessage, rewriteScopelyBotZoomMessage } from "./src/zoo
 // before_dispatch gate and the comfort-skip use one shape.
 const CONFIRM_RE = /^CONFIRM\s+\d{4}\b/i;
 
-// Default 5 minutes; override with PASSTHROUGH_INTERVAL_MS
-const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
-// Hard floor — never poll faster than 1 minute
-const MIN_INTERVAL_MS = 60 * 1000;
-
-let intervalHandle: NodeJS.Timeout | null = null;
 let digestHandle: NodeJS.Timeout | null = null;
 
 const plugin = {
@@ -72,8 +71,14 @@ const plugin = {
   },
 
   register(api: OpenClawPluginApi, config?: ScopelyBotConfig) {
-    const workspaceDir = process.env.OPENCLAW_WORKSPACE ?? "/root/.openclaw/workspace";
+    const workspaceDir = resolveWorkspaceDir();
     const logger = createAuditLogger(workspaceDir);
+    // First live read records a policy_change row (valid file or fail-closed
+    // default); every later request re-reads the file (backend-profile.ts).
+    const profile = readBackendProfile(workspaceDir);
+    console.log(
+      `[scopelybot] backend profile ${profile.profile}/${profile.env} mode=${profile.mode} hosts=${profile.allowedHosts.join(",") || "none (fail-closed)"}`,
+    );
     const pluginConfig = resolveScopelyBotConfig(api.config, config);
     // Config-seeded approvers are permanent; the store layers chat-granted approvers
     // (scopely_grant_approver, confirm-gated) and the observed-identity ledger on top,
@@ -89,9 +94,12 @@ const plugin = {
     // `tools.allow` includes a tool name, the plugin id ("scopelybot"), or
     // "group:plugins" can see these tools. The scopelybot agent's allow list
     // carries the "scopelybot" entry; other bots get nothing.
+    // The same single wrapper applies the capability registry: a tool that is
+    // not live/local on the new app answers from the registry and never runs.
     const optionalApi: OpenClawPluginApi = {
       ...api,
-      registerTool: (tool, opts) => api.registerTool(tool, { ...opts, optional: true }),
+      registerTool: (tool, opts) =>
+        api.registerTool(applyCapabilityRegistry(tool), { ...opts, optional: true }),
     };
 
     registerScopelyTools(optionalApi, logger);
@@ -99,7 +107,7 @@ const plugin = {
     registerMonitoringTools(optionalApi, logger);
     registerGhTools(optionalApi, logger, pluginConfig);
     registerCorrelationTools(optionalApi, logger, pluginConfig);
-    registerPassthroughTools(optionalApi, logger, workspaceDir);
+    registerPassthroughTools(optionalApi, logger);
     registerUserMaintenanceTools(optionalApi, logger);
     registerOrgTools(optionalApi, logger);
     registerPricingTools(optionalApi, logger);
@@ -241,48 +249,19 @@ const plugin = {
     //   surface — registration problems log, never throw; cleanup runs on
     //   plugin disable/reset/delete/restart via runPluginHostCleanup).
 
-    // Schedule recurring passthrough test runs.
-    // Disabled if PASSTHROUGH_RUNNER_ENABLED is not "1" or SCOPELY_REPO_PATH is unset.
-    const runnerEnabled = process.env.PASSTHROUGH_RUNNER_ENABLED === "1";
-    const repoPath = process.env.SCOPELY_REPO_PATH;
-    if (runnerEnabled && repoPath) {
-      const interval = Math.max(
-        MIN_INTERVAL_MS,
-        Number(process.env.PASSTHROUGH_INTERVAL_MS ?? DEFAULT_INTERVAL_MS),
-      );
-      // Run once at registration, then on the configured interval.
-      void runPassthroughCycle(workspaceDir, { source: "scheduled" }).catch((err) => {
-        console.error("[scopelybot-passthrough] startup cycle failed:", err);
-      });
-      if (intervalHandle) clearInterval(intervalHandle); // re-register safety
-      intervalHandle = setInterval(() => {
-        void runPassthroughCycle(workspaceDir, { source: "scheduled" }).catch((err) => {
-          console.error("[scopelybot-passthrough] scheduled cycle failed:", err);
-        });
-      }, interval);
-      // Don't keep the process alive solely for this timer.
-      intervalHandle.unref?.();
-      api.lifecycle.registerRuntimeLifecycle({
-        id: "scopelybot-passthrough-runner",
-        description: "Clears the scheduled passthrough-cycle interval",
-        cleanup: () => {
-          if (intervalHandle) {
-            clearInterval(intervalHandle);
-            intervalHandle = null;
-          }
-        },
-      });
-      console.log(`[scopelybot-passthrough] runner enabled, interval=${interval}ms`);
-    } else {
-      console.log(
-        "[scopelybot-passthrough] runner disabled (set PASSTHROUGH_RUNNER_ENABLED=1 and SCOPELY_REPO_PATH to enable)",
-      );
+    // The legacy passthrough runner (Playwright with env credentials against env
+    // URLs, outside the scopelyFetch guard; plan F12/L4) was deleted in PK-7a.
+    // Say so if the old env flag is still armed.
+    if (process.env.PASSTHROUGH_RUNNER_ENABLED === "1") {
+      console.log("[scopelybot-passthrough] runner retired for the zw2 backend; flag ignored");
     }
 
     // Daily digest (Slice 4, SCOPELYBOT_DAILY_DIGEST=1): a minute tick that
     // fires at most once per UTC day past SCOPELYBOT_DIGEST_HOUR_UTC, with the
     // last-posted date persisted in the workspace (restart-safe). Interval
-    // starts here in register() per the scheduling pattern above.
+    // starts here in register() per the scheduling pattern above. The env flag
+    // only arms the timer: each tick posts nothing unless the live backend
+    // profile sets digestEnabled (off by default; audited digest_skipped).
     if (dailyDigestEnabled()) {
       if (digestHandle) clearInterval(digestHandle); // re-register safety
       digestHandle = setInterval(() => {
@@ -301,11 +280,18 @@ const plugin = {
           }
         },
       });
-      console.log("[scopelybot-digest] daily digest enabled");
+      console.log("[scopelybot-digest] daily digest timer armed (gated by the backend profile)");
     }
 
+    // Counted from the capability registry (whose completeness test pins it to
+    // what register() produced), never a hand-kept number.
+    const tools = registryTools();
+    const runnable = tools.filter((t) => {
+      const status = capabilityFor(t)?.status;
+      return status === "live" || status === "local";
+    });
     console.log(
-      "[scopelybot] Registered 116 tools (11 observability + 6 admin + 4 monitoring + 6 GH + 1 correlation + 2 passthrough + 9 user-maintenance + 8 org + 15 pricing + 13 vendor-config + 8 deployment-config + 5 scoping-card + 11 support + 1 support-ticket + 11 session-lifecycle + 5 sow)",
+      `[scopelybot] Registered ${tools.length} tools (${runnable.length} live/local on the new app; the rest answer from the capability registry)`,
     );
   },
 };

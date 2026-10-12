@@ -7,6 +7,8 @@
 // when a human replies `CONFIRM <code>`. The LLM cannot fabricate that inbound message,
 // so the bot cannot self-mutate. Tests assert scopelyFetch is not called during execute().
 
+import { readBackendProfile } from "./backend-profile.js";
+import { capabilityRefusal, currentToolName } from "./capability-registry.js";
 import { getChannelThreadAnchor, sendScopelyText } from "./comfort.js";
 import { formatBackendErrorDetail } from "./confirm.js";
 import { makeCode, putPending } from "./pending-confirm.js";
@@ -137,6 +139,14 @@ function flushBundle(channel: string): void {
 // `run` receives the confirming actor's id at execution time; actions that record
 // who approved them (approver grants) use it, staged API calls ignore it.
 export async function stageWrite(summary: string, run: (ctx?: { actor?: string }) => FetchResult) {
+  // READ-ONLY REFUSAL (INV-2/INV-8): unless the live backend profile says
+  // read-write, refuse BEFORE a code is minted, a pending action stored or a
+  // CONFIRM prompt posted — a prompt for a write that can never run would
+  // invite a human to approve nothing. The refusal names the calling tool's
+  // family link (set by the capability-registry wrapper).
+  if (readBackendProfile().mode !== "read-write") {
+    return capabilityRefusal(currentToolName() ?? "", "blocked_read_only");
+  }
   // Read the channel at call time (not module load) so env that loads after import
   // — and test stubbing — both resolve correctly.
   const channel = process.env.SCOPELYBOT_ZOOM_CHANNEL ?? "";
@@ -183,8 +193,13 @@ export async function stageWrite(summary: string, run: (ctx?: { actor?: string }
 }
 
 // Test hook: deterministically flush any open bundle without waiting for the
-// debounce timer. Returns after the prompt post settles.
+// debounce timer. Returns after the prompt post settles. Throws outside a
+// Vitest worker (like the other test hooks); the AST closure scan forbids
+// production calls.
 export async function flushStagedBundlesForTest(): Promise<void> {
+  if (!process.env.VITEST) {
+    throw new Error("flushStagedBundlesForTest is test-only");
+  }
   for (const [channel, b] of [...bundles]) {
     bundles.delete(channel);
     clearTimeout(b.timer);

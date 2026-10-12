@@ -6,6 +6,7 @@
 // (bigheadbot/pulsebot/zws/cloudflow-support/external-org-autopilot).
 
 import type { AuditLogger } from "./audit.js";
+import { auditBackendEvent, readBackendProfile } from "./backend-profile.js";
 import { takePending } from "./pending-confirm.js";
 import { redactText } from "./redaction.js";
 import { isScopelyBotZoomMessage } from "./zoom-format.js";
@@ -67,6 +68,13 @@ export async function tryExecuteConfirm(params: {
   // the correct channel cannot execute OR consume a valid pending action.
   if (!isApprovedWriteActor(params.actor, params.approverIds)) {
     return "Write confirmation is not authorized for this Zoom identity.";
+  }
+  // READ-ONLY REFUSAL (INV-2/INV-8): re-check the live profile before touching
+  // the pending store. An action staged while the profile was read-write must
+  // not run after the owner switched to read-only or threw the kill switch.
+  if (readBackendProfile().mode !== "read-write") {
+    auditBackendEvent("write_blocked_read_only", { via: "confirm" });
+    return "Changes are paused: the bot is read-only, so nothing was run.";
   }
   // Channel-scoped: only consumes an action staged for THIS conversation. Zoom
   // thread replies dispatch with the thread id as conversationId, so the session

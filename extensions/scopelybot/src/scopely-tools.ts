@@ -2,6 +2,7 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
+import { redactText } from "./redaction.js";
 import { scopelyFetch, jsonResult, errorResult, buildQuery } from "./scopely-api.js";
 
 export function registerScopelyTools(api: OpenClawPluginApi, logger: AuditLogger) {
@@ -29,24 +30,21 @@ export function registerScopelyTools(api: OpenClawPluginApi, logger: AuditLogger
     ),
   );
 
-  // Health endpoints live on the API host (api.vip.pscx.ai), not the frontend
-  // BFF, and need no auth — served directly by Django (scopely config/urls.py).
-  // SCOPELY_HEALTH_URL overrides the /health/ URL; component health derives
-  // from the same base so one override moves both.
-  function healthUrl(suffix: "" | "components/"): string {
-    const baseUrl =
-      process.env.SCOPELY_BASE_URL ?? process.env.SCOPELY_URL ?? "https://vip.pscx.ai";
-    const root =
-      process.env.SCOPELY_HEALTH_URL ?? `${baseUrl.replace("//vip.", "//api.vip.")}/health/`;
-    return `${root.replace(/\/+$/, "")}/${suffix}`;
-  }
+  // Health goes through the guarded scopelyFetch like every other app request
+  // (INV-5) and no longer derives a host from env: the host is the live
+  // profile's baseUrl (prod: the API host api.vip.pscx.ai) and the path is the
+  // new app's health endpoint, the one app request M1 makes. The new app has no
+  // component health; that tool stays registry-blocked (capability-registry.ts).
+  const HEALTH_PATH = "/api/v1/health/";
+  // The health body is echoed to the model: a non-JSON answer (an HTML error or
+  // Django debug page; prod DEBUG=0 is unconfirmed) is cut to about 1 KB.
+  const HEALTH_TEXT_LIMIT = 1024;
 
-  async function fetchHealth(url: string) {
-    const resp = await fetch(url);
-    const data = resp.headers.get("content-type")?.includes("application/json")
-      ? await resp.json()
-      : await resp.text();
-    return jsonResult({ ok: resp.ok, status: resp.status, data });
+  async function fetchHealth(suffix: "" | "components/") {
+    const result = await scopelyFetch(`${HEALTH_PATH}${suffix}`);
+    const data =
+      typeof result.data === "string" ? redactText(result.data, HEALTH_TEXT_LIMIT) : result.data;
+    return jsonResult({ ok: result.ok, status: result.status, data });
   }
 
   // scopely_health_check — "Is the service up?"
@@ -60,7 +58,7 @@ export function registerScopelyTools(api: OpenClawPluginApi, logger: AuditLogger
         parameters: Type.Object({}),
         async execute() {
           try {
-            return await fetchHealth(healthUrl(""));
+            return await fetchHealth("");
           } catch (err) {
             return errorResult(err);
           }
@@ -83,7 +81,7 @@ export function registerScopelyTools(api: OpenClawPluginApi, logger: AuditLogger
         parameters: Type.Object({}),
         async execute() {
           try {
-            return await fetchHealth(healthUrl("components/"));
+            return await fetchHealth("components/");
           } catch (err) {
             return errorResult(err);
           }
