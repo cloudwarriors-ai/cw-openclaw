@@ -284,6 +284,29 @@ describe("verify-audit-chain.mjs", () => {
     });
   });
 
+  it("a phantom torn-line citation is reported, never a crash", () => {
+    const recs = records(writeFixture());
+    recs[2] = { ...recs[2], repaired_torn_lines: [{ bytes: 5, sha256: "0".repeat(64) }] };
+    const forged = recompute(recs);
+    expect(() => verifyChain(forged)).not.toThrow();
+    expect(verifyChain(forged)).toMatchObject({ ok: false, reason: "unexplained_garbage" });
+  });
+
+  it("a record whose ts is not a string is bad_schema", () => {
+    const recs = records(writeFixture());
+    recs[1] = { ...recs[1], ts: 5 };
+    expect(verifyChain(recompute(recs))).toMatchObject({ ok: false, reason: "bad_schema" });
+  });
+
+  it("a 429 (rate_limited outcome) closes its intent", () => {
+    const recs = records(writeFixture());
+    recs[3] = { ...recs[3], event_type: "rate_limited" }; // the outcome row of the intent (seq 4)
+    expect(verifyChain(recompute(recs), { requirePaired: true })).toMatchObject({
+      ok: true,
+      unpaired: [],
+    });
+  });
+
   it("an unpaired intent is reported, and fails only under --require-paired", () => {
     const text = join(lines(writeFixture()).slice(0, 3)); // intent kept, outcome dropped
     const plain = JSON.parse(cli(text, "--json").stdout);

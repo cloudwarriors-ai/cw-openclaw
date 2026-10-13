@@ -924,6 +924,21 @@ describe("audit before request (INV-15) and correlation (INV-5)", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("a 429 closes its intent: no crash_recovery row after the deadline, and it verifies paired", async () => {
+    const t0 = Date.now();
+    setAuditDepsForTest({ now: () => t0 });
+    fetchMock.mockResolvedValueOnce(httpResponse({ status: 429 }));
+    await expectRefused(scopelyFetch("/api/v1/health/"), "rate_limited");
+    const intent = auditRows().find((r) => r.event_type === "http_intent");
+    setAuditDepsForTest({ now: () => t0 + 20_000 }); // a restart after the deadline
+    await scopelyFetch("/api/v1/health/");
+    expect(byId(String(intent?.audit_id)).map((r) => r.event_type)).toEqual([
+      "http_intent",
+      "rate_limited",
+    ]);
+    expect(verifyChain(chain(), { requirePaired: true }).ok).toBe(true);
+  });
+
   it("a body that fails mid-stream gets an outcome with its status and error_class body_read", async () => {
     let pulls = 0;
     const body = new ReadableStream<Uint8Array>({

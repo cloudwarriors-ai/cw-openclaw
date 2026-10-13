@@ -176,6 +176,60 @@ describe("tail checks fail closed", () => {
     expect(fs.existsSync(auditFile(workspace))).toBe(false); // no silent new chain
   });
 
+  it.each([
+    ["a newline", "\n"],
+    ["a carriage return", "\r"],
+  ])("one stray %s appended is refused by a live and by a fresh writer", (_label, stray) => {
+    const writer = getAuditWriter(workspace);
+    writer.append(row(1));
+    writer.append(row(2));
+    fs.appendFileSync(auditFile(workspace), stray);
+    expect(() => writer.append(row(3))).toThrow(expect.objectContaining({ code: "INTEGRITY" }));
+    expect(() => getAuditWriterFresh().append(row(3))).toThrow(
+      expect.objectContaining({ code: "INTEGRITY" }),
+    );
+  });
+
+  it("a tail with no record in reach (2 MiB of NUL bytes) is INTEGRITY, never a second epoch", () => {
+    getAuditWriter(workspace).append(row(1));
+    fs.appendFileSync(auditFile(workspace), Buffer.alloc(2 * 1024 * 1024, 0));
+    expect(() => getAuditWriterFresh().append(row(2))).toThrow(
+      expect.objectContaining({ code: "INTEGRITY" }),
+    );
+    expect(
+      text()
+        .split("\n")
+        .filter((l) => l.includes('"epoch_marker"')),
+    ).toHaveLength(1);
+  });
+
+  it("torn fragments are repaired up to 64 KiB in total and refused above it", () => {
+    const fragments = (n: number) => `{${"z".repeat(20_000)}\n`.repeat(n);
+    getAuditWriter(workspace).append(row(1));
+    fs.appendFileSync(auditFile(workspace), fragments(3)); // 60 KB: repaired and cited
+    getAuditWriterFresh().append(row(2));
+    const cited = readAuditRowsLoose().find((r) => Array.isArray(r.repaired_torn_lines));
+    expect(cited?.repaired_torn_lines).toHaveLength(3);
+    fs.appendFileSync(auditFile(workspace), fragments(5)); // 100 KB: over the cap
+    expect(() => getAuditWriterFresh().append(row(3))).toThrow(
+      expect.objectContaining({ code: "INTEGRITY", message: expect.stringMatching(/too much/) }),
+    );
+  });
+
+  it("a live writer refuses a last record replaced self-consistently at the same seq", () => {
+    const writer = getAuditWriter(workspace);
+    writer.append(row(1));
+    writer.append(row(2));
+    const lines = text().trimEnd().split("\n");
+    const last = JSON.parse(lines.at(-1) ?? "{}") as Record<string, unknown>;
+    const replaced: Record<string, unknown> = { ...last, detail: { n: 999 } };
+    delete replaced.hash;
+    replaced.hash = recordHash(replaced); // same seq and prev_hash: still links
+    const forged = [...lines.slice(0, -1), canonicalJson(replaced)].join("\n");
+    fs.writeFileSync(auditFile(workspace), `${forged}\n`);
+    expect(() => writer.append(row(3))).toThrow(expect.objectContaining({ code: "INTEGRITY" }));
+  });
+
   it("refuses a forged head behind an unparseable line (the link is checked across fragments)", () => {
     const writer = getAuditWriter(workspace);
     for (let i = 0; i < 3; i++) {
@@ -552,6 +606,38 @@ describe("cross-process lock", () => {
     expect(fs.readFileSync(lock, "utf8")).toBe("other-writer-token\n");
   });
 
+  it("a failed lock-token write (disk full) removes the lock it created", () => {
+    const lock = lockFile();
+    let lockFd = -1;
+    const proxy = new Proxy(fs, {
+      get(real, prop: string) {
+        const fn = (real as unknown as Record<string, unknown>)[prop];
+        if (typeof fn !== "function") {
+          return fn;
+        }
+        return (...args: unknown[]) => {
+          if (prop === "writeSync" && args[0] === lockFd) {
+            lockFd = -1; // one failure only: the fd number is reused by the next open
+            throw errno("ENOSPC");
+          }
+          const out = (fn as (...a: unknown[]) => unknown).apply(real, args);
+          if (prop === "openSync" && args[0] === lock && args[1] === "wx") {
+            lockFd = out as number;
+          }
+          return out;
+        };
+      },
+    });
+    setAuditDepsForTest({ fs: proxy as unknown as typeof fs });
+    expect(() => getAuditWriter(workspace).append(row(1))).toThrow(
+      expect.objectContaining({ code: "ENOSPC" }),
+    );
+    expect(fs.existsSync(lock)).toBe(false);
+    expect(readAuditRows(workspace, { withEpoch: true })).toEqual([]); // nothing written unlocked
+    setAuditDepsForTest({ sleep: vi.fn() }); // disk space back: no 10 s LOCK wait
+    expect(() => getAuditWriter(workspace).append(row(2))).not.toThrow();
+  });
+
   it("the lock is released when the append throws", () => {
     getAuditWriter(workspace).append(row(1));
     fs.appendFileSync(auditFile(workspace), "{}\n"); // a parseable non-record: INTEGRITY
@@ -574,6 +660,55 @@ describe("cross-process lock", () => {
 });
 
 describe("recovery sweep (crash between intent and outcome)", () => {
+  const intentRow = (t0: number) =>
+    row(0, {
+      event_type: "http_intent",
+      phase: "intent",
+      http: {
+        method: "GET",
+        host: "h",
+        path_template: "/x",
+        deadline_ts: new Date(t0 + 15_000).toISOString(),
+      },
+    });
+  const recoveryRowsFor = (id: string) =>
+    readAuditRows(workspace).filter((r) => r.recovery && r.audit_id === id);
+
+  it("a crash and a restart inside the deadline: the orphan is recorded once the deadline passes", () => {
+    const t0 = Date.UTC(2026, 9, 12, 12);
+    let now = t0;
+    setAuditDepsForTest({ now: () => now });
+    const intent = getAuditWriter(workspace).append(intentRow(t0));
+    now = t0 + 3_000;
+    setAuditDepsForTest({ now: () => now }); // the restarted process: a fresh writer
+    const writer = getAuditWriter(workspace);
+    writer.append(row(1));
+    expect(recoveryRowsFor(intent.audit_id)).toHaveLength(0);
+    now = t0 + 20_000;
+    writer.append(row(2));
+    expect(recoveryRowsFor(intent.audit_id)).toEqual([
+      expect.objectContaining({ result: { status: "indeterminate", reason: "crash_recovery" } }),
+    ]);
+    writer.append(row(3));
+    expect(recoveryRowsFor(intent.audit_id)).toHaveLength(1);
+    expect(verifyChain(text(), { requirePaired: true }).ok).toBe(true);
+  });
+
+  it("the first sweep reaches an orphan more than 64 KiB (up to 1 MiB) back", () => {
+    const t0 = Date.UTC(2026, 9, 12, 12);
+    let now = t0;
+    setAuditDepsForTest({ now: () => now });
+    const writer = getAuditWriter(workspace);
+    const intent = writer.append(intentRow(t0));
+    for (let i = 0; i < 15; i++) {
+      writer.append(row(i, { blob: "y".repeat(7_000) })); // about 105 KB after the intent
+    }
+    now = t0 + 20_000;
+    setAuditDepsForTest({ now: () => now });
+    getAuditWriter(workspace).append(row(99));
+    expect(recoveryRowsFor(intent.audit_id)).toHaveLength(1);
+  });
+
   it("a fresh writer records an expired orphan intent as indeterminate, once", () => {
     const t0 = Date.UTC(2026, 9, 12, 12);
     let now = t0;

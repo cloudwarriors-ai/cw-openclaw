@@ -31,30 +31,24 @@ Two conditions make that hold, and the plugin cannot see either:
 
 The backend profile's `digestEnabled` must also stay `false` (the default): the daily digest sends timer GETs with a `system` requester.
 
-### PK-9 acceptance check (not yet automated)
+### PK-9 acceptance check: `check_m1a_config.mjs` (not built yet)
 
-Run against the deployed `openclaw.json`. Each command must print nothing:
+Hand-written jq is not enough: a review ran the three jq commands this section used to carry against 31 configs and got 17 false negatives. The two conditions and the digest setting above must be checked by the PK-9 checker script `check_m1a_config.mjs`, which is being built outside this repository, against the deployed `openclaw.json` and the backend profile. **Until that script exists and passes, M1a must not deploy.**
 
-```sh
-# 1. The coordinator cannot spawn (directly, through a group, a profile or a wildcard).
-jq -r '.agents.list[] | select(.id == "scopelybot")
-  | ((.tools.allow // [])[] | select(. == "sessions_spawn" or . == "group:sessions" or . == "group:openclaw" or test("[*?]"))),
-    (.tools.profile // empty | select(. == "coding" or . == "full"))' openclaw.json
+The script must cover these runtime facts:
 
-# 2. No other agent, and no default, can run the health check.
-jq -r '(.agents.list[] | select(.id != "scopelybot") | .id as $id | (.tools.allow // [])[] | "\($id)\t\(.)"),
-  ((.agents.defaults.tools.allow // [])[] | "defaults\t\(.)")
-  | select(test("\t(scopely_health_check|scopelybot|group:plugins)$") or test("\t.*[*?]"))' openclaw.json
-
-# 3. The digest stays off (prints nothing when digestEnabled is false or absent).
-jq -r 'select(.digestEnabled == true) | "digestEnabled is true"' "$OPENCLAW_WORKSPACE/scopelybot-backend.json"
-```
+1. An agent's effective allow list is `tools.allow` plus `tools.alsoAllow`, for every agent.
+2. Tool names are trimmed and lowercased before matching: `"Sessions_Spawn"`, `" sessions_spawn"` and `"GROUP:SESSIONS"` all grant spawning.
+3. The global top-level `tools` stage (`.tools.allow`, `.tools.alsoAllow`) is part of every agent's plugin-tool allow list.
+4. Per-provider policies (`tools.byProvider`, global and per agent, including a per-provider `profile`) count.
+5. `agents.defaults.tools` is an inert path: it neither grants nor removes anything, so it proves nothing.
+6. Group and sender policies (`channels.*.groups.*.tools`, `toolsBySender`) are not evaluated by these rules. While the script does not evaluate them, any such policy makes the result UNKNOWN, which is not a pass.
 
 ## Still required before deploying PK-7a + PK-7b-1
 
 This is not a readiness claim. Before any deploy:
 
-- the PK-9 acceptance check above;
+- the PK-9 acceptance check above (`check_m1a_config.mjs`), passing;
 - a check of the production image for the tool-factory context fields the attribution relies on (probe S0 used a source build of the same code line);
 - PK-1: archive of the final v1 file off host (it must be a regular file of at most 8 MiB);
 - PK-9 window: `chattr +i` on v1 after the final snapshot, `chattr +a` on `audit-v2.jsonl`, an off-host anchor (`verify-audit-chain.mjs --emit-anchor`) and `--v1-file` against the PK-1 archive;

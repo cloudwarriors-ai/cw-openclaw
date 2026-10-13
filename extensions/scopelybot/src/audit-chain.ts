@@ -420,6 +420,9 @@ function createAuditWriter(file: string): AuditWriter {
         const fd = d.fs.openSync(lockFile, "wx", 0o640);
         try {
           d.fs.writeSync(fd, `${token} ${new Date(d.now()).toISOString()}\n`);
+        } catch (err) {
+          d.fs.unlinkSync(lockFile); // ours, just created: never leave an empty lock (ENOSPC)
+          throw err;
         } finally {
           d.fs.closeSync(fd);
         }
@@ -562,9 +565,10 @@ function createAuditWriter(file: string): AuditWriter {
     }
     if (sweep && tail) {
       const { orphans, inFlight } = findOrphans(tail.lines, now);
-      // Keep re-sweeping only while an intent this process failed to close may
-      // still be inside its deadline; live in-flight requests alone do not.
-      orphansPending = inFlight && (orphansPending || failure !== null);
+      // Keep re-sweeping while an intent that may be orphaned is still inside its
+      // deadline: one a failed append may have left, or one found by this
+      // writer's first sweep (a crash and a quick restart).
+      orphansPending = inFlight && (orphansPending || failure !== null || cachedHead === null);
       for (const intent of orphans) {
         bodies.push({
           ...system,
