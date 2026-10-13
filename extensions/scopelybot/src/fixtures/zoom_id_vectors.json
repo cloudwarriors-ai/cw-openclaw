@@ -1,0 +1,233 @@
+{
+  "about": "Canonical Zoom user id test vectors, shared by the zoomwarriors kernel (apps.authentication.journey_models.normalize_zoom_user_id) and the scopelybot plugin. Both sides must agree on every row.",
+  "rules": [
+    "trim ASCII whitespace only (space, \\t, \\n, \\r, \\f, \\v) at both ends; nothing else is trimmed",
+    "if the last 13 characters are ASCII and equal '@xmpp.zoom.us' ignoring ASCII case, drop them (once)",
+    "the rest must be ASCII; lower-case it",
+    "it must then fully match ^[a-z0-9_-]{6,64}$, else the value is malformed"
+  ],
+  "classes": {
+    "valid": "canonical is the id to send / look up",
+    "empty": "nothing after trimming: the header is absent (kernel status missing)",
+    "malformed": "not a Zoom id (kernel status unmapped, detail: not a valid Zoom user id)",
+    "multiple": "contains ',': more than one value (kernel status ambiguous); checked before the shape"
+  },
+  "vectors": [
+    {
+      "input": "Mb4vcQ4YQUaQKJjoY4vntQ",
+      "canonical": "mb4vcq4yquaqkjjoy4vntq",
+      "class": "valid",
+      "note": "team-chat operator_id, case preserved"
+    },
+    {
+      "input": "mb4vcq4yquaqkjjoy4vntq",
+      "canonical": "mb4vcq4yquaqkjjoy4vntq",
+      "class": "valid",
+      "note": "already canonical"
+    },
+    {
+      "input": "mb4vcq4yquaqkjojy4vntq",
+      "canonical": "mb4vcq4yquaqkjojy4vntq",
+      "class": "valid",
+      "note": "NOT the same person: the contract text's transposed spelling (kjojy) of the id above (kjjoy)"
+    },
+    {
+      "input": "mb4vcq4yquaqkjjoy4vntq@xmpp.zoom.us",
+      "canonical": "mb4vcq4yquaqkjjoy4vntq",
+      "class": "valid",
+      "note": "chatbot JID form"
+    },
+    {
+      "input": "mb4vcq4yquaqkjjoy4vntq@XMPP.ZOOM.US",
+      "canonical": "mb4vcq4yquaqkjjoy4vntq",
+      "class": "valid",
+      "note": "JID suffix upper case"
+    },
+    {
+      "input": "Mb4vcQ4YQUaQKJjoY4vntQ@Xmpp.Zoom.Us",
+      "canonical": "mb4vcq4yquaqkjjoy4vntq",
+      "class": "valid",
+      "note": "mixed case id and suffix"
+    },
+    {
+      "input": "  mb4vcq4yquaqkjjoy4vntq  ",
+      "canonical": "mb4vcq4yquaqkjjoy4vntq",
+      "class": "valid",
+      "note": "surrounding spaces"
+    },
+    {
+      "input": "\tmb4vcq4yquaqkjjoy4vntq@xmpp.zoom.us\r\n",
+      "canonical": "mb4vcq4yquaqkjjoy4vntq",
+      "class": "valid",
+      "note": "surrounding tab/CR/LF around the JID form"
+    },
+    {
+      "input": "abc_d-",
+      "canonical": "abc_d-",
+      "class": "valid",
+      "note": "6 characters: the minimum, with _ and -"
+    },
+    {
+      "input": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "canonical": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "class": "valid",
+      "note": "64 characters: the maximum"
+    },
+    {
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@xmpp.zoom.us",
+      "canonical": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "class": "valid",
+      "note": "64 characters plus the suffix"
+    },
+    {
+      "input": "",
+      "canonical": null,
+      "class": "empty",
+      "note": "empty"
+    },
+    {
+      "input": "   ",
+      "canonical": null,
+      "class": "empty",
+      "note": "spaces only"
+    },
+    {
+      "input": "\t\r\n",
+      "canonical": null,
+      "class": "empty",
+      "note": "ASCII whitespace only"
+    },
+    {
+      "input": "abcde",
+      "canonical": null,
+      "class": "malformed",
+      "note": "5 characters: too short"
+    },
+    {
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "canonical": null,
+      "class": "malformed",
+      "note": "65 characters: too long"
+    },
+    {
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@xmpp.zoom.us",
+      "canonical": null,
+      "class": "malformed",
+      "note": "65 characters plus the suffix"
+    },
+    {
+      "input": "@xmpp.zoom.us",
+      "canonical": null,
+      "class": "malformed",
+      "note": "suffix only"
+    },
+    {
+      "input": "mb4vcq4y.quaqkjojy4vntq",
+      "canonical": null,
+      "class": "malformed",
+      "note": "'.' inside"
+    },
+    {
+      "input": "mb4vcq4yqu@aqkjojy4vntq",
+      "canonical": null,
+      "class": "malformed",
+      "note": "'@' in the middle"
+    },
+    {
+      "input": "mb4vcq4yquaqkjjoy4vntq@xmpp.zoom.us@xmpp.zoom.us",
+      "canonical": null,
+      "class": "malformed",
+      "note": "suffix twice: only one is stripped"
+    },
+    {
+      "input": "mb4vcq4yquaqkjjoy4vntq@xmpp.zoom.com",
+      "canonical": null,
+      "class": "malformed",
+      "note": "a different domain"
+    },
+    {
+      "input": "mb4vcq4yquaqkjjoy4vntq @xmpp.zoom.us",
+      "canonical": null,
+      "class": "malformed",
+      "note": "space before the suffix"
+    },
+    {
+      "input": "mb4vcq4y quaqkjojy4vntq",
+      "canonical": null,
+      "class": "malformed",
+      "note": "inner space"
+    },
+    {
+      "input": "staff.zoom@example.com",
+      "canonical": null,
+      "class": "malformed",
+      "note": "an email is not a Zoom id"
+    },
+    {
+      "input": "mb4vcq4yquaqkjojy4vnt\u0430",
+      "canonical": null,
+      "class": "malformed",
+      "note": "Cyrillic small a (U+0430) lookalike"
+    },
+    {
+      "input": "\u212aelvin_signid",
+      "canonical": null,
+      "class": "malformed",
+      "note": "KELVIN SIGN (U+212A): lower-cases to ASCII k, must still be refused"
+    },
+    {
+      "input": "\uff4d\uff42\uff14\uff56\uff43\uff51\uff14\uff59",
+      "canonical": null,
+      "class": "malformed",
+      "note": "fullwidth letters and digits"
+    },
+    {
+      "input": "mb4vcq4yquaqkjjoy4vntq@xmpp.zoom.u\u0455",
+      "canonical": null,
+      "class": "malformed",
+      "note": "Cyrillic small dze (U+0455) in the suffix"
+    },
+    {
+      "input": "mb4vcq4yquaqkjjoy4vntq\u00a0",
+      "canonical": null,
+      "class": "malformed",
+      "note": "trailing NO-BREAK SPACE is not trimmed (ASCII whitespace only)"
+    },
+    {
+      "input": "\ufeffmb4vcq4yquaqkjjoy4vntq",
+      "canonical": null,
+      "class": "malformed",
+      "note": "leading BOM (U+FEFF) is not trimmed"
+    },
+    {
+      "input": "mb4vcq4yquaqkjjoy4vntq\u0000",
+      "canonical": null,
+      "class": "malformed",
+      "note": "NUL"
+    },
+    {
+      "input": "\u00a0",
+      "canonical": null,
+      "class": "malformed",
+      "note": "NO-BREAK SPACE only: not empty, not an id"
+    },
+    {
+      "input": "mb4vcq4yquaqkjjoy4vntq,abcdefgh",
+      "canonical": null,
+      "class": "multiple",
+      "note": "comma-separated pair"
+    },
+    {
+      "input": "a1b2c3d4, e5f6g7h8",
+      "canonical": null,
+      "class": "multiple",
+      "note": "comma and space"
+    },
+    {
+      "input": ",",
+      "canonical": null,
+      "class": "multiple",
+      "note": "a lone comma"
+    }
+  ]
+}

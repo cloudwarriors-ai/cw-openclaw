@@ -97,8 +97,10 @@ export function registerPricingTools(api: OpenClawPluginApi, logger: AuditLogger
       {
         name: "scopely_list_pricing_defaults",
         description:
-          "List the pricing defaults of a vendor's governing rate card. Read-only — runs " +
-          "immediately. Optionally filter by scope_category (ucaas or ccaas).",
+          "List the platform default rates of a vendor's governing rate card (amounts as strings, " +
+          "with the card's version and effective window). Read-only. Optionally filter by " +
+          "scope_category (ucaas or ccaas). This is the spine rate-card authority; live /api/v1 " +
+          "order pricing still reads the legacy BasePricing row, so do not quote these as order prices.",
         parameters: Type.Object({
           vendor_key: Type.String({ description: "Vendor key (e.g. zoom)" }),
           scope_category: Type.Optional(Type.String({ description: "Filter: ucaas or ccaas" })),

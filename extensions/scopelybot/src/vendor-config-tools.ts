@@ -40,8 +40,8 @@ export function registerVendorConfigTools(api: OpenClawPluginApi, logger: AuditL
       {
         name: "scopely_list_vendors",
         description:
-          "List Scopely VIP vendors (key, display name, source/destination flags, status). " +
-          "Read-only — runs immediately.",
+          "List the enabled VIP catalog vendors (key, name, source/destination flags, logo and " +
+          "project types). Read-only — runs immediately.",
         parameters: Type.Object({}),
         execute: opsRead,
       },
@@ -54,7 +54,8 @@ export function registerVendorConfigTools(api: OpenClawPluginApi, logger: AuditL
       {
         name: "scopely_get_vendor",
         description:
-          "Get a single Scopely VIP vendor by vendor key (e.g. zoom). Read-only — runs immediately.",
+          "Get one VIP catalog vendor by key (e.g. zoom): flags, logo, project types, intake " +
+          "fields and config version. Unknown or disabled vendors are not found. Read-only.",
         parameters: Type.Object({
           vendor_key: Type.String({ description: "Vendor key (e.g. zoom, ringcentral)" }),
         }),

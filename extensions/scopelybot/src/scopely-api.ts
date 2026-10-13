@@ -25,7 +25,8 @@
 // ({capability, args, correlation_id = audit_id}), for a capability on the
 // read allow-list OPS_READ_CAPABILITIES only, under authMode "service-token".
 // The guard itself adds `Authorization: Bearer <token>` (read per request,
-// readOpsToken), the X-Ops-Requester email and X-Ops-Bot-Audit-Id; the caller
+// readOpsToken), X-Ops-Requester-Zoom-Id (the asker's canonical Zoom user id)
+// and X-Ops-Bot-Audit-Id; the caller
 // header allow-list is NOT widened, so no caller can send any of them, and the
 // token goes on no other request.
 // scopelyFetch callers cannot reach this branch: a POST from them is still
@@ -57,6 +58,8 @@ export interface ScopelyFetchResult {
   ok: boolean;
   status: number;
   data: unknown;
+  /** Set when the body was cut at 64 KB (then ok is false and data is the cut text). */
+  truncated?: true;
 }
 
 export type GuardCode =
@@ -107,24 +110,46 @@ export type OpsCapability = (typeof OPS_READ_CAPABILITIES)[number];
 export type OpsInvocation = {
   capability: OpsCapability;
   args: Record<string, unknown>;
-  /** The acting human's Zoom email; absent = the kernel answers whoami only. */
-  requester?: string;
+  /** The asker's canonical Zoom user id (canonicalZoomId); absent = the kernel answers whoami only. */
+  requesterZoomId?: string;
 };
 // zoomwarriors_2 apps/opsplane (301b1c0e): identity.py OpsTokenAuthentication
 // reads only `Authorization: Bearer zwops_...`; edge_rest.py stores
 // X-Ops-Bot-Audit-Id as bot_audit_id (service tokens) for the cross-system join.
-const OPS_REQUESTER_HEADER = "x-ops-requester";
+// Requester by Zoom user id (IDENTITY-B contract): the old email header
+// x-ops-requester no longer identifies anyone and is never sent.
+const OPS_REQUESTER_HEADER = "x-ops-requester-zoom-id";
 const OPS_BOT_AUDIT_HEADER = "x-ops-bot-audit-id";
 // edge_rest.py _ID_RE: the kernel's charset for correlation and bot audit ids.
 const OPS_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
 // Slice-1 args are a few short keys; anything bigger is not a read argument.
 const MAX_OPS_ARGS_BYTES = 4096;
-const REQUESTER_RE = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}$/;
+// The canonical Zoom user id, the same rule as the kernel's normaliser
+// (journey_models.normalize_zoom_user_id; shared vectors, zoom_id_vectors.json).
+const ZOOM_ID_RE = /^[a-z0-9_-]{6,64}$/;
+// Before lower-casing: ASCII only, so no Unicode case mapping (KELVIN SIGN ->
+// "k") can turn a lookalike into an id.
+const ZOOM_ID_SHAPE_RE = /^[A-Za-z0-9_-]{6,64}$/;
+// ASCII whitespace only: a NO-BREAK SPACE or BOM is not trimmed (and then fails the shape).
+const ASCII_EDGE_SPACE_RE = /^[ \t\n\r\f\v]+|[ \t\n\r\f\v]+$/g;
+// Without the u flag, /i folds no non-ASCII character into ASCII.
+const ZOOM_JID_SUFFIX_RE = /@xmpp\.zoom\.us$/i;
 
-/** A value the guard accepts as the X-Ops-Requester email (no spaces, quotes or line breaks). */
-export function isRequesterEmail(value: unknown): value is string {
-  return typeof value === "string" && value.length <= 254 && REQUESTER_RE.test(value);
+/**
+ * The canonical form of a Zoom user id (IDENTITY-B contract): trim ASCII
+ * whitespace; drop one trailing `@xmpp.zoom.us` (ASCII case ignored); the
+ * rest must be ASCII `[A-Za-z0-9_-]{6,64}`, lower-cased; else undefined. Team
+ * chat carries the case-preserved operator id, the chatbot path a lowercase
+ * JID; Zoom treats them case-insensitively.
+ */
+export function canonicalZoomId(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const id = value.replace(ASCII_EDGE_SPACE_RE, "").replace(ZOOM_JID_SUFFIX_RE, "");
+  return ZOOM_ID_SHAPE_RE.test(id) ? id.toLowerCase() : undefined;
 }
+
 // Caller headers are an allow-list. Anything else could tunnel a mutating verb
 // through a GET (X-HTTP-Method-Override), re-route the connection to another
 // virtual host behind the shared proxy (Host, X-Forwarded-*, X-Original-URL)
@@ -156,7 +181,7 @@ type HttpFields = {
   host?: string;
   path_template?: string;
   query_keys?: string[];
-  /** Operator-layer invokes only: the capability, and whether a requester was sent (never the email). */
+  /** Operator-layer invokes only: the capability, and whether a requester id was sent. */
   capability?: string;
   requester_header?: boolean;
 };
@@ -273,8 +298,8 @@ function checkOpsInvocation(op: OpsInvocation, http: HttpFields): string {
       { capability: boundedText(String(op.capability)) },
     );
   }
-  if (op.requester !== undefined && !isRequesterEmail(op.requester)) {
-    refuse("header_blocked", "Blocked: the requester is not a valid email address.", http, {
+  if (op.requesterZoomId !== undefined && !ZOOM_ID_RE.test(op.requesterZoomId)) {
+    refuse("header_blocked", "Blocked: the requester is not a canonical Zoom user id.", http, {
       header: OPS_REQUESTER_HEADER,
     });
   }
@@ -314,7 +339,9 @@ function opsToken(profile: BackendProfile, http: HttpFields): string {
 }
 
 // What the outcome row keeps of a kernel envelope: its ok flag, request_id and
-// error code (charset checked and bounded), for the join with the app's audit.
+// error code (charset checked and bounded), for the join with the app's audit,
+// and the refusal detail (redacted, at most 200 characters): operator wording
+// the person in chat never sees (ops-client.ts), kept here for the operator.
 // Edge refusals (401, the emergency 503, a 400 on ids) use the bare spine
 // envelope {detail, code, request_id}: no ok, the code at the top level.
 function kernelSummary(data: unknown) {
@@ -326,6 +353,7 @@ function kernelSummary(data: unknown) {
     ok: typeof envelope.ok === "boolean" ? envelope.ok : null,
     request_id: id(envelope.request_id),
     error_code: id(error.code),
+    detail: typeof error.detail === "string" ? redactText(error.detail, 200) : null,
   };
 }
 
@@ -393,7 +421,7 @@ async function guardedRequest(
   if (op) {
     // Recorded only once checked: the name is then one of the allow-list's.
     http.capability = op.capability;
-    http.requester_header = op.requester !== undefined;
+    http.requester_header = op.requesterZoomId !== undefined;
   }
   admit(profile, method, http, op !== undefined);
   const token = op ? opsToken(profile, http) : undefined;
@@ -418,8 +446,8 @@ async function guardedRequest(
     headers["content-type"] = "application/json";
     headers.authorization = `Bearer ${token}`;
     headers[OPS_BOT_AUDIT_HEADER] = auditId;
-    if (op.requester !== undefined) {
-      headers[OPS_REQUESTER_HEADER] = op.requester;
+    if (op.requesterZoomId !== undefined) {
+      headers[OPS_REQUESTER_HEADER] = op.requesterZoomId;
     }
   }
 
@@ -528,7 +556,8 @@ async function guardedRequest(
     "http_outcome",
     resp.status,
     {
-      status: resp.ok ? "ok" : "http_error",
+      // A cut body is not an answer anyone can use: never recorded as "ok".
+      status: result.truncated ? "truncated" : resp.ok ? "ok" : "http_error",
       ...(op ? { kernel: kernelSummary(result.data) } : {}),
     },
     { x_request_id: xRequestId },
@@ -554,7 +583,12 @@ async function readResult(resp: Response): Promise<ScopelyFetchResult> {
       // Content-Type lied — keep the raw text.
     }
   }
-  return { ok: resp.ok && !truncated, status: resp.status, data };
+  return {
+    ok: resp.ok && !truncated,
+    status: resp.status,
+    data,
+    ...(truncated ? { truncated: true as const } : {}),
+  };
 }
 
 // UTF-8 text of the body, capped at MAX_BODY_BYTES: past the cap the stream is

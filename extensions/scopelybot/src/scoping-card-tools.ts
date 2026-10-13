@@ -64,8 +64,9 @@ export function registerScopingCardTools(api: OpenClawPluginApi, logger: AuditLo
       {
         name: "scopely_list_scoping_cards",
         description:
-          "List the scoping cards (wizard question groups) on a Scopely VIP vendor's project type, " +
-          "including their fields and visibility. Read-only — runs immediately.",
+          "List the scoping cards (wizard question groups) of a VIP vendor's project type as " +
+          "summaries (title, description, gate question, visibility, field count); read one " +
+          "card's fields with scopely_get_scoping_card. Read-only — runs immediately.",
         parameters: Type.Object({
           vendor_key: Type.String({ description: "Vendor key (e.g. zoom)" }),
           project_type: Type.String({
@@ -83,8 +84,8 @@ export function registerScopingCardTools(api: OpenClawPluginApi, logger: AuditLo
       {
         name: "scopely_get_scoping_card",
         description:
-          "Get a single Scopely VIP scoping card with its full field definitions and visibility. " +
-          "Read-only — runs immediately. Use before updating a card so you can send the complete field set.",
+          "Get one VIP scoping card with its offered fields (type, required, help, pricing key, " +
+          "dependency gate, bounds; options capped per field). Read-only — runs immediately.",
         parameters: Type.Object({
           vendor_key: Type.String({ description: "Vendor key" }),
           project_type: Type.String({

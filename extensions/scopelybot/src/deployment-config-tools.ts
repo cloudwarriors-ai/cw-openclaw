@@ -40,8 +40,8 @@ export function registerDeploymentConfigTools(api: OpenClawPluginApi, logger: Au
       {
         name: "scopely_list_deployment_types",
         description:
-          "List the deployment types configured on a Scopely VIP vendor's project type (e.g. autopilot, " +
-          "copilot, bespoke). Read-only — runs immediately.",
+          "List the deployment types offered for a VIP vendor's project type (key, label, " +
+          "description; e.g. autopilot, copilot, bespoke). Read-only — runs immediately.",
         parameters: Type.Object({
           vendor_key: Type.String({ description: "Vendor key (e.g. zoom)" }),
           project_type: Type.String({

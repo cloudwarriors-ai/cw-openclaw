@@ -564,6 +564,11 @@ describe("availability hygiene (F7)", () => {
       ok: false,
       status: 200,
       data: `${"a".repeat(64 * 1024)}...[truncated]`,
+      truncated: true,
+    });
+    // The audit says so too: a cut answer is never recorded as "ok".
+    expect(auditRows().findLast((r) => r.event_type === "http_outcome")?.result).toEqual({
+      status: "truncated",
     });
   });
 

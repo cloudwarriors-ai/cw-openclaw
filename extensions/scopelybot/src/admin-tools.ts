@@ -113,8 +113,8 @@ export function registerAdminTools(api: OpenClawPluginApi, logger: AuditLogger) 
       {
         name: "scopely_vendor_config",
         description:
-          "Show one Scopely VIP vendor's configuration (project types and setup). " +
-          "Use this to check if vendor config is correct or to understand the current setup.",
+          "Show one VIP catalog vendor's configuration (flags, logo, project types, intake fields, " +
+          "config version) to check the current setup. Unknown or disabled vendors are not found.",
         parameters: Type.Object({
           vendor_key: Type.String({
             description:

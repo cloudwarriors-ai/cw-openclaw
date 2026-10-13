@@ -59,8 +59,8 @@ export function registerScopelyTools(api: OpenClawPluginApi, logger: AuditLogger
       {
         name: "scopely_health_check",
         description:
-          "Check Scopely VIP service health. Returns service status and database connectivity. " +
-          "Use this to determine if there is an immediate infrastructure problem.",
+          "Check the new VIP app's operator layer: its status, how many capabilities it serves " +
+          "and which capability families are switched off. Read-only.",
         parameters: Type.Object({}),
         execute: opsRead,
       },
@@ -182,10 +182,22 @@ export function registerScopelyTools(api: OpenClawPluginApi, logger: AuditLogger
               description: "Filter by one or more statuses",
             }),
           ),
-          search: Type.Optional(Type.String({ description: "Search by company name or contact" })),
+          search: Type.Optional(
+            Type.String({
+              description: "Search by company name, order number or organization name",
+            }),
+          ),
           organization_id: Type.Optional(Type.Integer({ description: "Only this organization" })),
-          page: Type.Optional(Type.Integer({ description: "Page number (default 1)" })),
-          page_size: Type.Optional(Type.Integer({ description: "Results per page (max 100)" })),
+          page: Type.Optional(Type.Integer({ minimum: 1, description: "Page number (default 1)" })),
+          // The app allows 100, but about 30 rows fill the bot's 16,000-character
+          // output limit: a larger page would be cut and its tail unreachable.
+          page_size: Type.Optional(
+            Type.Integer({
+              minimum: 1,
+              maximum: 30,
+              description: "Results per page (default 25, at most 30)",
+            }),
+          ),
         }),
         execute: opsRead,
       },

@@ -538,6 +538,26 @@ describe("requester attribution from the tool-factory ctx (PK-7b-1)", () => {
       missing,
     ],
     [
+      // call-context.ts COORDINATOR_SESSION: a subagent nested under a channel
+      // session (and a subagent of a subagent) is not the coordinator either.
+      "a subagent nested under a coordinator channel session",
+      {
+        agentId: "scopelybot",
+        sessionKey: "agent:scopelybot:zoom:channel:x:subagent:7c9e6679",
+        requesterSenderId: "op_999",
+      },
+      missing,
+    ],
+    [
+      "a subagent of a subagent",
+      {
+        agentId: "scopelybot",
+        sessionKey: "agent:scopelybot:zoom:channel:x:subagent:a:subagent:b",
+        requesterSenderId: "op_999",
+      },
+      missing,
+    ],
+    [
       "a spoke, even if its ctx carried a sender",
       {
         agentId: "scopely-catalog",
@@ -655,6 +675,17 @@ describe("bindings against the kernel snapshot", () => {
         expect(params.required ?? [], `${name} must require ${key}`).toContain(key);
       }
     }
+  });
+
+  // About 30 sessions rows fill the 16,000-character output limit (ops-client.ts
+  // boundData): a larger advertised page would be cut with its tail unreachable.
+  it("the page size the bot advertises fits its output limit", () => {
+    const params = (
+      registeredTools().tools.get("scopely_list_sessions") as unknown as {
+        parameters: { properties: Record<string, { maximum?: number; minimum?: number }> };
+      }
+    ).parameters;
+    expect(params.properties.page_size).toMatchObject({ minimum: 1, maximum: 30 });
   });
 
   // Representative valid params per tool (every ops tool must have a row).

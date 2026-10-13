@@ -1,7 +1,7 @@
 // The guard's operator-layer branch (scopely-api.ts scopelyOpsInvoke, M13
 // slice 1): the ONE request shape added to the read-only guard. Pins exactly
 // what widened (a POST to the exact invoke path, a read capability, a
-// guard-built body, guard-injected Authorization: Bearer, requester and bot
+// guard-built body, guard-injected Authorization: Bearer, requester Zoom id and bot
 // audit id headers) and that nothing else did (every other POST/PUT/PATCH/
 // DELETE, caller-supplied identity headers, the token on any other request).
 // The token file rules: read per request, refused when missing, empty, not a
@@ -31,7 +31,9 @@ vi.mock("node:os", async (importOriginal) => {
 });
 
 import { readAuditRows } from "./audit.test-helpers.js";
+import { kernelCanonical } from "./ops-kernel.test-helpers.js";
 import {
+  canonicalZoomId,
   OPS_INVOKE_PATH,
   OPS_READ_CAPABILITIES,
   type OpsInvocation,
@@ -68,7 +70,7 @@ const auditRows = () => readAuditRows(workspace);
 const op = (extra: Partial<OpsInvocation> = {}): OpsInvocation => ({
   capability: "catalog.vendors.get",
   args: { vendor_key: "zoom" },
-  requester: "alice@cloudwarriors.ai",
+  requesterZoomId: "abcdef_operator_1",
   ...extra,
 });
 
@@ -129,7 +131,7 @@ describe("the invoke request is fixed by the guard", () => {
       "x-correlation-id": auditId,
       "x-vipbot-client": "scopelybot/0.1.0 (dev)",
       authorization: `Bearer ${TOKEN}`,
-      "x-ops-requester": "alice@cloudwarriors.ai",
+      "x-ops-requester-zoom-id": "abcdef_operator_1",
       "x-ops-bot-audit-id": auditId,
     });
     expect(JSON.parse(init.body)).toEqual({
@@ -139,8 +141,9 @@ describe("the invoke request is fixed by the guard", () => {
     });
   });
 
-  it("no requester means no requester header", async () => {
-    await scopelyOpsInvoke(op({ requester: undefined }));
+  it("no requester means no requester header, and the old email header is never sent", async () => {
+    await scopelyOpsInvoke(op({ requesterZoomId: undefined }));
+    expect(fetchMock.mock.calls[0][1].headers).not.toHaveProperty("x-ops-requester-zoom-id");
     expect(fetchMock.mock.calls[0][1].headers).not.toHaveProperty("x-ops-requester");
   });
 
@@ -163,11 +166,10 @@ describe("the invoke request is fixed by the guard", () => {
     }
     expect(rows[1].result).toEqual({
       status: "ok",
-      kernel: { ok: true, request_id: "req-7", error_code: null },
+      kernel: { ok: true, request_id: "req-7", error_code: null, detail: null },
     });
     const file = fs.readFileSync(path.join(workspace, "scopelybot", "audit-v2.jsonl"), "utf8");
     expect(file).not.toContain(TOKEN);
-    expect(file).not.toContain("alice@");
   });
 
   it("is sent once: a network error is not retried", async () => {
@@ -199,6 +201,8 @@ describe("nothing else widened", () => {
     "Authorization",
     "x-service-token",
     "x-ops-requester",
+    "x-ops-requester-zoom-id",
+    "X-Ops-Requester-Zoom-Id",
     "x-ops-bot-audit-id",
     "x-on-behalf-of",
     "x-correlation-id",
@@ -251,15 +255,29 @@ describe("nothing else widened", () => {
     );
   });
 
+  // The guard takes only the canonical form (ops-client canonicalizes first).
   it.each([
-    ["a newline", "alice@cloudwarriors.ai\r\nx-evil: 1"],
-    ["a space", "alice @cloudwarriors.ai"],
-    ["no domain dot", "alice@localhost"],
-    ["a display name", "Alice <alice@cloudwarriors.ai>"],
-    ["an over-long value", `${"a".repeat(250)}@cloudwarriors.ai`],
-  ])("a requester with %s is refused", async (_label, requester) => {
-    await refused(scopelyOpsInvoke(op({ requester })), "header_blocked");
+    ["upper case", "AbCdEf_Operator_1"],
+    ["the JID suffix", "abcdef_operator_1@xmpp.zoom.us"],
+    ["surrounding space", " abcdef_operator_1"],
+    ["a newline", "abcdef_operator_1\r\nx-evil: 1"],
+    ["an email", "alice@cloudwarriors.ai"],
+    ["a comma pair", "abcdef_operator_1,op_bob_2"],
+    ["5 characters", "abcde"],
+    ["65 characters", "a".repeat(65)],
+    ["an empty string", ""],
+  ])("a requester id with %s is refused before any I/O", async (_label, requesterZoomId) => {
+    await refused(scopelyOpsInvoke(op({ requesterZoomId })), "header_blocked");
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(auditRows().at(-1)).toMatchObject({
+      event_type: "header_blocked",
+      detail: { header: "x-ops-requester-zoom-id" },
+    });
+  });
+
+  it.each(["abcdef", "a".repeat(64), "op_bob-2_x"])("a canonical id %s is sent", async (id) => {
+    await scopelyOpsInvoke(op({ requesterZoomId: id }));
+    expect(fetchMock.mock.calls[0][1].headers["x-ops-requester-zoom-id"]).toBe(id);
   });
 
   it.each([
@@ -269,6 +287,38 @@ describe("nothing else widened", () => {
   ])("args that are %s are refused", async (_label, args) => {
     await refused(scopelyOpsInvoke(op({ args: args as Record<string, unknown> })), "body_blocked");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // The cap is 4096 BYTES of serialized args: {"vendor_key":""} is 17 bytes.
+  const sized = (value: string) => ({ vendor_key: value });
+  it("args of exactly 4096 bytes are sent; 4097 bytes are refused", async () => {
+    expect(Buffer.byteLength(JSON.stringify(sized("z".repeat(4079))))).toBe(4096);
+    await expect(scopelyOpsInvoke(op({ args: sized("z".repeat(4079)) }))).resolves.toMatchObject({
+      ok: true,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await refused(scopelyOpsInvoke(op({ args: sized("z".repeat(4080)) })), "body_blocked");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("the cap counts bytes, not characters (multi-byte text)", async () => {
+    const value = "\u00e9".repeat(2100); // 2,117 characters, 4,217 bytes serialized
+    expect(JSON.stringify(sized(value)).length).toBeLessThan(4096);
+    await refused(scopelyOpsInvoke(op({ args: sized(value) })), "body_blocked");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("the per-minute cap applies to invokes too", () => {
+  it("past maxRequestsPerMinute an invoke is refused as busy, audited, and not sent", async () => {
+    writeProfile({ ...DEV, maxRequestsPerMinute: 1 });
+    await scopelyOpsInvoke(op());
+    await refused(scopelyOpsInvoke(op()), "rate_limited");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(auditRows().at(-1)).toMatchObject({
+      event_type: "rate_limited",
+      http: { capability: "catalog.vendors.get", method: "POST" },
+    });
   });
 });
 
@@ -371,7 +421,12 @@ describe("credential and kill-switch gates", () => {
     await scopelyOpsInvoke(op());
     expect(auditRows().findLast((r) => r.event_type === "http_outcome")?.result).toEqual({
       status: "http_error",
-      kernel: { ok: null, request_id: "r-401", error_code: "authentication_failed" },
+      kernel: {
+        ok: null,
+        request_id: "r-401",
+        error_code: "authentication_failed",
+        detail: "Invalid token.",
+      },
     });
   });
 
@@ -380,5 +435,30 @@ describe("credential and kill-switch gates", () => {
     await refused(scopelyOpsInvoke(op()), "auth_unavailable");
     expect(fetchMock).not.toHaveBeenCalled();
     expect(auditRows().at(-1)?.detail).toEqual({ reason: "not_owner" });
+  });
+});
+
+// IDENTITY-B contract: the plugin's normaliser and the kernel's (the mock's
+// independent copy) agree on one shared table of vectors.
+describe("canonical Zoom user id (shared vectors)", () => {
+  const VECTORS = JSON.parse(
+    fs.readFileSync(new URL("./fixtures/zoom_id_vectors.json", import.meta.url), "utf8"),
+  ).vectors as { input: string; canonical: string | null; note: string }[];
+
+  it("covers both accepted and refused forms", () => {
+    expect(VECTORS.filter((v) => v.canonical !== null).length).toBeGreaterThanOrEqual(6);
+    expect(VECTORS.filter((v) => v.canonical === null).length).toBeGreaterThanOrEqual(10);
+  });
+
+  it.each(VECTORS.map((v) => [v.note, v.input, v.canonical] as const))(
+    "%s",
+    (_case, input, canonical) => {
+      expect(canonicalZoomId(input) ?? null).toBe(canonical);
+      expect(kernelCanonical(input)).toBe(canonical);
+    },
+  );
+
+  it.each([undefined, null, 42, {}])("a non-string (%s) has no canonical form", (value) => {
+    expect(canonicalZoomId(value)).toBeUndefined();
   });
 });
