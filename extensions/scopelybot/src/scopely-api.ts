@@ -16,7 +16,8 @@
 //     an HTTP 429 maps to the same clear "busy" error, never a partial answer;
 //   - redirects are never followed: fetch runs with redirect: "manual" and any
 //     3xx answer is refused (redirect_blocked);
-//   - a body over 64 KB is cut and the result is ok: false.
+//   - a body over 64 KB (an operator-layer invoke: 264 KB) is cut and the
+//     result is ok: false.
 // Requests carry no cookie and no login, so there is no 401 re-login replay
 // (INV-16 holds trivially; PK-12 must keep any replay GET/HEAD-only).
 //
@@ -58,7 +59,7 @@ export interface ScopelyFetchResult {
   ok: boolean;
   status: number;
   data: unknown;
-  /** Set when the body was cut at 64 KB (then ok is false and data is the cut text). */
+  /** Set when the body was cut at the read cap (then ok is false and data is the cut text). */
   truncated?: true;
 }
 
@@ -162,6 +163,11 @@ const REQUEST_TIMEOUT_MS = 10_000;
 // Bodies are read up to this size and the rest cancelled, so a huge or endless
 // answer (the sprint serves an 80 KB Django debug page) cannot pin memory.
 const MAX_BODY_BYTES = 64 * 1024;
+// An operator-layer answer may legally carry up to the kernel's
+// MAX_RESULT_BYTES of data (kernel.py, 256 KB) plus its envelope (ids,
+// capability, flags: well under 8 KB), so the invoke reads that much; the
+// model still sees at most 16,000 characters (ops-client.ts boundData).
+const MAX_OPS_BODY_BYTES = 256 * 1024 + 8 * 1024;
 // An intent without a terminal row is orphaned only after this deadline, which
 // is past the 10 s bound on fetch plus body read.
 const INTENT_DEADLINE_MS = 15_000;
@@ -296,6 +302,15 @@ function checkOpsInvocation(op: OpsInvocation, http: HttpFields): string {
       "Blocked: the bot may only invoke the app's read capabilities.",
       http,
       { capability: boundedText(String(op.capability)) },
+    );
+  }
+  // Header absence must not let a misconfigured personal token act as its
+  // owner. Whoami alone may diagnose the credential without business reads.
+  if (op.requesterZoomId === undefined && op.capability !== "system.whoami") {
+    refuse(
+      "header_blocked",
+      "Blocked: this app read requires the current sender's Zoom identity.",
+      http,
     );
   }
   if (op.requesterZoomId !== undefined && !ZOOM_ID_RE.test(op.requesterZoomId)) {
@@ -542,7 +557,7 @@ async function guardedRequest(
   }
   let result: ScopelyFetchResult;
   try {
-    result = await readResult(resp);
+    result = await readResult(resp, op ? MAX_OPS_BODY_BYTES : MAX_BODY_BYTES);
   } catch (err) {
     outcome(
       "http_outcome",
@@ -573,8 +588,8 @@ async function guardedRequest(
 // beats an exception that misreports a completed mutation as a failure.
 // A truncated body is ok: false whatever the status: callers (the health
 // check, JSON consumers) must not read a cut 200 answer as a success.
-async function readResult(resp: Response): Promise<ScopelyFetchResult> {
-  const { text, truncated } = await readCappedText(resp);
+async function readResult(resp: Response, maxBytes: number): Promise<ScopelyFetchResult> {
+  const { text, truncated } = await readCappedText(resp, maxBytes);
   let data: unknown = text;
   if (resp.headers.get("content-type")?.includes("application/json") && text.trim() !== "") {
     try {
@@ -591,10 +606,13 @@ async function readResult(resp: Response): Promise<ScopelyFetchResult> {
   };
 }
 
-// UTF-8 text of the body, capped at MAX_BODY_BYTES: past the cap the stream is
+// UTF-8 text of the body, capped at maxBytes: past the cap the stream is
 // cancelled and the text marked "...[truncated]" (a cut JSON body then stays
 // raw text), so a partial body is never passed off as a complete one.
-async function readCappedText(resp: Response): Promise<{ text: string; truncated: boolean }> {
+async function readCappedText(
+  resp: Response,
+  maxBytes: number,
+): Promise<{ text: string; truncated: boolean }> {
   if (!resp.body) {
     return { text: "", truncated: false };
   }
@@ -608,9 +626,9 @@ async function readCappedText(resp: Response): Promise<{ text: string; truncated
     }
     chunks.push(value);
     size += value.byteLength;
-    if (size > MAX_BODY_BYTES) {
+    if (size > maxBytes) {
       await reader.cancel();
-      const text = `${Buffer.concat(chunks).toString("utf8", 0, MAX_BODY_BYTES)}...[truncated]`;
+      const text = `${Buffer.concat(chunks).toString("utf8", 0, maxBytes)}...[truncated]`;
       return { text, truncated: true };
     }
   }

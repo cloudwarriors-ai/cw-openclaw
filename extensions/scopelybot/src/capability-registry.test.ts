@@ -40,6 +40,7 @@ import {
   registryTools,
 } from "./capability-registry.js";
 import { stageWrite } from "./gated.js";
+import { noteInboundSender, resetInboundSendersForTest } from "./ops-client.js";
 import { type JsonSchema, SNAPSHOT, validate } from "./ops-kernel.test-helpers.js";
 import { registerPassthroughTools } from "./passthrough-tools.js";
 import { OPS_READ_CAPABILITIES, resetScopelyGuardForTest } from "./scopely-api.js";
@@ -91,7 +92,13 @@ function useServiceToken() {
 // tool list comes from registration itself, never from a hand-kept copy.
 let banner = "";
 
-function registeredTools(ctx: unknown = {}): {
+const DEFAULT_CTX = {
+  agentId: "scopelybot",
+  sessionKey: "agent:scopelybot:zoom:x",
+  requesterSenderId: "operator_123",
+};
+
+function registeredTools(ctx: unknown = DEFAULT_CTX): {
   tools: Map<string, Tool>;
   optional: boolean[];
   names: string[];
@@ -138,6 +145,8 @@ beforeEach(() => {
     issueLinks: { F7: F7_LINK },
   });
   resetScopelyGuardForTest();
+  resetInboundSendersForTest();
+  noteInboundSender(DEFAULT_CTX.sessionKey, DEFAULT_CTX.requesterSenderId);
   for (const mock of [
     sendScopelyTextMock,
     execFileSyncMock,
@@ -577,7 +586,7 @@ describe("requester attribution from the tool-factory ctx (PK-7b-1)", () => {
     ],
     ["no ctx at all", {}, missing],
   ])("%s", async (_label, ctx, requester) => {
-    const health = registeredTools(ctx).tools.get("scopely_health_check")!;
+    const health = registeredTools(ctx).tools.get("scopely_auth_status")!;
     await health.execute("call-7", { requester: "op_evil", actor: "op_evil" });
     const rows = auditRows().filter((r) =>
       ["http_intent", "http_outcome", "tool_call"].includes(r.event_type),
@@ -601,7 +610,7 @@ describe("requester attribution from the tool-factory ctx (PK-7b-1)", () => {
       sessionKey: `${HUB}:${long("s")}`,
       requesterSenderId: long("u"),
     }).tools;
-    await tools.get("scopely_health_check")!.execute(long("t"), {});
+    await tools.get("scopely_auth_status")!.execute(long("t"), {});
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const rows = auditRows().filter((r) =>
       ["http_intent", "http_outcome", "tool_call"].includes(r.event_type),
@@ -686,6 +695,15 @@ describe("bindings against the kernel snapshot", () => {
       }
     ).parameters;
     expect(params.properties.page_size).toMatchObject({ minimum: 1, maximum: 30 });
+    // About 665 bytes a pricing row: 20 rows fit; the bot asks for 20 by default.
+    const pricing = (
+      registeredTools().tools.get("scopely_list_pricing_defaults") as unknown as {
+        parameters: { properties: Record<string, { maximum?: number; minimum?: number }> };
+      }
+    ).parameters;
+    expect(pricing.properties.limit).toMatchObject({ minimum: 1, maximum: 20 });
+    expect(pricing.properties.offset).toMatchObject({ minimum: 0 });
+    expect(opsBindingFor("scopely_list_pricing_defaults")?.defaults).toEqual({ limit: 20 });
   });
 
   // Representative valid params per tool (every ops tool must have a row).
@@ -721,7 +739,7 @@ describe("bindings against the kernel snapshot", () => {
     expect(Object.keys(SAMPLES).toSorted()).toEqual([...opsTools].toSorted());
     const { tools } = registeredTools({
       sessionKey: "agent:scopelybot:zoom:x",
-      requesterSenderId: "op",
+      requesterSenderId: "operator_123",
     });
     for (const [name, samples] of Object.entries(SAMPLES)) {
       for (const params of samples) {

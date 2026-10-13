@@ -1,7 +1,7 @@
 {
-  "about": "Canonical Zoom user id test vectors, shared by the zoomwarriors kernel (apps.authentication.journey_models.normalize_zoom_user_id) and the scopelybot plugin. Both sides must agree on every row.",
+  "about": "Canonical Zoom user id test vectors, shared by the zoomwarriors kernel (apps.authentication.journey_models.normalize_zoom_user_id) and the scopelybot plugin. Both sides must agree on every row. The kernel additionally treats as malformed any value its audit redaction would change (secret-shaped: a leaked token, a 32+ character letter-digit run); that rule is not part of this table. Rows with a 'wire' field are malformed in process (both implementations must say so) but an HTTP server may strip that whitespace before the kernel sees the header: see wire_reason.",
   "rules": [
-    "trim ASCII whitespace only (space, \\t, \\n, \\r, \\f, \\v) at both ends; nothing else is trimmed",
+    "trim ASCII whitespace only (space, \\t, \\n, \\r, \\f, \\v) at both ends; nothing else is trimmed (not NBSP, BOM, U+001C-U+001F, U+0085, U+2028, U+2029, U+3000: Python str.strip() and JS String.trim() each strip many non-ASCII spaces and disagree on some, so neither is used)",
     "if the last 13 characters are ASCII and equal '@xmpp.zoom.us' ignoring ASCII case, drop them (once)",
     "the rest must be ASCII; lower-case it",
     "it must then fully match ^[a-z0-9_-]{6,64}$, else the value is malformed"
@@ -78,6 +78,24 @@
       "canonical": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "class": "valid",
       "note": "64 characters plus the suffix"
+    },
+    {
+      "input": "mb4vcq4yquaqkjjoy4vntq\f",
+      "canonical": "mb4vcq4yquaqkjjoy4vntq",
+      "class": "valid",
+      "note": "trailing form feed (ASCII whitespace) is trimmed"
+    },
+    {
+      "input": "\u000bmb4vcq4yquaqkjjoy4vntq",
+      "canonical": "mb4vcq4yquaqkjjoy4vntq",
+      "class": "valid",
+      "note": "leading vertical tab (ASCII whitespace) is trimmed"
+    },
+    {
+      "input": "mb4vcq4yquaqkjjoy4vntq\n",
+      "canonical": "mb4vcq4yquaqkjjoy4vntq",
+      "class": "valid",
+      "note": "trailing LF is trimmed (it is outside the id)"
     },
     {
       "input": "",
@@ -191,7 +209,9 @@
       "input": "mb4vcq4yquaqkjjoy4vntq\u00a0",
       "canonical": null,
       "class": "malformed",
-      "note": "trailing NO-BREAK SPACE is not trimmed (ASCII whitespace only)"
+      "note": "trailing NO-BREAK SPACE is not trimmed (ASCII whitespace only)",
+      "wire": "stripped_by_wsgi",
+      "wire_reason": "observed (rig C3): gunicorn 21.2 and wsgiref strip str.isspace() characters from header values, so a client sending this character as one latin-1 byte (Python http.client does) delivers the stripped value; a UTF-8 client's two bytes leave a stray character and stay malformed"
     },
     {
       "input": "\ufeffmb4vcq4yquaqkjjoy4vntq",
@@ -209,7 +229,131 @@
       "input": "\u00a0",
       "canonical": null,
       "class": "malformed",
-      "note": "NO-BREAK SPACE only: not empty, not an id"
+      "note": "NO-BREAK SPACE only: not empty, not an id",
+      "wire": "stripped_by_wsgi",
+      "wire_reason": "observed (rig C3): gunicorn 21.2 and wsgiref strip str.isspace() characters from header values, so a client sending this character as one latin-1 byte (Python http.client does) delivers the stripped value; a UTF-8 client's two bytes leave a stray character and stay malformed"
+    },
+    {
+      "input": "mb4vcq4yquaqkjjoy4vntq\n@xmpp.zoom.us",
+      "canonical": null,
+      "class": "malformed",
+      "note": "LF between the id and the suffix: an embedded newline, never trimmed"
+    },
+    {
+      "input": "\u001cmb4vcq4yquaqkjjoy4vntq",
+      "canonical": null,
+      "class": "malformed",
+      "note": "leading U+001C FILE SEPARATOR is not trimmed (not ASCII whitespace)",
+      "wire": "may_be_stripped_by_wsgi",
+      "wire_reason": "inferred, not observed: the same server strip applies if a client sends this character as one latin-1 byte and the server accepts the control byte"
+    },
+    {
+      "input": "mb4vcq4yquaqkjjoy4vntq\u001c",
+      "canonical": null,
+      "class": "malformed",
+      "note": "trailing U+001C FILE SEPARATOR is not trimmed (not ASCII whitespace)",
+      "wire": "may_be_stripped_by_wsgi",
+      "wire_reason": "inferred, not observed: the same server strip applies if a client sends this character as one latin-1 byte and the server accepts the control byte"
+    },
+    {
+      "input": "\u001dmb4vcq4yquaqkjjoy4vntq",
+      "canonical": null,
+      "class": "malformed",
+      "note": "leading U+001D GROUP SEPARATOR is not trimmed (not ASCII whitespace)",
+      "wire": "may_be_stripped_by_wsgi",
+      "wire_reason": "inferred, not observed: the same server strip applies if a client sends this character as one latin-1 byte and the server accepts the control byte"
+    },
+    {
+      "input": "mb4vcq4yquaqkjjoy4vntq\u001d",
+      "canonical": null,
+      "class": "malformed",
+      "note": "trailing U+001D GROUP SEPARATOR is not trimmed (not ASCII whitespace)",
+      "wire": "may_be_stripped_by_wsgi",
+      "wire_reason": "inferred, not observed: the same server strip applies if a client sends this character as one latin-1 byte and the server accepts the control byte"
+    },
+    {
+      "input": "\u001emb4vcq4yquaqkjjoy4vntq",
+      "canonical": null,
+      "class": "malformed",
+      "note": "leading U+001E RECORD SEPARATOR is not trimmed (not ASCII whitespace)",
+      "wire": "may_be_stripped_by_wsgi",
+      "wire_reason": "inferred, not observed: the same server strip applies if a client sends this character as one latin-1 byte and the server accepts the control byte"
+    },
+    {
+      "input": "mb4vcq4yquaqkjjoy4vntq\u001e",
+      "canonical": null,
+      "class": "malformed",
+      "note": "trailing U+001E RECORD SEPARATOR is not trimmed (not ASCII whitespace)",
+      "wire": "may_be_stripped_by_wsgi",
+      "wire_reason": "inferred, not observed: the same server strip applies if a client sends this character as one latin-1 byte and the server accepts the control byte"
+    },
+    {
+      "input": "\u001fmb4vcq4yquaqkjjoy4vntq",
+      "canonical": null,
+      "class": "malformed",
+      "note": "leading U+001F UNIT SEPARATOR is not trimmed (not ASCII whitespace)",
+      "wire": "may_be_stripped_by_wsgi",
+      "wire_reason": "inferred, not observed: the same server strip applies if a client sends this character as one latin-1 byte and the server accepts the control byte"
+    },
+    {
+      "input": "mb4vcq4yquaqkjjoy4vntq\u001f",
+      "canonical": null,
+      "class": "malformed",
+      "note": "trailing U+001F UNIT SEPARATOR is not trimmed (not ASCII whitespace)",
+      "wire": "may_be_stripped_by_wsgi",
+      "wire_reason": "inferred, not observed: the same server strip applies if a client sends this character as one latin-1 byte and the server accepts the control byte"
+    },
+    {
+      "input": "\u0085mb4vcq4yquaqkjjoy4vntq",
+      "canonical": null,
+      "class": "malformed",
+      "note": "leading U+0085 NEXT LINE is not trimmed (not ASCII whitespace)",
+      "wire": "may_be_stripped_by_wsgi",
+      "wire_reason": "inferred, not observed: the same server strip applies if a client sends this character as one latin-1 byte and the server accepts the control byte"
+    },
+    {
+      "input": "mb4vcq4yquaqkjjoy4vntq\u0085",
+      "canonical": null,
+      "class": "malformed",
+      "note": "trailing U+0085 NEXT LINE is not trimmed (not ASCII whitespace)",
+      "wire": "may_be_stripped_by_wsgi",
+      "wire_reason": "inferred, not observed: the same server strip applies if a client sends this character as one latin-1 byte and the server accepts the control byte"
+    },
+    {
+      "input": "\u2028mb4vcq4yquaqkjjoy4vntq",
+      "canonical": null,
+      "class": "malformed",
+      "note": "leading U+2028 LINE SEPARATOR is not trimmed (not ASCII whitespace)"
+    },
+    {
+      "input": "mb4vcq4yquaqkjjoy4vntq\u2028",
+      "canonical": null,
+      "class": "malformed",
+      "note": "trailing U+2028 LINE SEPARATOR is not trimmed (not ASCII whitespace)"
+    },
+    {
+      "input": "\u2029mb4vcq4yquaqkjjoy4vntq",
+      "canonical": null,
+      "class": "malformed",
+      "note": "leading U+2029 PARAGRAPH SEPARATOR is not trimmed (not ASCII whitespace)"
+    },
+    {
+      "input": "mb4vcq4yquaqkjjoy4vntq\u2029",
+      "canonical": null,
+      "class": "malformed",
+      "note": "trailing U+2029 PARAGRAPH SEPARATOR is not trimmed (not ASCII whitespace)"
+    },
+    {
+      "input": "\u3000mb4vcq4yquaqkjjoy4vntq",
+      "canonical": null,
+      "class": "malformed",
+      "note": "leading U+3000 IDEOGRAPHIC SPACE is not trimmed (not ASCII whitespace)"
+    },
+    {
+      "input": "mb4vcq4yquaqkjjoy4vntq\u3000",
+      "canonical": null,
+      "class": "malformed",
+      "note": "trailing U+3000 IDEOGRAPHIC SPACE is not trimmed (not ASCII whitespace)"
     },
     {
       "input": "mb4vcq4yquaqkjjoy4vntq,abcdefgh",

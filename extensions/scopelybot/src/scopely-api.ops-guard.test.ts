@@ -8,6 +8,7 @@
 // zwops_ token (identity.py _TOKEN_RE), not a regular file, not ours, or
 // readable by group/other; never logged or audited.
 
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -142,7 +143,9 @@ describe("the invoke request is fixed by the guard", () => {
   });
 
   it("no requester means no requester header, and the old email header is never sent", async () => {
-    await scopelyOpsInvoke(op({ requesterZoomId: undefined }));
+    await scopelyOpsInvoke(
+      op({ capability: "system.whoami", args: {}, requesterZoomId: undefined }),
+    );
     expect(fetchMock.mock.calls[0][1].headers).not.toHaveProperty("x-ops-requester-zoom-id");
     expect(fetchMock.mock.calls[0][1].headers).not.toHaveProperty("x-ops-requester");
   });
@@ -309,6 +312,37 @@ describe("nothing else widened", () => {
   });
 });
 
+// F2: an invoke reads up to the kernel's MAX_RESULT_BYTES (256 KB) plus 8 KB
+// of envelope; every other request keeps the 64 KB read.
+describe("the invoke's read cap", () => {
+  const CAP = 256 * 1024 + 8 * 1024;
+  const body = (bytes: number) => async () =>
+    new Response("a".repeat(bytes), { status: 200, headers: { "content-type": "text/plain" } });
+
+  it("a body of exactly the cap is read whole", async () => {
+    fetchMock.mockImplementation(body(CAP));
+    const res = await scopelyOpsInvoke(op());
+    expect(res).toMatchObject({ ok: true, status: 200 });
+    expect(res).not.toHaveProperty("truncated");
+    expect((res.data as string).length).toBe(CAP);
+  });
+
+  it("one byte more is cut, not ok, and audited as truncated", async () => {
+    fetchMock.mockImplementation(body(CAP + 1));
+    const res = await scopelyOpsInvoke(op());
+    expect(res).toMatchObject({ ok: false, truncated: true });
+    expect(auditRows().findLast((r) => r.event_type === "http_outcome")?.result).toMatchObject({
+      status: "truncated",
+    });
+  });
+
+  it("a plain GET still reads at most 64 KB", async () => {
+    fetchMock.mockImplementation(body(64 * 1024 + 1));
+    const res = await scopelyFetch("/api/v1/health/");
+    expect(res).toMatchObject({ ok: false, truncated: true });
+  });
+});
+
 describe("the per-minute cap applies to invokes too", () => {
   it("past maxRequestsPerMinute an invoke is refused as busy, audited, and not sent", async () => {
     writeProfile({ ...DEV, maxRequestsPerMinute: 1 });
@@ -443,7 +477,32 @@ describe("credential and kill-switch gates", () => {
 describe("canonical Zoom user id (shared vectors)", () => {
   const VECTORS = JSON.parse(
     fs.readFileSync(new URL("./fixtures/zoom_id_vectors.json", import.meta.url), "utf8"),
-  ).vectors as { input: string; canonical: string | null; note: string }[];
+  ).vectors as { input: string; canonical: string | null; note: string; wire?: string }[];
+
+  it("is the kernel's file at 87b8b516, byte for byte (56 rows)", () => {
+    const raw = fs.readFileSync(new URL("./fixtures/zoom_id_vectors.json", import.meta.url));
+    expect(createHash("sha256").update(raw).digest("hex")).toBe(
+      "0e1ce67374b7f7d72338f6bdd7e0fd37a417ca9c5b3d104e832ea57fae00b314",
+    );
+    expect(VECTORS).toHaveLength(56);
+  });
+
+  // Rows an HTTP server may strip before the kernel sees them are about the
+  // wire only: in process the value as written is malformed for both sides.
+  it("rows marked as stripped (or maybe stripped) by WSGI are malformed in process", () => {
+    const wire = VECTORS.filter((v) => v.wire !== undefined);
+    expect(wire.map((v) => v.wire).toSorted()).toEqual(
+      [
+        ...Array(2).fill("stripped_by_wsgi"),
+        ...Array(10).fill("may_be_stripped_by_wsgi"),
+      ].toSorted(),
+    );
+    for (const v of wire) {
+      expect(v.canonical, v.note).toBeNull();
+      expect(canonicalZoomId(v.input), v.note).toBeUndefined();
+      expect(kernelCanonical(v.input), v.note).toBeNull();
+    }
+  });
 
   it("covers both accepted and refused forms", () => {
     expect(VECTORS.filter((v) => v.canonical !== null).length).toBeGreaterThanOrEqual(6);
@@ -461,4 +520,19 @@ describe("canonical Zoom user id (shared vectors)", () => {
   it.each([undefined, null, 42, {}])("a non-string (%s) has no canonical form", (value) => {
     expect(canonicalZoomId(value)).toBeUndefined();
   });
+});
+
+// A bot cannot fall back to a personal token owner's identity when its sender is missing.
+describe("missing requester is blocked before credentials or network", () => {
+  it.each(OPS_READ_CAPABILITIES.filter((cap) => cap !== "system.whoami"))(
+    "%s is refused and audited",
+    async (capability) => {
+      await refused(
+        scopelyOpsInvoke(op({ capability, requesterZoomId: undefined })),
+        "header_blocked",
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(auditRows().some((row) => row.event_type === "header_blocked")).toBe(true);
+    },
+  );
 });

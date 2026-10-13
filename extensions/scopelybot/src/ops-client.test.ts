@@ -30,6 +30,7 @@ import {
   GATE_DETAIL,
   type MockUser,
   mockKernel,
+  pricingRow,
   SNAPSHOT_FILE,
 } from "./ops-kernel.test-helpers.js";
 import { resetScopelyGuardForTest } from "./scopely-api.js";
@@ -201,7 +202,7 @@ describe("slice-1 read tools invoke exactly their capability", () => {
       "scopely_list_pricing_defaults",
       { vendor_key: "zoom", scope_category: "ucaas" },
       "pricing.defaults.list",
-      { vendor_key: "zoom", scope_category: "ucaas" },
+      { vendor_key: "zoom", scope_category: "ucaas", limit: 20 },
     ],
     [
       "scopely_list_sessions",
@@ -282,8 +283,7 @@ describe("requester rule: the run's own sender, as a canonical Zoom id, or nobod
       { requester: ALICE.email, requester_zoom_id: ALICE.zoomId },
       ctx,
     );
-    expect(kernel.calls[0].headers).not.toHaveProperty(ZID);
-    expect(kernel.calls[0].headers).not.toHaveProperty("x-ops-requester");
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(denied).toMatchObject({ ok: false, refusal: "requester_unresolved", status: 403 });
     // The plugin's own sentence, never the kernel's operator-facing detail (N2).
     expect(denied.error).toBe(NOT_NAMED);
@@ -294,9 +294,9 @@ describe("requester rule: the run's own sender, as a canonical Zoom id, or nobod
       data: { requester: { status: "missing", user_id: null, zoom_user_id: null } },
     });
     expect(whoami.summary).toBe(
-      "The bot did not name anyone to the app for this request (it names only the person who started the run, while no one else has posted since), so only whoami is available. Ask again in a new message. Service principal: scopelybot (platform).",
+      "The bot did not name anyone to the app for this request (it names only the person who started the run, while no one else has posted since), so only whoami is available. Ask again in a new message.",
     );
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("an unlinked Zoom id is named, refused, and whoami tells the person to get it linked", async () => {
@@ -320,11 +320,11 @@ describe("requester rule: the run's own sender, as a canonical Zoom id, or nobod
       zoom_user_id: "carol_zoom_77",
     });
     expect(whoami.summary).toBe(
-      "Your Zoom id carol_zoom_77 is not linked to a ZW user the bot may act for, so only whoami is available. Ask an admin to link Zoom id carol_zoom_77 to your ZW user. Service principal: scopelybot (platform).",
+      "Your Zoom id carol_zoom_77 is not linked to a ZW user the bot may act for, so only whoami is available. Ask an admin to link Zoom id carol_zoom_77 to your ZW user.",
     );
   });
 
-  it("without the kernel's echo the summary falls back to the id the bot sent", async () => {
+  it("an unmapped answer without the kernel's echo never claims the id is unlinked", async () => {
     noteInboundSender(HUB, "Carol_Zoom_77");
     useKernel({
       data: {
@@ -337,7 +337,7 @@ describe("requester rule: the run's own sender, as a canonical Zoom id, or nobod
       { sessionKey: HUB, requesterSenderId: "Carol_Zoom_77" },
     );
     expect(whoami.summary).toBe(
-      "Your Zoom id carol_zoom_77 is not linked to a ZW user the bot may act for, so only whoami is available. Ask an admin to link Zoom id carol_zoom_77 to your ZW user. Service principal: none.",
+      "The app did not accept the Zoom id the bot sent for you, so only whoami is available. Ask an admin to check your Zoom id link.",
     );
   });
 
@@ -489,7 +489,8 @@ describe("kernel answers are normal answers, sent once", () => {
   });
 
   it("a 200 cut at 64 KB is never reported as ok", async () => {
-    const body = JSON.stringify({ ok: true, request_id: "r", data: "x".repeat(80 * 1024) });
+    // Past the invoke's read cap (the kernel's 256 KB result bound plus 8 KB).
+    const body = JSON.stringify({ ok: true, request_id: "r", data: "x".repeat(300 * 1024) });
     fetchMock.mockImplementation(
       async () =>
         new Response(body, { status: 200, headers: { "content-type": "application/json" } }),
@@ -500,7 +501,7 @@ describe("kernel answers are normal answers, sent once", () => {
       capability: "system.health",
       status: 200,
       error:
-        "The app's answer was larger than the bot can read (64 KB), so nothing is shown. Ask for fewer items (a smaller page_size or a narrower filter).",
+        "The app's answer was larger than the bot can read (264 KB), so nothing is shown. Ask for fewer items (a smaller page or a narrower filter).",
     });
     const outcome = readAuditRows(workspace).findLast((r) => r.event_type === "http_outcome");
     expect(outcome?.result).toMatchObject({ status: "truncated" });
@@ -678,6 +679,7 @@ describe("mock kernel fidelity", () => {
     await run("scopely_list_sessions", {}, { sessionKey: HUB, requesterSenderId: BOB.id });
     const [success, denied] = kernel.calls;
     useKernel({ killAll: true });
+    noteInboundSender(HUB, ALICE.id);
     await run("scopely_list_vendors");
     const [killed] = kernel.calls;
     useKernel({ token: "zwops_ba9876543210_Some-Other-Token_0123456789abcdefABCDEF" });
@@ -703,9 +705,10 @@ describe("mock kernel fidelity", () => {
     expect(success.response.untrusted_output).toBe(false);
   });
 
-  it("the fixture is the byte copy of the kernel snapshot at 301b1c0e", () => {
+  it("the fixture is the byte copy of the kernel snapshot at 87b8b516", () => {
     const sha = createHash("sha256").update(fs.readFileSync(SNAPSHOT_FILE)).digest("hex");
-    expect(sha).toBe("7155447cb8932a8a2bd4e75bf88f725571d29212d0a134c144f942ab7e553f41");
+    // Kernel commit 87b8b516 (pricing.defaults.list paging), byte copy.
+    expect(sha).toBe("a38f89c3b7f1d863aa1ba4257ce4c99bb82cd6114270681fd76ec256a4f90d5c");
   });
 });
 
@@ -723,7 +726,7 @@ describe("requester claim vs the latest inbound sender of the session", () => {
     const after = JSON.parse(
       (await built.get("scopely_list_vendors")!.execute("call-2", {})).content[0].text,
     );
-    expect(kernel.calls[1].headers).not.toHaveProperty(ZID);
+    expect(kernel.calls).toHaveLength(1);
     expect(after).toMatchObject({ ok: false, refusal: "requester_unresolved" });
   });
 
@@ -748,7 +751,7 @@ describe("requester claim vs the latest inbound sender of the session", () => {
   ])("fails closed when %s: no claim", async (_label, setup) => {
     setup();
     await run("scopely_list_vendors");
-    expect(kernel.calls[0].headers).not.toHaveProperty(ZID);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("a long session key is compared in its bounded form; a long sender id is no Zoom id", async () => {
@@ -759,7 +762,7 @@ describe("requester claim vs the latest inbound sender of the session", () => {
     const longSender = "u".repeat(65);
     noteInboundSender(HUB, longSender);
     await run("scopely_list_vendors", {}, { sessionKey: HUB, requesterSenderId: longSender });
-    expect(kernel.calls[1].headers).not.toHaveProperty(ZID);
+    expect(kernel.calls).toHaveLength(1);
   });
 });
 
@@ -1029,4 +1032,215 @@ describe("mock kernel edges (405, 415, 413, parse error, throttle)", () => {
     expect((await run("scopely_list_vendors")).ok).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
+});
+
+// F2: pricing.defaults.list pages (kernel 87b8b516). The bot asks for 20 rows
+// unless told otherwise and points at the kernel's next_offset, never a guess.
+describe("paged pricing defaults", () => {
+  it("a pricing row is about the kernel's measured 665 bytes", () => {
+    const size = JSON.stringify(pricingRow(7)).length;
+    expect(size).toBeGreaterThan(550);
+    expect(size).toBeLessThan(750);
+  });
+
+  it("a 50-row card: the first page of 20 fits, and the answer names the next offset", async () => {
+    useKernel({ pricingRows: 50 });
+    const first = await run("scopely_list_pricing_defaults", { vendor_key: "zoom" });
+    expect(kernel.calls[0].body.args).toEqual({ vendor_key: "zoom", limit: 20 });
+    expect(first).toMatchObject({ ok: true, data: { total: 50, next_offset: 20 } });
+    expect(first.data.items).toHaveLength(20);
+    expect(first).not.toHaveProperty("output_cut");
+    expect(first.note).toBe("More rows exist (50 in all): ask for offset 20 for the next page.");
+    const last = await run("scopely_list_pricing_defaults", { vendor_key: "zoom", offset: 40 });
+    expect(kernel.calls[1].body.args).toEqual({ vendor_key: "zoom", offset: 40, limit: 20 });
+    expect(last.data).toMatchObject({ next_offset: null, truncated: false });
+    expect(last.data.items).toHaveLength(10);
+    expect(last).not.toHaveProperty("note");
+  });
+
+  it("a 100-row page (about 66 KB) is read whole, cut for the model at the first unshown row", async () => {
+    useKernel({ pricingRows: 100 });
+    const page = await run("scopely_list_pricing_defaults", { vendor_key: "zoom", limit: 100 });
+    expect(kernel.calls[0].status).toBe(200);
+    expect(JSON.stringify(kernel.calls[0].response).length).toBeGreaterThan(64 * 1024);
+    expect(page).toMatchObject({
+      ok: true,
+      output_cut: true,
+      data: { total: 100, truncated: true },
+    });
+    const shown = page.items_shown as number;
+    expect(page.data.next_offset).toBe(shown);
+    expect(shown).toBeGreaterThan(10);
+    expect(shown).toBeLessThan(100);
+    expect(page.note).toBe(
+      `Showing the first ${shown} of the 100 rows of this page (the bot's output limit). Ask for offset ${shown} to continue from the first row not shown.`,
+    );
+  });
+
+  it("a cut later page continues from its own start, taken from the kernel's next_offset", async () => {
+    useKernel({ pricingRows: 200 });
+    const page = await run("scopely_list_pricing_defaults", {
+      vendor_key: "zoom",
+      offset: 50,
+      limit: 100,
+    });
+    expect(page.data).toMatchObject({ total: 200, truncated: true });
+    const shown = page.items_shown as number;
+    expect(page.data.next_offset).toBe(50 + shown);
+    expect(page.note).toContain(`Ask for offset ${50 + shown} to continue`);
+  });
+});
+
+describe("pricing output continuation is lossless", () => {
+  it("following only next_offset visits every row exactly once, including the cut final page", async () => {
+    useKernel({ pricingRows: 100 });
+    const seen: unknown[] = [];
+    let offset: number | null = 0;
+    for (let pageNo = 0; offset !== null && pageNo < 20; pageNo++) {
+      const page = await run("scopely_list_pricing_defaults", {
+        vendor_key: "zoom",
+        limit: 100,
+        offset,
+      });
+      seen.push(...page.data.items.map((row: { pricing_key: string }) => row.pricing_key));
+      expect(page.data.next_offset === null || page.data.next_offset > offset).toBe(true);
+      offset = page.data.next_offset;
+    }
+    expect(offset).toBeNull();
+    expect(seen).toEqual(Array.from({ length: 100 }, (_, i) => pricingRow(i).pricing_key));
+  });
+
+  it("an oversized first row stops paging and explains that a smaller page cannot fix the row", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          data: {
+            items: [{ pricing_key: "large", description: "x".repeat(17000) }],
+            total: 1,
+            next_offset: null,
+            truncated: false,
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const page = await run("scopely_list_pricing_defaults", { vendor_key: "zoom" });
+    expect(page).toMatchObject({ ok: true, output_cut: true, items_shown: 0 });
+    expect(page.data).not.toHaveProperty("next_offset");
+    expect(page.note).toContain("One row exceeds");
+    expect(page.note).not.toContain("Ask for offset");
+  });
+});
+
+// F3: a PERSON token in the bot's service-token slot is an operator
+// misconfiguration; nobody is told their Zoom id is unlinked.
+describe("a person token in the service slot", () => {
+  const OWNER = { zoomId: "owner_zoom_1", staff: true, id: 1 };
+  const MISCONFIG =
+    "This bot is using a personal token instead of its service token. Ask an admin to give the bot its service token. Nothing was looked up for you.";
+
+  it("with a named sender (ambiguous): refusals and whoami give the misconfiguration sentence", async () => {
+    useKernel({ tokenKind: "person", personOwner: OWNER });
+    const denied = await run("scopely_list_vendors");
+    expect(kernel.calls[0].headers[ZID]).toBe(ALICE.zoomId);
+    expect(denied).toMatchObject({ ok: false, refusal: "requester_unresolved" });
+    expect(denied.error).toBe(MISCONFIG);
+    const whoami = await run("scopely_auth_status");
+    expect(whoami.data.requester).toMatchObject({ kind: "human", status: "ambiguous" });
+    expect(whoami.summary).toBe(MISCONFIG);
+    expect(JSON.stringify([denied, whoami])).not.toContain("not linked");
+  });
+
+  it("with no sender named (resolved as the owner): whoami is not reported as acting for anyone", async () => {
+    useKernel({ tokenKind: "person", personOwner: OWNER });
+    resetInboundSendersForTest();
+    const whoami = await run("scopely_auth_status");
+    expect(kernel.calls[0].headers).not.toHaveProperty(ZID);
+    expect(whoami.data.requester).toMatchObject({ kind: "human", status: "resolved", user_id: 1 });
+    expect(whoami.summary).toBe(MISCONFIG);
+  });
+});
+
+describe("unresolved whoami answers name no principal", () => {
+  it.each([
+    ["missing", { sessionKey: HUB, requesterSenderId: "op_1" }],
+    ["unmapped (unlinked)", { sessionKey: HUB, requesterSenderId: "Carol_Zoom_77" }],
+  ])("%s: no via_principal or org in the answer, none in the summary", async (_label, ctx) => {
+    noteInboundSender(HUB, ctx.requesterSenderId);
+    const whoami = await run("scopely_auth_status", {}, ctx);
+    expect(whoami.data).toMatchObject({ via_principal: null, org: null });
+    expect(whoami.summary).not.toMatch(/principal|scopelybot \(platform\)/);
+  });
+});
+
+describe("secret-shaped sender ids are never sent", () => {
+  it.each([
+    ["exactly 32 characters mixing letters and digits", "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"],
+    ["a longer run mixing letters and digits", "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7"],
+    ["a zwops_ token shape", "zwops_0123456789ab_x"],
+  ])("%s: no header (the kernel would call it malformed)", async (_label, id) => {
+    noteInboundSender(HUB, id);
+    await run("scopely_list_vendors", {}, { sessionKey: HUB, requesterSenderId: id });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "sk_abcdef",
+    "pk_live_abcdef",
+    "ghp_abcdef",
+    "gho_abcdef",
+    "xoxa-abcdef",
+    "xoxb-abcdef",
+    "xoxp-abcdef",
+  ])("backend secret prefix %s is not sent", async (id) => {
+    noteInboundSender(HUB, id);
+    await run("scopely_auth_status", {}, { sessionKey: HUB, requesterSenderId: id });
+    expect(kernel.calls[0].headers).not.toHaveProperty(ZID);
+  });
+
+  it("a 31-character mixed id, or a long id without digits, is still sent", async () => {
+    for (const id of ["a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d", "abcdefghijklmnopqrstuvwxyzabcdefgh"]) {
+      noteInboundSender(HUB, id);
+      await run("scopely_list_vendors", {}, { sessionKey: HUB, requesterSenderId: id });
+    }
+    expect(kernel.calls.map((c) => c.headers[ZID])).toEqual([
+      "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d",
+      "abcdefghijklmnopqrstuvwxyzabcdefgh",
+    ]);
+  });
+});
+
+describe("mock: a blank Accept counts as absent", () => {
+  it("answers 200, not 406", async () => {
+    const res = await kernel.impl(INVOKE_URL, {
+      method: "POST",
+      body: JSON.stringify({ capability: "system.whoami", args: {}, correlation_id: "c1" }),
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        "content-type": "application/json",
+        accept: "  ",
+      },
+    });
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("a personal service-slot token never supplies a missing bot identity", () => {
+  it.each(["scopely_list_vendors", "scopely_list_sessions", "scopely_health_check"])(
+    "%s refuses without network I/O",
+    async (tool) => {
+      useKernel({
+        tokenKind: "person",
+        personOwner: { zoomId: "owner_zoom_1", staff: true, id: 1 },
+      });
+      resetInboundSendersForTest();
+      const result = await run(tool);
+      expect(result).toMatchObject({ ok: false, refusal: "requester_unresolved" });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(readAuditRows(workspace).some((row) => row.event_type === "header_blocked")).toBe(
+        true,
+      );
+    },
+  );
 });

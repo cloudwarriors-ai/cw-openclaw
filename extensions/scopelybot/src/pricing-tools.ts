@@ -99,11 +99,21 @@ export function registerPricingTools(api: OpenClawPluginApi, logger: AuditLogger
         description:
           "List the platform default rates of a vendor's governing rate card (amounts as strings, " +
           "with the card's version and effective window). Read-only. Optionally filter by " +
-          "scope_category (ucaas or ccaas). This is the spine rate-card authority; live /api/v1 " +
+          "scope_category (ucaas or ccaas). Paged: 20 rows at a time; the answer's next_offset " +
+          "names the offset of the next page. This is the spine rate-card authority; live /api/v1 " +
           "order pricing still reads the legacy BasePricing row, so do not quote these as order prices.",
         parameters: Type.Object({
           vendor_key: Type.String({ description: "Vendor key (e.g. zoom)" }),
           scope_category: Type.Optional(Type.String({ description: "Filter: ucaas or ccaas" })),
+          limit: Type.Optional(
+            Type.Integer({ minimum: 1, maximum: 20, description: "Rows per page (default 20)" }),
+          ),
+          offset: Type.Optional(
+            Type.Integer({
+              minimum: 0,
+              description: "First row to return; the answer names the next page's offset",
+            }),
+          ),
         }),
         execute: opsRead,
       },

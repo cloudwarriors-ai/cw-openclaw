@@ -43,7 +43,7 @@
       },
       "max_items": 50,
       "name": "audit.search",
-      "summary": "Search operator audit events: your own; platform staff may search all users.",
+      "summary": "Search operator audit events: your own; platform staff may search all users. Results include this search's own intent row (written before it runs).",
       "untrusted_output": true,
       "wire_name": "audit-search"
     },
@@ -236,6 +236,15 @@
           "is_active": {
             "type": "boolean"
           },
+          "limit": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "minimum": 0,
+            "type": "integer"
+          },
           "scope_category": {
             "maxLength": 16,
             "type": "string"
@@ -252,9 +261,9 @@
         ],
         "type": "object"
       },
-      "max_items": 200,
+      "max_items": 100,
       "name": "pricing.defaults.list",
-      "summary": "The platform default rates for one vendor: the governing rate card's entries (amounts as strings) with the card's version and effective window. Optional filters: scope_category, category, is_active. Staff only. This is the spine rate-card authority; live /api/v1 order pricing still reads the legacy BasePricing row, so do not quote these as order prices.",
+      "summary": "The platform default rates for one vendor: the governing rate card's entries (amounts as strings) with the card's version and effective window. Optional filters: scope_category, category, is_active. Paged: limit 1-100 (default 50) and offset; total is the full count and next_offset the next page's offset (null on the last page). Staff only. This is the spine rate-card authority; live /api/v1 order pricing still reads the legacy BasePricing row, so do not quote these as order prices.",
       "untrusted_output": false,
       "wire_name": "pricing-defaults-list"
     },

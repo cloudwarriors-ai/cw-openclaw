@@ -22,7 +22,14 @@
 //     malformed = unmapped, unlinked = unmapped with one detail for every
 //     cause; whoami echoes requester.zoom_user_id (canonical id, null when
 //     none or invalid) and requester.detail;
-//   - a JSON-only renderer: an Accept that admits no JSON is a 406 (bare);
+//   - a JSON-only renderer: an Accept that admits no JSON is a 406 (bare); a
+//     blank Accept counts as absent (87b8b516);
+//   - 87b8b516: an id the audit redaction would change (zwops_, a 32+ run
+//     mixing letters and digits) is malformed; whoami gives via_principal and
+//     org only to a RESOLVED caller; pricing.defaults.list pages (limit 1-100,
+//     default 50, offset; total, truncated, next_offset null on the last page);
+//   - a PERSON token (tokenKind "person"): the owner acts (kind human); naming
+//     a requester is ambiguous with _DETAIL["person_named"];
 //   - kernel.py invoke: unknown capability 404, unresolved requester 403
 //     requester_unresolved with a per-status detail (_GATE_DETAIL; only
 //     system.whoami passes), family switch 503 capability_disabled,
@@ -197,6 +204,11 @@ export type KernelOptions = {
   refuse?: { status: number; code: string; detail: string; bare?: boolean };
   /** throttle.allow: calls per (token, requester) bucket; all unresolved askers share one. */
   throttlePerBucket?: number;
+  /** "person": the token in the bot's slot belongs to this user (misconfiguration). */
+  tokenKind?: "service" | "person";
+  personOwner?: MockUser;
+  /** pricing.defaults.list: the governing card's row count (default 1). */
+  pricingRows?: number;
 };
 
 const INVOKE = "/api/spine/v1/ops/invoke/";
@@ -238,6 +250,7 @@ export const GATE_DETAIL = {
   multiple: `X-Ops-Requester-Zoom-Id names more than one person.${WHOAMI_ONLY}`,
   malformed: `X-Ops-Requester-Zoom-Id is not a valid Zoom user id.${WHOAMI_ONLY}`,
   // The same text for no link, an inactive link or user, and another org.
+  person_named: `A person token acts as its owner and cannot name a requester: remove the X-Ops-Requester-Zoom-Id and X-Ops-Requester headers.${WHOAMI_ONLY}`,
   unlinked: (id: string) =>
     `Zoom id ${id} is not mapped to a platform user: ask an admin to link Zoom id ${id} to your account.${WHOAMI_ONLY}`,
 };
@@ -269,6 +282,30 @@ export function kernelCanonical(raw: string): string | null {
   return /^[a-z0-9_-]{6,64}$/.test(id) ? id : null;
 }
 
+/** A rate-card row in pricing/ops_capabilities.py _entry's shape, about 665 bytes as JSON. */
+export function pricingRow(i: number): Record<string, unknown> {
+  return {
+    pricing_key: `pricing_key_${String(i).padStart(4, "0")}`,
+    label: `Default rate ${i} for the governing card of the vendor (platform default)`,
+    description:
+      `Per-unit default for line ${i}: applies to every deployment type unless the card overrides it. `.repeat(
+        2,
+      ),
+    category: "ucaas_professional_services",
+    unit_amount: `${100 + i}.00`,
+    currency: "USD",
+    tiers: [
+      { up_to: 50, unit_amount: "90.00" },
+      { up_to: null, unit_amount: "80.00" },
+    ],
+    amount_by_deployment: { autopilot: "95.00", copilot: "110.00" },
+    is_add_on_cost: false,
+    deployment_types: ["autopilot", "copilot", "bespoke"],
+    scope_category: "ucaas",
+    is_active: true,
+  };
+}
+
 function defaultData(
   cap: SnapshotCapability,
   actor: MockUser | undefined,
@@ -276,23 +313,25 @@ function defaultData(
   killed: Set<string>,
   zoomUserId: string | null,
   detail: string,
+  ctx: { kind: "bot" | "human"; args: Record<string, unknown>; pricingRows: number },
 ): Record<string, unknown> {
   switch (cap.name) {
     case "system.whoami":
-      // capabilities_system.whoami: a bot never gets the email echoed.
+      // capabilities_system.whoami: a bot never gets the email echoed; the
+      // principal and org only reach a RESOLVED caller.
       return {
         requester: {
-          kind: "bot",
+          kind: ctx.kind,
           status,
           user_id: actor?.id ?? null,
-          email: null,
+          email: ctx.kind === "human" && actor ? `user${actor.id}@example.test` : null,
           is_platform_staff: Boolean(actor?.staff),
-          zoom_user_id: zoomUserId,
+          zoom_user_id: ctx.kind === "bot" ? zoomUserId : null,
           detail: detail || null,
         },
-        via_principal: PRINCIPAL,
-        org: ORG,
-        client: "bot",
+        via_principal: actor && ctx.kind === "bot" ? PRINCIPAL : null,
+        org: actor ? ORG : null,
+        client: ctx.kind === "bot" ? "bot" : "rest",
       };
     case "system.health": {
       const families = [...new Set(SNAPSHOT.capabilities.map((c) => `${c.family}|${c.effect}`))]
@@ -355,7 +394,13 @@ function defaultData(
         truncated: false,
       };
     // pricing/ops_capabilities.py _defaults_list
-    case "pricing.defaults.list":
+    case "pricing.defaults.list": {
+      // _defaults_list: stable order, page by offset/limit (default 50).
+      const offset = typeof ctx.args.offset === "number" ? ctx.args.offset : 0;
+      const limit = typeof ctx.args.limit === "number" ? ctx.args.limit : 50;
+      const rows = Array.from({ length: ctx.pricingRows }, (_, i) => pricingRow(i));
+      const page = rows.slice(offset, offset + limit);
+      const nextOffset = offset + page.length < rows.length ? offset + page.length : null;
       return {
         vendor_key: "zoom",
         card: {
@@ -365,10 +410,12 @@ function defaultData(
           effective_from: null,
           effective_to: null,
         },
-        items: [{ pricing_key: "site", label: "Site", unit_amount: "100.00", currency: "USD" }],
-        total: 1,
-        truncated: false,
+        items: page,
+        total: rows.length,
+        truncated: nextOffset !== null,
+        next_offset: nextOffset,
       };
+    }
     // orders/ops_capabilities.py
     case "sessions.list":
       return { items: [SESSION_ROW], total: 1, page: 1, page_size: 25, truncated: false };
@@ -431,7 +478,7 @@ export function mockKernel(opts: KernelOptions) {
       return bare(503, "ops_disabled", "The operator plane is disabled.");
     }
     // JSON-only renderer: an Accept that admits no JSON is a 406.
-    const accept = headers.accept ?? "*/*";
+    const accept = headers.accept?.trim() ? headers.accept : "*/*";
     if (!/(^|,)\s*(\*\/\*|application\/\*|application\/json)\s*(;|,|$)/.test(accept)) {
       return bare(406, "not_acceptable", "Could not satisfy the request Accept header.");
     }
@@ -484,25 +531,42 @@ export function mockKernel(opts: KernelOptions) {
       });
 
     const cap = SNAPSHOT.capabilities.find((c) => c.name === name);
-    // identity.resolve_requester (service token), in its order: legacy email
-    // header, blank, a comma, malformed, unlinked, resolved.
+    // identity.resolve_requester, in its order. A person token acts as its
+    // owner and refuses any named requester; a service token: legacy email
+    // header, blank, a comma, malformed or secret-shaped, unlinked, resolved.
     const claim = headers["x-ops-requester-zoom-id"] ?? "";
     const blank = (value: string) => value.replace(/^[ \t\n\r\f\v]+|[ \t\n\r\f\v]+$/g, "") === "";
     const legacy = !blank(headers["x-ops-requester"] ?? "");
-    const canonical =
+    const person = opts.tokenKind === "person";
+    const secretShaped = (id: string) =>
+      /^(?:pk_live_|sk_|ghp_|gho_|xox[abp]-)/.test(id) ||
+      id.includes("zwops_") ||
+      (id.length >= 32 && /[a-z]/.test(id) && /\d/.test(id));
+    const presented =
       !legacy && !blank(claim) && !claim.includes(",") ? kernelCanonical(claim) : null;
-    const actor = canonical ? opts.users.find((u) => u.zoomId === canonical) : undefined;
-    const [status, detail, zoomUserId] = legacy
-      ? ["unmapped", GATE_DETAIL.legacy_header, null]
-      : blank(claim)
-        ? ["missing", GATE_DETAIL.missing, null]
-        : claim.includes(",")
-          ? ["ambiguous", GATE_DETAIL.multiple, null]
-          : !canonical
-            ? ["unmapped", GATE_DETAIL.malformed, null]
-            : !actor
-              ? ["unmapped", GATE_DETAIL.unlinked(canonical), canonical]
-              : ["resolved", "", canonical];
+    const canonical = presented && !secretShaped(presented) ? presented : null;
+    const actor = person
+      ? !legacy && blank(claim)
+        ? opts.personOwner
+        : undefined
+      : canonical
+        ? opts.users.find((u) => u.zoomId === canonical)
+        : undefined;
+    const [status, detail, zoomUserId] = person
+      ? actor
+        ? ["resolved", "", null]
+        : ["ambiguous", GATE_DETAIL.person_named, null]
+      : legacy
+        ? ["unmapped", GATE_DETAIL.legacy_header, null]
+        : blank(claim)
+          ? ["missing", GATE_DETAIL.missing, null]
+          : claim.includes(",")
+            ? ["ambiguous", GATE_DETAIL.multiple, null]
+            : !canonical
+              ? ["unmapped", GATE_DETAIL.malformed, null]
+              : !actor
+                ? ["unmapped", GATE_DETAIL.unlinked(canonical), canonical]
+                : ["resolved", "", canonical];
     if (opts.refuse) {
       return error(opts.refuse.status, opts.refuse.code, opts.refuse.detail);
     }
@@ -538,7 +602,13 @@ export function mockKernel(opts: KernelOptions) {
       correlation_id: correlationId,
       capability: cap.name,
       untrusted_output: cap.untrusted_output,
-      data: opts.data?.[cap.name] ?? defaultData(cap, actor, status, killed, zoomUserId, detail),
+      data:
+        opts.data?.[cap.name] ??
+        defaultData(cap, actor, status, killed, zoomUserId, detail, {
+          kind: person ? "human" : "bot",
+          args: (body.args ?? {}) as Record<string, unknown>,
+          pricingRows: opts.pricingRows ?? 1,
+        }),
     });
   };
   return { impl, calls };

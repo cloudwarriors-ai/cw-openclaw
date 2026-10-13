@@ -300,8 +300,15 @@ const FAMILIES: Record<FamilyId, Family> = {
   },
 };
 
-/** One operator-layer capability per tool, and the tool params passed as its args. */
-export type OpsBinding = { capability: OpsCapability; args: readonly string[] };
+/**
+ * One operator-layer capability per tool, the tool params passed as its args,
+ * and the args the bot sends when the model gives none.
+ */
+export type OpsBinding = {
+  capability: OpsCapability;
+  args: readonly string[];
+  defaults?: Readonly<Record<string, unknown>>;
+};
 
 // The slice-1 reads (SLICE1-CONTRACT section 7, parity-matrix.json). A tool
 // listed here is live and runs nothing but its capability (ops-client.ts
@@ -328,9 +335,12 @@ const OPS_READS: Record<string, OpsBinding> = {
     capability: "catalog.scoping_cards.get",
     args: ["vendor_key", "project_type", "card_key"],
   },
+  // Paged: about 665 bytes a row, so 20 rows fit the 16,000-character output
+  // limit; without a limit the kernel's default page is 50 rows.
   scopely_list_pricing_defaults: {
     capability: "pricing.defaults.list",
-    args: ["vendor_key", "scope_category"],
+    args: ["vendor_key", "scope_category", "limit", "offset"],
+    defaults: { limit: 20 },
   },
   scopely_list_sessions: {
     capability: "sessions.list",
