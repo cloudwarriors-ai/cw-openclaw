@@ -355,8 +355,10 @@ function readProfileText(file: string): { raw: string } | { error: string } {
 
 const OPS_TOKEN_FILE = "scopelybot-ops-token";
 const MAX_TOKEN_BYTES = 4096;
-// Printable token characters only, so a token can never split a header line.
-const TOKEN_RE = /^[A-Za-z0-9._~+/=-]{16,1024}$/;
+// The only shape the kernel accepts (zoomwarriors_2 apps/opsplane/identity.py
+// _TOKEN_RE, `Authorization: Bearer zwops_<12 hex>_<secret>`): anything else
+// would only earn a 401, and its charset can never split a header line.
+const TOKEN_RE = /^zwops_[0-9a-f]{12}_[A-Za-z0-9_-]{32,64}$/;
 
 export type OpsTokenProblem =
   | "missing"
@@ -381,9 +383,10 @@ function ownUid(): number {
 /**
  * The service token from <workspace>/scopelybot-ops-token, read on every call.
  * The file must be a regular file (no symlink) owned by the gateway's own user
- * with no group or other permission bits (0600 or stricter), holding one token
- * of printable characters (surrounding whitespace ignored). Any other state is
- * a problem code; the token itself never appears in a problem, error or row.
+ * with no group or other permission bits (0600 or stricter), holding one
+ * kernel-shaped token `zwops_<12 hex>_<32-64 of A-Za-z0-9_->` (surrounding
+ * whitespace ignored). Any other state is a problem code; the token itself
+ * never appears in a problem, error or row.
  */
 export function readOpsToken(
   workspaceDir = resolveWorkspaceDir(),

@@ -1,11 +1,12 @@
 // The guard's operator-layer branch (scopely-api.ts scopelyOpsInvoke, M13
 // slice 1): the ONE request shape added to the read-only guard. Pins exactly
 // what widened (a POST to the exact invoke path, a read capability, a
-// guard-built body, guard-injected token and requester headers) and that
-// nothing else did (every other POST/PUT/PATCH/DELETE, caller-supplied
-// identity headers, the token on any other request). The token file rules:
-// read per request, refused when missing, empty, malformed, not a regular
-// file, not ours, or readable by group/other; never logged or audited.
+// guard-built body, guard-injected Authorization: Bearer, requester and bot
+// audit id headers) and that nothing else did (every other POST/PUT/PATCH/
+// DELETE, caller-supplied identity headers, the token on any other request).
+// The token file rules: read per request, refused when missing, empty, not a
+// zwops_ token (identity.py _TOKEN_RE), not a regular file, not ours, or
+// readable by group/other; never logged or audited.
 
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -15,6 +16,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // The owner check compares the token file's uid with the gateway's own; this
 // pass-through mock lets one test pretend the gateway runs as another user.
 const ownUid = vi.hoisted(() => ({ value: undefined as number | undefined }));
+// One test needs an audit id outside the kernel's id charset.
+const auditIdOverride = vi.hoisted(() => ({ value: undefined as string | undefined }));
+vi.mock("./audit-chain.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./audit-chain.js")>();
+  return { ...actual, newAuditId: () => auditIdOverride.value ?? actual.newAuditId() };
+});
 vi.mock("node:os", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:os")>();
   return {
@@ -34,7 +41,9 @@ import {
   scopelyOpsInvoke,
 } from "./scopely-api.js";
 
-const TOKEN = "svc_TEST.token-0123456789abcdef";
+// identity.py _TOKEN_RE: zwops_<12 hex>_<32-64 of [A-Za-z0-9_-]>.
+const TOKEN = "zwops_0123456789ab_Test-Token_0123456789abcdefABCDEF_xyz";
+const ROTATED = "zwops_fedcba987654_Rotated_Token-0123456789abcdefABCDEF";
 const DEV_HOST = "100.114.142.100:8022";
 const DEV = {
   env: "dev",
@@ -94,6 +103,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   ownUid.value = undefined;
+  auditIdOverride.value = undefined;
   delete process.env.OPENCLAW_WORKSPACE;
   fs.rmSync(workspace, { recursive: true, force: true });
 });
@@ -118,8 +128,9 @@ describe("the invoke request is fixed by the guard", () => {
       host: "vip.localhost",
       "x-correlation-id": auditId,
       "x-vipbot-client": "scopelybot/0.1.0 (dev)",
-      "x-service-token": TOKEN,
+      authorization: `Bearer ${TOKEN}`,
       "x-ops-requester": "alice@cloudwarriors.ai",
+      "x-ops-bot-audit-id": auditId,
     });
     expect(JSON.parse(init.body)).toEqual({
       capability: "catalog.vendors.get",
@@ -135,11 +146,9 @@ describe("the invoke request is fixed by the guard", () => {
 
   it("the token is re-read on every request (no cache) and its loss refuses the next one", async () => {
     await scopelyOpsInvoke(op());
-    writeToken("svc_ROTATED.token-fedcba9876543210");
+    writeToken(ROTATED);
     await scopelyOpsInvoke(op());
-    expect(fetchMock.mock.calls[1][1].headers["x-service-token"]).toBe(
-      "svc_ROTATED.token-fedcba9876543210",
-    );
+    expect(fetchMock.mock.calls[1][1].headers.authorization).toBe(`Bearer ${ROTATED}`);
     fs.rmSync(tokenFile());
     await refused(scopelyOpsInvoke(op()), "auth_unavailable");
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -185,22 +194,29 @@ describe("nothing else widened", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it.each(["x-service-token", "x-ops-requester", "authorization", "x-on-behalf-of"])(
-    "a caller cannot send %s",
-    async (header) => {
-      await refused(
-        scopelyFetch("/api/v1/health/", { headers: { [header]: "v" } }),
-        "header_blocked",
-      );
-      expect(fetchMock).not.toHaveBeenCalled();
-    },
-  );
+  it.each([
+    "authorization",
+    "Authorization",
+    "x-service-token",
+    "x-ops-requester",
+    "x-ops-bot-audit-id",
+    "x-on-behalf-of",
+    "x-correlation-id",
+  ])("a caller cannot send %s", async (header) => {
+    await refused(
+      scopelyFetch("/api/v1/health/", { headers: { [header]: "v" } }),
+      "header_blocked",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 
-  it("a GET under service-token carries neither the token nor a requester", async () => {
+  it("a GET under service-token carries no token, requester or bot audit id header", async () => {
     await scopelyFetch("/api/v1/health/");
     const headers = fetchMock.mock.calls[0][1].headers;
-    expect(headers).not.toHaveProperty("x-service-token");
-    expect(headers).not.toHaveProperty("x-ops-requester");
+    expect(Object.keys(headers).toSorted()).toEqual(
+      ["host", "x-correlation-id", "x-vipbot-client"].toSorted(),
+    );
+    expect(JSON.stringify(headers)).not.toContain(TOKEN);
     expect(fetchMock.mock.calls[0][1].method).toBe("GET");
   });
 
@@ -283,6 +299,14 @@ describe("credential and kill-switch gates", () => {
     ["permissions", () => writeToken(TOKEN, 0o604)],
     ["malformed", () => writeToken(`${TOKEN} second`)],
     ["malformed", () => writeToken("short")],
+    // Shapes the kernel refuses (identity.py _TOKEN_RE), so none is ever sent:
+    ["malformed", () => writeToken("svc_TEST.token-0123456789abcdef")],
+    ["malformed", () => writeToken(`Bearer ${TOKEN}`)],
+    ["malformed", () => writeToken(TOKEN.replace("0123456789ab", "0123456789AB"))],
+    ["malformed", () => writeToken(TOKEN.replace("0123456789ab", "0123456789a"))],
+    ["malformed", () => writeToken(`zwops_0123456789ab_${"a".repeat(31)}`)],
+    ["malformed", () => writeToken(`zwops_0123456789ab_${"a".repeat(65)}`)],
+    ["malformed", () => writeToken(`zwops_0123456789ab_${"a".repeat(40)}.`)],
     ["too_large", () => writeToken("a".repeat(5000))],
     [
       "not_regular_file",
@@ -316,6 +340,40 @@ describe("credential and kill-switch gates", () => {
       expect(file).not.toContain(TOKEN);
     },
   );
+
+  it("the longest and shortest kernel-valid tokens are accepted", async () => {
+    for (const secret of ["a".repeat(32), "Z_-9".repeat(16)]) {
+      writeToken(`zwops_0123456789ab_${secret}\n`);
+      await scopelyOpsInvoke(op());
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("an audit id outside the kernel's id charset is refused before any I/O", async () => {
+    auditIdOverride.value = "id with spaces";
+    await refused(scopelyOpsInvoke(op()), "header_blocked");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(auditRows().some((r) => r.event_type === "http_intent")).toBe(false);
+  });
+
+  it("a bare spine refusal (401) is still summarized on the outcome row", async () => {
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            detail: "Invalid token.",
+            code: "authentication_failed",
+            request_id: "r-401",
+          }),
+          { status: 401, headers: { "content-type": "application/json" } },
+        ),
+    );
+    await scopelyOpsInvoke(op());
+    expect(auditRows().findLast((r) => r.event_type === "http_outcome")?.result).toEqual({
+      status: "http_error",
+      kernel: { ok: null, request_id: "r-401", error_code: "authentication_failed" },
+    });
+  });
 
   it("a token file owned by another user is refused", async () => {
     ownUid.value = 4242;

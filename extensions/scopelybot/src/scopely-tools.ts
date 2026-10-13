@@ -6,6 +6,23 @@ import { opsRead } from "./ops-client.js";
 import { redactText } from "./redaction.js";
 import { scopelyFetch, jsonResult, errorResult, buildQuery } from "./scopely-api.js";
 
+// The new app's order statuses (orders/ops_capabilities.py, the sessions.list
+// status enum); the old in_progress/generated/converted filter is gone.
+const SESSION_STATUSES = [
+  "archived",
+  "cancelled",
+  "closed",
+  "declined",
+  "draft",
+  "in_progress",
+  "locked",
+  "pricing_complete",
+  "signed",
+  "sow_generated",
+  "sow_sent",
+  "voided",
+] as const;
+
 export function registerScopelyTools(api: OpenClawPluginApi, logger: AuditLogger) {
   // scopely_auth_status — "Who is the bot acting as for me?" (operator layer system.whoami)
   api.registerTool(() =>
@@ -157,15 +174,18 @@ export function registerScopelyTools(api: OpenClawPluginApi, logger: AuditLogger
       {
         name: "scopely_list_sessions",
         description:
-          "List Scopely VIP scoping sessions. Shows wizard sessions with status, step, company, and creator. " +
-          "Use this to see what users are clicking on and what they are working on.",
+          "List Scopely VIP deals (scoping sessions) with status, company, vendor, organization and " +
+          "total, newest first, paged. Platform staff only.",
         parameters: Type.Object({
           status: Type.Optional(
-            Type.String({ description: "Filter: in_progress, generated, cancelled, converted" }),
+            Type.Array(Type.Unsafe<string>({ type: "string", enum: [...SESSION_STATUSES] }), {
+              description: "Filter by one or more statuses",
+            }),
           ),
-          vendor: Type.Optional(Type.String({ description: "Filter by destination vendor" })),
           search: Type.Optional(Type.String({ description: "Search by company name or contact" })),
-          limit: Type.Optional(Type.Integer({ description: "Max results (default 50)" })),
+          organization_id: Type.Optional(Type.Integer({ description: "Only this organization" })),
+          page: Type.Optional(Type.Integer({ description: "Page number (default 1)" })),
+          page_size: Type.Optional(Type.Integer({ description: "Results per page (max 100)" })),
         }),
         execute: opsRead,
       },
@@ -179,10 +199,16 @@ export function registerScopelyTools(api: OpenClawPluginApi, logger: AuditLogger
       {
         name: "scopely_get_session",
         description:
-          "Get detailed info about a specific Scopely VIP scoping session. " +
-          "Returns wizard state, answers, pricing, status, company info, and who created it.",
+          "Get one Scopely VIP deal by session id OR order number (give exactly one): status, " +
+          "company, vendor, project and deployment type, total, version and answer keys.",
+        // Exactly one of the two (the kernel refuses both or neither).
         parameters: Type.Object({
-          session_id: Type.String({ description: "Session ID" }),
+          session_id: Type.Optional(
+            Type.Integer({ description: "Session id (the `id` from scopely_list_sessions)" }),
+          ),
+          order_number: Type.Optional(
+            Type.String({ description: "Order number, e.g. PS-0000123" }),
+          ),
         }),
         execute: opsRead,
       },

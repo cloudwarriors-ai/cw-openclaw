@@ -40,7 +40,7 @@ import {
   registryTools,
 } from "./capability-registry.js";
 import { stageWrite } from "./gated.js";
-import { SLICE1_SNAPSHOT } from "./ops-kernel.test-helpers.js";
+import { type JsonSchema, SNAPSHOT, validate } from "./ops-kernel.test-helpers.js";
 import { registerPassthroughTools } from "./passthrough-tools.js";
 import { OPS_READ_CAPABILITIES, resetScopelyGuardForTest } from "./scopely-api.js";
 
@@ -66,6 +66,8 @@ function writeProfile(body: Record<string, unknown>) {
   fs.writeFileSync(path.join(workspace, "scopelybot-backend.json"), JSON.stringify(body));
 }
 
+const REGISTRY_TOKEN = "zwops_00112233aabb_registry-test-token_0123456789abcdef";
+
 // The prod profile with the operator layer's service token, and a kernel
 // envelope as every answer.
 function useServiceToken() {
@@ -75,9 +77,7 @@ function useServiceToken() {
     allowedHosts: ["api.vip.pscx.ai"],
     authMode: "service-token",
   });
-  fs.writeFileSync(path.join(workspace, "scopelybot-ops-token"), "svc_registry-test-token-0001", {
-    mode: 0o600,
-  });
+  fs.writeFileSync(path.join(workspace, "scopelybot-ops-token"), REGISTRY_TOKEN, { mode: 0o600 });
   fetchMock.mockImplementation(
     async () =>
       new Response('{"ok":true,"request_id":"r1","data":{"status":"ok"}}', {
@@ -233,7 +233,7 @@ describe("registry completeness (AC-7.2)", () => {
       "scopely_list_pricing_defaults",
       "scopely_list_approvers",
     ]);
-    const snapshot = new Map(SLICE1_SNAPSHOT.capabilities.map((c) => [c.name, c]));
+    const snapshot = new Map(SNAPSHOT.capabilities.map((c) => [c.name, c]));
     for (const tool of runnable.filter((t) => t !== "scopely_list_approvers")) {
       const binding = opsBindingFor(tool);
       expect(capabilityFor(tool), tool).toMatchObject({ effect: "pure-read", status: "live" });
@@ -241,7 +241,7 @@ describe("registry completeness (AC-7.2)", () => {
       const cap = snapshot.get(binding!.capability);
       expect(cap?.effect, tool).toBe("read");
       // Every arg key the binding passes is one the capability's schema accepts.
-      expect(Object.keys(cap!.input_schema.properties), tool).toEqual(
+      expect(Object.keys(cap!.input_schema.properties ?? {}), tool).toEqual(
         expect.arrayContaining([...binding!.args]),
       );
     }
@@ -615,5 +615,111 @@ describe("requester attribution from the tool-factory ctx (PK-7b-1)", () => {
     } as never) as unknown as Tool;
     await wrapped.execute("call-9", {});
     expect(auditRows().at(-1)?.requester).toEqual(missing);
+  });
+});
+
+// The bindings against the REAL kernel snapshot (fixtures/ops-capabilities.
+// snapshot.json, zoomwarriors_2 301b1c0e): every capability exists and is a
+// read, each tool's parameter schema offers exactly its binding's args with
+// the capability's types and required keys, and the args the tools actually
+// send for representative params validate against the capability's schema.
+describe("bindings against the kernel snapshot", () => {
+  const snapshot = new Map(SNAPSHOT.capabilities.map((c) => [c.name, c]));
+  const opsTools = registryTools().filter((t) => opsBindingFor(t));
+  type ToolSchema = { properties?: Record<string, JsonSchema>; required?: string[] };
+
+  it("every allow-listed capability is a read in the snapshot", () => {
+    for (const name of OPS_READ_CAPABILITIES) {
+      expect(snapshot.get(name)?.effect, name).toBe("read");
+    }
+  });
+
+  it("each tool's parameters are exactly its binding's args, typed and required like the capability", () => {
+    const { tools } = registeredTools();
+    for (const name of opsTools) {
+      const binding = opsBindingFor(name)!;
+      const schema = snapshot.get(binding.capability)?.input_schema;
+      expect(schema, name).toBeDefined();
+      const params = (tools.get(name) as unknown as { parameters: ToolSchema }).parameters;
+      expect(Object.keys(params.properties ?? {}).toSorted(), name).toEqual(
+        [...binding.args].toSorted(),
+      );
+      for (const key of binding.args) {
+        const want = schema!.properties?.[key];
+        const got = params.properties![key];
+        expect(want, `${name}.${key} is not in ${binding.capability}`).toBeDefined();
+        expect(got.type, `${name}.${key} type`).toBe(want!.type);
+        expect(got.items?.enum, `${name}.${key} enum`).toEqual(want!.items?.enum);
+      }
+      for (const key of schema!.required ?? []) {
+        expect(params.required ?? [], `${name} must require ${key}`).toContain(key);
+      }
+    }
+  });
+
+  // Representative valid params per tool (every ops tool must have a row).
+  const SAMPLES: Record<string, Record<string, unknown>[]> = {
+    scopely_health_check: [{}],
+    scopely_auth_status: [{}],
+    scopely_list_vendors: [{}],
+    scopely_get_vendor: [{ vendor_key: "zoom" }],
+    scopely_vendor_config: [{ vendor_key: "ring-central_2" }],
+    scopely_list_project_types: [{ vendor_key: "zoom" }],
+    scopely_list_deployment_types: [{ vendor_key: "zoom", project_type: "ucaas" }],
+    scopely_list_scoping_cards: [{ vendor_key: "zoom", project_type: "ucaas" }],
+    scopely_get_scoping_card: [{ vendor_key: "zoom", project_type: "ucaas", card_key: "sites" }],
+    scopely_list_pricing_defaults: [
+      { vendor_key: "zoom" },
+      { vendor_key: "zoom", scope_category: "ccaas" },
+    ],
+    scopely_list_sessions: [
+      {},
+      {
+        status: ["signed", "sow_sent"],
+        search: "acme",
+        organization_id: 3,
+        page: 2,
+        page_size: 100,
+      },
+    ],
+    scopely_get_session: [{ session_id: 42 }, { order_number: "PS-0000123" }],
+  };
+
+  it("the args each tool sends for valid params pass the capability's real input schema", async () => {
+    useServiceToken();
+    expect(Object.keys(SAMPLES).toSorted()).toEqual([...opsTools].toSorted());
+    const { tools } = registeredTools({
+      sessionKey: "agent:scopelybot:zoom:x",
+      requesterSenderId: "op",
+    });
+    for (const [name, samples] of Object.entries(SAMPLES)) {
+      for (const params of samples) {
+        fetchMock.mockClear();
+        resetScopelyGuardForTest();
+        await tools.get(name)!.execute("x", { ...params, stray: "dropped" });
+        expect(fetchMock, name).toHaveBeenCalledTimes(1);
+        const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+        const schema = snapshot.get(body.capability)!.input_schema;
+        expect(validate(schema, body.args), `${name} ${JSON.stringify(params)}`).toEqual([]);
+      }
+    }
+  });
+
+  // The validator is load-bearing above: it must reject what the kernel rejects.
+  it.each([
+    ["sessions.list", { status: "signed" }],
+    ["sessions.list", { status: ["generated"] }],
+    ["sessions.list", { page_size: 101 }],
+    ["sessions.list", { vendor: "zoom" }],
+    ["sessions.get", {}],
+    ["sessions.get", { session_id: 1, order_number: "PS-1" }],
+    ["sessions.get", { session_id: "42" }],
+    ["sessions.get", { order_number: "1234" }],
+    ["pricing.defaults.list", { scope_category: "ucaas" }],
+    ["catalog.vendors.get", { vendor_key: "zoom/x" }],
+    ["catalog.vendors.get", { vendor_key: "" }],
+    ["catalog.deployment_types.list", { vendor_key: "zoom" }],
+  ])("the snapshot schema of %s rejects %j", (name, args) => {
+    expect(validate(snapshot.get(name)!.input_schema, args)).not.toEqual([]);
   });
 });

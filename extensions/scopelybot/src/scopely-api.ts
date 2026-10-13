@@ -24,9 +24,10 @@
 // shape. It is a POST to exactly OPS_INVOKE_PATH whose body the guard builds
 // ({capability, args, correlation_id = audit_id}), for a capability on the
 // read allow-list OPS_READ_CAPABILITIES only, under authMode "service-token".
-// The guard itself adds the service token (read per request, readOpsToken) and
-// the X-Ops-Requester email; the caller header allow-list is NOT widened, so
-// no caller can send either header, and the token goes on no other request.
+// The guard itself adds `Authorization: Bearer <token>` (read per request,
+// readOpsToken), the X-Ops-Requester email and X-Ops-Bot-Audit-Id; the caller
+// header allow-list is NOT widened, so no caller can send any of them, and the
+// token goes on no other request.
 // scopelyFetch callers cannot reach this branch: a POST from them is still
 // refused outside a dev read-write profile, whatever its path.
 // An AST scan of index.ts's import closure (single-choke-point.test.ts) fails
@@ -109,8 +110,13 @@ export type OpsInvocation = {
   /** The acting human's Zoom email; absent = the kernel answers whoami only. */
   requester?: string;
 };
-const OPS_TOKEN_HEADER = "x-service-token";
+// zoomwarriors_2 apps/opsplane (301b1c0e): identity.py OpsTokenAuthentication
+// reads only `Authorization: Bearer zwops_...`; edge_rest.py stores
+// X-Ops-Bot-Audit-Id as bot_audit_id (service tokens) for the cross-system join.
 const OPS_REQUESTER_HEADER = "x-ops-requester";
+const OPS_BOT_AUDIT_HEADER = "x-ops-bot-audit-id";
+// edge_rest.py _ID_RE: the kernel's charset for correlation and bot audit ids.
+const OPS_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
 // Slice-1 args are a few short keys; anything bigger is not a read argument.
 const MAX_OPS_ARGS_BYTES = 4096;
 const REQUESTER_RE = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}$/;
@@ -309,9 +315,11 @@ function opsToken(profile: BackendProfile, http: HttpFields): string {
 
 // What the outcome row keeps of a kernel envelope: its ok flag, request_id and
 // error code (charset checked and bounded), for the join with the app's audit.
+// Edge refusals (401, the emergency 503, a 400 on ids) use the bare spine
+// envelope {detail, code, request_id}: no ok, the code at the top level.
 function kernelSummary(data: unknown) {
   const envelope = isPlainObject(data) ? data : {};
-  const error = isPlainObject(envelope.error) ? envelope.error : {};
+  const error = isPlainObject(envelope.error) ? envelope.error : envelope;
   const id = (value: unknown) =>
     typeof value === "string" && X_REQUEST_ID_RE.test(value) ? value : null;
   return {
@@ -393,6 +401,12 @@ async function guardedRequest(
   // Correlation (INV-5): set by the guard only, after every caller input; the
   // param is set (never appended), so it appears exactly once.
   const auditId = newAuditId();
+  if (op && !OPS_ID_RE.test(auditId)) {
+    // The kernel would answer 400 to an id outside its charset: refuse first.
+    refuse("header_blocked", "Blocked: the audit id is not a valid operator-layer id.", http, {
+      header: OPS_BOT_AUDIT_HEADER,
+    });
+  }
   url.searchParams.set("bot_audit_id", auditId);
   headers["x-correlation-id"] = auditId;
   headers["x-vipbot-client"] = `scopelybot/${PLUGIN_VERSION} (${profile.env})`;
@@ -402,7 +416,8 @@ async function guardedRequest(
     // and this chain join on it (with bot_audit_id and x-correlation-id).
     body = `{"capability":${JSON.stringify(op.capability)},"args":${opsArgs},"correlation_id":"${auditId}"}`;
     headers["content-type"] = "application/json";
-    headers[OPS_TOKEN_HEADER] = token;
+    headers.authorization = `Bearer ${token}`;
+    headers[OPS_BOT_AUDIT_HEADER] = auditId;
     if (op.requester !== undefined) {
       headers[OPS_REQUESTER_HEADER] = op.requester;
     }

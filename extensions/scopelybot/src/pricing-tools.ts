@@ -97,9 +97,10 @@ export function registerPricingTools(api: OpenClawPluginApi, logger: AuditLogger
       {
         name: "scopely_list_pricing_defaults",
         description:
-          "List Scopely VIP global pricing defaults (the default rate card). Read-only — runs " +
+          "List the pricing defaults of a vendor's governing rate card. Read-only — runs " +
           "immediately. Optionally filter by scope_category (ucaas or ccaas).",
         parameters: Type.Object({
+          vendor_key: Type.String({ description: "Vendor key (e.g. zoom)" }),
           scope_category: Type.Optional(Type.String({ description: "Filter: ucaas or ccaas" })),
         }),
         execute: opsRead,

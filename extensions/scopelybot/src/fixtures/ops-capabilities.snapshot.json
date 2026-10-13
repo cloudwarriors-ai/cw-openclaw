@@ -1,0 +1,376 @@
+{
+  "capabilities": [
+    {
+      "effect": "read",
+      "family": "audit",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "all_users": {
+            "type": "boolean"
+          },
+          "capability": {
+            "maxLength": 120,
+            "type": "string"
+          },
+          "limit": {
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "outcome": {
+            "enum": [
+              "ok",
+              "denied",
+              "error"
+            ],
+            "type": "string"
+          },
+          "request_id": {
+            "maxLength": 64,
+            "type": "string"
+          },
+          "requester_user_id": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "since": {
+            "maxLength": 40,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "max_items": 50,
+      "name": "audit.search",
+      "summary": "Search operator audit events: your own; platform staff may search all users.",
+      "untrusted_output": true,
+      "wire_name": "audit-search"
+    },
+    {
+      "effect": "read",
+      "family": "catalog",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_type": {
+            "maxLength": 50,
+            "minLength": 1,
+            "pattern": "^[-a-zA-Z0-9_]+$",
+            "type": "string"
+          },
+          "vendor_key": {
+            "maxLength": 50,
+            "minLength": 1,
+            "pattern": "^[-a-zA-Z0-9_]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "vendor_key",
+          "project_type"
+        ],
+        "type": "object"
+      },
+      "max_items": 50,
+      "name": "catalog.deployment_types.list",
+      "summary": "The deployment types offered for one vendor project type (key, label, description).",
+      "untrusted_output": false,
+      "wire_name": "catalog-deployment_types-list"
+    },
+    {
+      "effect": "read",
+      "family": "catalog",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled_only": {
+            "type": "boolean"
+          },
+          "vendor_key": {
+            "maxLength": 50,
+            "minLength": 1,
+            "pattern": "^[-a-zA-Z0-9_]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "vendor_key"
+        ],
+        "type": "object"
+      },
+      "max_items": 100,
+      "name": "catalog.project_types.list",
+      "summary": "A vendor's project types in catalog order (key, label, enabled, scope_category). Project types are addressed by key, never id.",
+      "untrusted_output": false,
+      "wire_name": "catalog-project_types-list"
+    },
+    {
+      "effect": "read",
+      "family": "catalog",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "card_key": {
+            "maxLength": 50,
+            "minLength": 1,
+            "pattern": "^[-a-zA-Z0-9_]+$",
+            "type": "string"
+          },
+          "project_type": {
+            "maxLength": 50,
+            "minLength": 1,
+            "pattern": "^[-a-zA-Z0-9_]+$",
+            "type": "string"
+          },
+          "vendor_key": {
+            "maxLength": 50,
+            "minLength": 1,
+            "pattern": "^[-a-zA-Z0-9_]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "vendor_key",
+          "project_type",
+          "card_key"
+        ],
+        "type": "object"
+      },
+      "max_items": 100,
+      "name": "catalog.scoping_cards.get",
+      "summary": "One scoping card with its offered fields (type, required, help, pricing key, dependency gate, bounds, options capped per field).",
+      "untrusted_output": false,
+      "wire_name": "catalog-scoping_cards-get"
+    },
+    {
+      "effect": "read",
+      "family": "catalog",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_type": {
+            "maxLength": 50,
+            "minLength": 1,
+            "pattern": "^[-a-zA-Z0-9_]+$",
+            "type": "string"
+          },
+          "vendor_key": {
+            "maxLength": 50,
+            "minLength": 1,
+            "pattern": "^[-a-zA-Z0-9_]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "vendor_key",
+          "project_type"
+        ],
+        "type": "object"
+      },
+      "max_items": 100,
+      "name": "catalog.scoping_cards.list",
+      "summary": "The scoping cards of one vendor project type, as summaries with a field_count; read one card's fields with catalog.scoping_cards.get.",
+      "untrusted_output": false,
+      "wire_name": "catalog-scoping_cards-list"
+    },
+    {
+      "effect": "read",
+      "family": "catalog",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "vendor_key": {
+            "maxLength": 50,
+            "minLength": 1,
+            "pattern": "^[-a-zA-Z0-9_]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "vendor_key"
+        ],
+        "type": "object"
+      },
+      "max_items": 50,
+      "name": "catalog.vendors.get",
+      "summary": "One vendor's configuration: flags, logo, project types and intake fields, with the catalog config_version. Unknown or disabled vendors are not found.",
+      "untrusted_output": false,
+      "wire_name": "catalog-vendors-get"
+    },
+    {
+      "effect": "read",
+      "family": "catalog",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "is_destination": {
+            "type": "boolean"
+          },
+          "is_source": {
+            "type": "boolean"
+          },
+          "search": {
+            "maxLength": 50,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "max_items": 100,
+      "name": "catalog.vendors.list",
+      "summary": "List the enabled platform catalog vendors with their project types. Optional filters: is_source, is_destination, search (key or name).",
+      "untrusted_output": false,
+      "wire_name": "catalog-vendors-list"
+    },
+    {
+      "effect": "read",
+      "family": "pricing",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "maxLength": 100,
+            "type": "string"
+          },
+          "is_active": {
+            "type": "boolean"
+          },
+          "scope_category": {
+            "maxLength": 16,
+            "type": "string"
+          },
+          "vendor_key": {
+            "maxLength": 50,
+            "minLength": 1,
+            "pattern": "^[-a-zA-Z0-9_]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "vendor_key"
+        ],
+        "type": "object"
+      },
+      "max_items": 200,
+      "name": "pricing.defaults.list",
+      "summary": "The platform default rates for one vendor: the governing rate card's entries (amounts as strings) with the card's version and effective window. Optional filters: scope_category, category, is_active. Staff only. This is the spine rate-card authority; live /api/v1 order pricing still reads the legacy BasePricing row, so do not quote these as order prices.",
+      "untrusted_output": false,
+      "wire_name": "pricing-defaults-list"
+    },
+    {
+      "effect": "read",
+      "family": "sessions",
+      "input_schema": {
+        "additionalProperties": false,
+        "maxProperties": 1,
+        "minProperties": 1,
+        "properties": {
+          "order_number": {
+            "description": "The deal's minted order number, e.g. PS-0000123.",
+            "maxLength": 20,
+            "pattern": "^PS-[0-9]{1,17}$",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "The deal's envelope id (sessions.list `id`). Not an order number and not a legacy /api/v1/orders id (those overlap in value).",
+            "maximum": 2147483647,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "max_items": 200,
+      "name": "sessions.get",
+      "summary": "One deal for platform staff, by exactly one of session_id (the id of a sessions.list row) or order_number (PS-NNNNNNN). Answer keys only, no values.",
+      "untrusted_output": true,
+      "wire_name": "sessions-get"
+    },
+    {
+      "effect": "read",
+      "family": "sessions",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "organization_id": {
+            "maximum": 2147483647,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "page": {
+            "maximum": 10000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "page_size": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "search": {
+            "maxLength": 100,
+            "type": "string"
+          },
+          "status": {
+            "items": {
+              "enum": [
+                "archived",
+                "cancelled",
+                "closed",
+                "declined",
+                "draft",
+                "in_progress",
+                "locked",
+                "pricing_complete",
+                "signed",
+                "sow_generated",
+                "sow_sent",
+                "voided"
+              ],
+              "type": "string"
+            },
+            "maxItems": 12,
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "type": "object"
+      },
+      "max_items": 100,
+      "name": "sessions.list",
+      "summary": "Account-wide deal list for platform staff, newest first, paged. Filters: search (company, order number, organization name), status (module vocabulary), organization_id. Read one with sessions.get by its id.",
+      "untrusted_output": true,
+      "wire_name": "sessions-list"
+    },
+    {
+      "effect": "read",
+      "family": "system",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "max_items": 1,
+      "name": "system.health",
+      "summary": "Operator plane health: registry size and per-family switch state.",
+      "untrusted_output": false,
+      "wire_name": "system-health"
+    },
+    {
+      "effect": "read",
+      "family": "system",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "max_items": 1,
+      "name": "system.whoami",
+      "summary": "Who this call is authorized as (acting user, requester status, principal, org).",
+      "untrusted_output": false,
+      "wire_name": "system-whoami"
+    }
+  ],
+  "version": 1
+}

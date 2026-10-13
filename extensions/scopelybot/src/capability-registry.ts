@@ -306,7 +306,9 @@ export type OpsBinding = { capability: OpsCapability; args: readonly string[] };
 // The slice-1 reads (SLICE1-CONTRACT section 7, parity-matrix.json). A tool
 // listed here is live and runs nothing but its capability (ops-client.ts
 // opsRead); the capability names are typed to the guard's read allow-list.
-// No other tool reaches the app.
+// No other tool reaches the app. Arg keys follow the kernel's
+// capabilities.snapshot.json (a test fixture, cross-checked against each
+// tool's parameter schema and the capability's input schema).
 const OPS_READS: Record<string, OpsBinding> = {
   scopely_health_check: { capability: "system.health", args: [] },
   scopely_auth_status: { capability: "system.whoami", args: [] },
@@ -326,12 +328,15 @@ const OPS_READS: Record<string, OpsBinding> = {
     capability: "catalog.scoping_cards.get",
     args: ["vendor_key", "project_type", "card_key"],
   },
-  scopely_list_pricing_defaults: { capability: "pricing.defaults.list", args: ["scope_category"] },
+  scopely_list_pricing_defaults: {
+    capability: "pricing.defaults.list",
+    args: ["vendor_key", "scope_category"],
+  },
   scopely_list_sessions: {
     capability: "sessions.list",
-    args: ["status", "vendor", "search", "limit"],
+    args: ["status", "search", "organization_id", "page", "page_size"],
   },
-  scopely_get_session: { capability: "sessions.get", args: ["session_id"] },
+  scopely_get_session: { capability: "sessions.get", args: ["session_id", "order_number"] },
 };
 
 /** The operator-layer binding of a tool, if it has one. */

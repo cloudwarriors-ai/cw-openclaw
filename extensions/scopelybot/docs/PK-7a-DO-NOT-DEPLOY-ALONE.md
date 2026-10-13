@@ -14,7 +14,7 @@ PK-7b-1 resolves all three (details in `docs/audit-v2.md`):
 
 ## What changed with M13 slice 1 (operator-layer client)
 
-The bot's app tools are now the slice-1 reads (`docs/ops-client.md`): `scopely_health_check`, `scopely_auth_status` (whoami) and ten catalog, pricing and session reads, each bound to one read capability of the operator layer and sent as `POST /api/spine/v1/ops/invoke/` with the bot's service token and the asking human's Zoom email. Everything else stays refused by the registry, and no write is live. This is pinned by capability-registry.test.ts, "only the slice-1 operator-layer reads and the local approver list run; no write is live", and the guard refuses any capability outside its read allow-list (scopely-api.ops-guard.test.ts).
+The bot's app tools are now the slice-1 reads (`docs/ops-client.md`): `scopely_health_check`, `scopely_auth_status` (whoami) and ten catalog, pricing and session reads, each bound to one read capability of the operator layer and sent as `POST /api/spine/v1/ops/invoke/` with the bot's service token (`Authorization: Bearer zwops_...`), its audit id (`X-Ops-Bot-Audit-Id`) and the asking human's Zoom email. The request and answer shapes follow the kernel at zoomwarriors_2 `301b1c0e`; its `capabilities.snapshot.json` is a test fixture that every tool binding is checked against. Everything else stays refused by the registry, and no write is live. This is pinned by capability-registry.test.ts, "only the slice-1 operator-layer reads and the local approver list run; no write is live", and the guard refuses any capability outside its read allow-list (scopely-api.ops-guard.test.ts).
 
 The old M1a shape (one anonymous health GET to `/api/v1/health/`) is gone: under `authMode: "anonymous"` no app tool sends anything. M1a cannot be deployed from this code line; it deploys from the PK-7b-1 commit.
 
@@ -43,9 +43,9 @@ Run: `node check_m1a_config.mjs <openclaw.json|-> --channel-id <id> --profile <p
 This is not a readiness claim. Before any deploy:
 
 - the PK-9 check above with `--ops-slice1`, passing;
-- the operator layer (kernel) deployed on the target app with the slice-1 capabilities, its parity and snapshot tests green, and `capabilities.snapshot.json` compared with `src/ops-kernel.test-helpers.ts` (capability names, arg schemas, error codes, token header name);
+- the operator layer (kernel) deployed on the target app from `301b1c0e` or later, with its parity and snapshot tests green; if its `capabilities.snapshot.json` differs from `src/fixtures/ops-capabilities.snapshot.json`, copy it in, update the pinned sha256 and rerun the scopelybot suite (the binding cross-check fails on any drift that breaks a tool);
 - a service principal for the bot and `ZoomIdentityLink` rows for its users, created by the owner, and condition 3 above closed;
-- the token file `<workspace>/scopelybot-ops-token`: a regular file owned by the gateway's user (root), mode `0600`, one token. Check with `stat -c '%U %a %F' scopelybot-ops-token` (expect `root 600 regular file`); never `cat` it;
+- the token file `<workspace>/scopelybot-ops-token`: a regular file owned by the gateway's user (root), mode `0600`, holding one service token minted by the owner with the app's `ops_mint_token` for the bot's service principal (`zwops_<12 hex>_<secret>`; it expires after at most 90 days, so put the renewal in the runbook). Check with `stat -c '%U %a %F' scopelybot-ops-token` (expect `root 600 regular file`); never `cat` it;
 - the profile: `"authMode": "service-token"`, `env`, `baseUrl` and `allowedHosts` naming the stack;
 - a check of the production image for the tool-factory context fields the attribution relies on (probe S0 used a source build of the same code line);
 - PK-1: archive of the final v1 file off host (a regular file of at most 8 MiB);
