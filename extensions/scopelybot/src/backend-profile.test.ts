@@ -216,6 +216,28 @@ describe("valid profiles", () => {
     });
   });
 
+  // M13 slice 1: the operator layer's service principal. The token never sits
+  // in the profile (unknown keys are ignored, so a "token" key does nothing).
+  it.each([PROD, DEV])(
+    "accepts authMode service-token (%j) and records it in the policy row",
+    (base) => {
+      const raw = JSON.stringify({
+        ...base,
+        authMode: "service-token",
+        token: "svc_inline_ignored",
+      });
+      expect(parseBackendProfile(raw)).toMatchObject({ profile: { authMode: "service-token" } });
+      expect(JSON.stringify(parseBackendProfile(raw))).not.toContain("svc_inline_ignored");
+      writeRaw(raw);
+      expect(readBackendProfile(workspace).authMode).toBe("service-token");
+      expect(policyRows().at(-1)).toMatchObject({
+        detail: { valid: true, authMode: "service-token" },
+        bot_principal: { auth_mode: "service-token", principal_id: null },
+      });
+      expect(JSON.stringify(policyRows())).not.toContain("svc_inline_ignored");
+    },
+  );
+
   it("accepts the dev sprint profile with its Host override", () => {
     const parsed = parseBackendProfile(JSON.stringify({ ...DEV, hostHeader: "vip.localhost" }));
     expect(parsed).toMatchObject({ profile: { env: "dev", hostHeader: "vip.localhost" } });

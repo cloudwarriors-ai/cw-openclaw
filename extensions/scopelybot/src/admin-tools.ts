@@ -2,6 +2,7 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
+import { opsRead } from "./ops-client.js";
 import { scopelyFetch, jsonResult, errorResult, buildQuery } from "./scopely-api.js";
 
 export function registerAdminTools(api: OpenClawPluginApi, logger: AuditLogger) {
@@ -112,32 +113,15 @@ export function registerAdminTools(api: OpenClawPluginApi, logger: AuditLogger) 
       {
         name: "scopely_vendor_config",
         description:
-          "List Scopely VIP vendor configurations. Shows all configured vendors with their project types and pricing. " +
+          "Show one Scopely VIP vendor's configuration (project types and setup). " +
           "Use this to check if vendor config is correct or to understand the current setup.",
         parameters: Type.Object({
-          vendor_key: Type.Optional(
-            Type.String({ description: "Get specific vendor by key (e.g. 'ringcentral', 'zoom')" }),
-          ),
+          vendor_key: Type.String({
+            description:
+              "Vendor key (e.g. 'ringcentral', 'zoom'); list keys with scopely_list_vendors",
+          }),
         }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const vendorKey = params.vendor_key as string | undefined;
-            const path = vendorKey
-              ? `/api/admin/vendors/${encodeURIComponent(vendorKey)}/`
-              : "/api/admin/vendors/";
-            const result = await scopelyFetch(path);
-            if (!result.ok) {
-              return jsonResult({
-                ok: false,
-                error: `HTTP ${result.status}`,
-                details: result.data,
-              });
-            }
-            return jsonResult({ ok: true, data: result.data });
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+        execute: opsRead,
       },
       logger,
     ),

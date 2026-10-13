@@ -24,12 +24,14 @@ export type AuditPolicy = {
   env: "prod" | "dev" | "unknown";
   state: "valid" | "fail_closed_default";
   mode: "off" | "read-only" | "read-write";
+  auth_mode: "anonymous" | "service-token";
   profile_sha256: string | null;
 };
 let policy: AuditPolicy = {
   env: "unknown",
   state: "fail_closed_default",
   mode: "read-only",
+  auth_mode: "anonymous",
   profile_sha256: null,
 };
 
@@ -90,7 +92,8 @@ export function auditEvent(
     event_type: event,
     env: policy.env,
     plugin_version: PLUGIN_VERSION,
-    bot_principal: { auth_mode: "anonymous", principal_id: null },
+    // The bot's credential kind from the live profile; never the token.
+    bot_principal: { auth_mode: policy.auth_mode, principal_id: null },
     policy: { state: policy.state, mode: policy.mode, profile_sha256: policy.profile_sha256 },
     detail: cleanDetail(fields.detail),
   });

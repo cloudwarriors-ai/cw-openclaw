@@ -44,6 +44,11 @@ export type ApproverStore = {
   resolveOperatorId(email: string): string | undefined;
   /** Reverse lookup for display: operator_id -> observed email, if any. */
   emailForOperatorId(operatorId: string): string | undefined;
+  /**
+   * Every observed email whose operator_id is exactly `operatorId` (no case
+   * folding: this feeds the operator layer's requester claim, ops-client.ts).
+   */
+  emailsForOperatorId(operatorId: string): string[];
 };
 
 const STATE_FILE = "scopelybot-approvers.json";
@@ -148,6 +153,12 @@ export function createApproverStore(opts: {
         if (normalizeId(oid) === id) return email;
       }
       return undefined;
+    },
+    emailsForOperatorId(operatorId) {
+      const id = operatorId.trim();
+      return Object.entries(state.identities)
+        .filter(([, oid]) => oid === id)
+        .map(([email]) => email);
     },
   };
 }

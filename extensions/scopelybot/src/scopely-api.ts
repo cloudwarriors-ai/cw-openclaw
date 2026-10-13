@@ -17,8 +17,18 @@
 //   - redirects are never followed: fetch runs with redirect: "manual" and any
 //     3xx answer is refused (redirect_blocked);
 //   - a body over 64 KB is cut and the result is ok: false.
-// Requests are anonymous: no cookie, no login, so no 401 re-login replay
+// Requests carry no cookie and no login, so there is no 401 re-login replay
 // (INV-16 holds trivially; PK-12 must keep any replay GET/HEAD-only).
+//
+// Operator layer (M13 slice 1): scopelyOpsInvoke is the ONE extra request
+// shape. It is a POST to exactly OPS_INVOKE_PATH whose body the guard builds
+// ({capability, args, correlation_id = audit_id}), for a capability on the
+// read allow-list OPS_READ_CAPABILITIES only, under authMode "service-token".
+// The guard itself adds the service token (read per request, readOpsToken) and
+// the X-Ops-Requester email; the caller header allow-list is NOT widened, so
+// no caller can send either header, and the token goes on no other request.
+// scopelyFetch callers cannot reach this branch: a POST from them is still
+// refused outside a dev read-write profile, whatever its path.
 // An AST scan of index.ts's import closure (single-choke-point.test.ts) fails
 // if any other module reaches the network. Refusals throw ScopelyGuardError
 // and are audited.
@@ -34,7 +44,12 @@
 
 import { boundedText, newAuditId } from "./audit-chain.js";
 import { auditEvent, auditEventBestEffort, PLUGIN_VERSION } from "./audit.js";
-import { type BackendProfile, readBackendProfile, resolveWorkspaceDir } from "./backend-profile.js";
+import {
+  type BackendProfile,
+  readBackendProfile,
+  readOpsToken,
+  resolveWorkspaceDir,
+} from "./backend-profile.js";
 import { redactText, redactValue } from "./redaction.js";
 
 export interface ScopelyFetchResult {
@@ -48,6 +63,7 @@ export type GuardCode =
   | "write_blocked_read_only"
   | "host_blocked"
   | "header_blocked"
+  | "auth_unavailable"
   | "body_blocked"
   | "redirect_blocked"
   | "rate_limited"
@@ -64,6 +80,45 @@ export class ScopelyGuardError extends Error {
 }
 
 const SAFE_METHODS = new Set(["GET", "HEAD"]);
+
+/** The operator layer's generic invoke edge (SLICE1-CONTRACT section 6). */
+export const OPS_INVOKE_PATH = "/api/spine/v1/ops/invoke/";
+/**
+ * The kernel capabilities the bot may invoke: the slice-1 reads (contract
+ * section 7). Any other name is refused before any I/O, so the bot stays
+ * read-only even if the kernel registers a write; adding one is a reviewed
+ * code change, like ENV_APP_HOSTS.
+ */
+export const OPS_READ_CAPABILITIES = [
+  "system.whoami",
+  "system.health",
+  "catalog.vendors.list",
+  "catalog.vendors.get",
+  "catalog.project_types.list",
+  "catalog.deployment_types.list",
+  "catalog.scoping_cards.list",
+  "catalog.scoping_cards.get",
+  "pricing.defaults.list",
+  "sessions.list",
+  "sessions.get",
+] as const;
+export type OpsCapability = (typeof OPS_READ_CAPABILITIES)[number];
+export type OpsInvocation = {
+  capability: OpsCapability;
+  args: Record<string, unknown>;
+  /** The acting human's Zoom email; absent = the kernel answers whoami only. */
+  requester?: string;
+};
+const OPS_TOKEN_HEADER = "x-service-token";
+const OPS_REQUESTER_HEADER = "x-ops-requester";
+// Slice-1 args are a few short keys; anything bigger is not a read argument.
+const MAX_OPS_ARGS_BYTES = 4096;
+const REQUESTER_RE = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}$/;
+
+/** A value the guard accepts as the X-Ops-Requester email (no spaces, quotes or line breaks). */
+export function isRequesterEmail(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 254 && REQUESTER_RE.test(value);
+}
 // Caller headers are an allow-list. Anything else could tunnel a mutating verb
 // through a GET (X-HTTP-Method-Override), re-route the connection to another
 // virtual host behind the shared proxy (Host, X-Forwarded-*, X-Original-URL)
@@ -90,7 +145,15 @@ let recentRequests: number[] = [];
 // non-GET/HEAD requests are refused until restart (reads recover by themselves).
 let writesLatched = false;
 
-type HttpFields = { method: string; host?: string; path_template?: string; query_keys?: string[] };
+type HttpFields = {
+  method: string;
+  host?: string;
+  path_template?: string;
+  query_keys?: string[];
+  /** Operator-layer invokes only: the capability, and whether a requester was sent (never the email). */
+  capability?: string;
+  requester_header?: boolean;
+};
 
 // The pathname with id-like segments (digits, UUID, ULID) as ":id", charset
 // checked and bounded: rows never carry raw ids or query values.
@@ -126,19 +189,23 @@ function refuse(
 }
 
 // The mode and rate checks: the last gate before the request hits the network.
-// The rate slot is committed only after the intent row is durable.
-function admit(profile: BackendProfile, method: string, http: HttpFields): void {
+// The rate slot is committed only after the intent row is durable. An
+// operator-layer invoke is a POST but a read (its capability passed
+// checkOpsInvocation), so it is exempt from the read-only and write-latch rules
+// and from nothing else: the kill switch and the rate cap still apply.
+function admit(profile: BackendProfile, method: string, http: HttpFields, isOps: boolean): void {
   if (profile.mode === "off") {
     refuse("backend_off", "The bot's connection to the app is switched off by the operator.", http);
   }
-  if (!SAFE_METHODS.has(method) && profile.mode !== "read-write") {
+  const mutating = !SAFE_METHODS.has(method) && !isOps;
+  if (mutating && profile.mode !== "read-write") {
     refuse(
       "write_blocked_read_only",
       `Blocked: the bot is read-only on the new app, so ${method} requests are refused.`,
       http,
     );
   }
-  if (!SAFE_METHODS.has(method) && writesLatched) {
+  if (mutating && writesLatched) {
     refuse("audit_unavailable", AUDIT_UNAVAILABLE, http);
   }
   const now = performance.now();
@@ -185,12 +252,94 @@ function guardHeaders(
   return headers;
 }
 
-export async function scopelyFetch(
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+// The invoke's own checks, before the mode/rate gate: a read capability, a
+// well-formed requester, small JSON-object args. Returns the serialized args.
+function checkOpsInvocation(op: OpsInvocation, http: HttpFields): string {
+  if (!(OPS_READ_CAPABILITIES as readonly string[]).includes(op.capability)) {
+    refuse(
+      "write_blocked_read_only",
+      "Blocked: the bot may only invoke the app's read capabilities.",
+      http,
+      { capability: boundedText(String(op.capability)) },
+    );
+  }
+  if (op.requester !== undefined && !isRequesterEmail(op.requester)) {
+    refuse("header_blocked", "Blocked: the requester is not a valid email address.", http, {
+      header: OPS_REQUESTER_HEADER,
+    });
+  }
+  let args: string | undefined;
+  try {
+    args = isPlainObject(op.args) ? JSON.stringify(op.args) : undefined;
+  } catch {
+    // a cycle or a BigInt: not a JSON argument object
+  }
+  if (args === undefined || Buffer.byteLength(args) > MAX_OPS_ARGS_BYTES) {
+    refuse("body_blocked", "Blocked: the capability arguments are not a small JSON object.", http);
+  }
+  return args;
+}
+
+// After the kill switch: the invoke needs authMode "service-token" and a usable
+// token file. Problems are refused by code; the token is never in a message or row.
+function opsToken(profile: BackendProfile, http: HttpFields): string {
+  if (profile.authMode !== "service-token") {
+    refuse(
+      "auth_unavailable",
+      "Request not sent: the bot has no service token for the app (authMode is anonymous).",
+      http,
+      { reason: "anonymous" },
+    );
+  }
+  const read = readOpsToken();
+  if ("problem" in read) {
+    refuse(
+      "auth_unavailable",
+      `Request not sent: the bot's service token is unavailable (${read.problem}).`,
+      http,
+      { reason: read.problem },
+    );
+  }
+  return read.token;
+}
+
+// What the outcome row keeps of a kernel envelope: its ok flag, request_id and
+// error code (charset checked and bounded), for the join with the app's audit.
+function kernelSummary(data: unknown) {
+  const envelope = isPlainObject(data) ? data : {};
+  const error = isPlainObject(envelope.error) ? envelope.error : {};
+  const id = (value: unknown) =>
+    typeof value === "string" && X_REQUEST_ID_RE.test(value) ? value : null;
+  return {
+    ok: typeof envelope.ok === "boolean" ? envelope.ok : null,
+    request_id: id(envelope.request_id),
+    error_code: id(error.code),
+  };
+}
+
+export function scopelyFetch(path: string, opts: ScopelyRequest = {}): Promise<ScopelyFetchResult> {
+  return guardedRequest(path, opts);
+}
+
+/**
+ * The operator-layer invoke: POST OPS_INVOKE_PATH with a guard-built body and
+ * the guard's own token and requester headers. Sent once, never retried.
+ */
+export function scopelyOpsInvoke(op: OpsInvocation): Promise<ScopelyFetchResult> {
+  return guardedRequest(OPS_INVOKE_PATH, {}, op);
+}
+
+async function guardedRequest(
   path: string,
-  opts: ScopelyRequest = {},
+  opts: ScopelyRequest,
+  op?: OpsInvocation,
 ): Promise<ScopelyFetchResult> {
   const profile = readBackendProfile();
-  const method = (opts.method ?? "GET").toUpperCase();
+  const method = op ? "POST" : (opts.method ?? "GET").toUpperCase();
   if (!profile.baseUrl) {
     refuse(
       "host_blocked",
@@ -232,7 +381,14 @@ export async function scopelyFetch(
   if (!profile.allowedHosts.includes(url.host) || url.username || url.password) {
     refuse("host_blocked", "Blocked: the request target is not an allowed app host.", http);
   }
-  admit(profile, method, http);
+  const opsArgs = op ? checkOpsInvocation(op, http) : undefined;
+  if (op) {
+    // Recorded only once checked: the name is then one of the allow-list's.
+    http.capability = op.capability;
+    http.requester_header = op.requester !== undefined;
+  }
+  admit(profile, method, http, op !== undefined);
+  const token = op ? opsToken(profile, http) : undefined;
 
   // Correlation (INV-5): set by the guard only, after every caller input; the
   // param is set (never appended), so it appears exactly once.
@@ -240,6 +396,17 @@ export async function scopelyFetch(
   url.searchParams.set("bot_audit_id", auditId);
   headers["x-correlation-id"] = auditId;
   headers["x-vipbot-client"] = `scopelybot/${PLUGIN_VERSION} (${profile.env})`;
+  let body = opts.body;
+  if (op && token !== undefined) {
+    // The correlation id in the body is the audit_id: the kernel's audit row
+    // and this chain join on it (with bot_audit_id and x-correlation-id).
+    body = `{"capability":${JSON.stringify(op.capability)},"args":${opsArgs},"correlation_id":"${auditId}"}`;
+    headers["content-type"] = "application/json";
+    headers[OPS_TOKEN_HEADER] = token;
+    if (op.requester !== undefined) {
+      headers[OPS_REQUESTER_HEADER] = op.requester;
+    }
+  }
 
   const workspace = resolveWorkspaceDir();
   const started = Date.now();
@@ -277,7 +444,7 @@ export async function scopelyFetch(
     } catch {
       // The request already happened: return its result; the intent stays open
       // until the writer's recovery sweep records it as indeterminate.
-      if (!SAFE_METHODS.has(method)) {
+      if (!SAFE_METHODS.has(method) && !op) {
         writesLatched = true;
       }
     }
@@ -288,7 +455,7 @@ export async function scopelyFetch(
     resp = await fetch(url.href, {
       method,
       headers,
-      body: opts.body,
+      body,
       redirect: "manual",
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
@@ -345,7 +512,10 @@ export async function scopelyFetch(
   outcome(
     "http_outcome",
     resp.status,
-    { status: resp.ok ? "ok" : "http_error" },
+    {
+      status: resp.ok ? "ok" : "http_error",
+      ...(op ? { kernel: kernelSummary(result.data) } : {}),
+    },
     { x_request_id: xRequestId },
   );
   return result;

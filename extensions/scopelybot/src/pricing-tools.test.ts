@@ -100,11 +100,22 @@ describe("pricing-tools", () => {
     delete process.env.SCOPELYBOT_ZOOM_CHANNEL;
   });
 
+  // Slice-1 reads go only to the operator layer (ops-client.ts opsRead): with
+  // no registry call context they refuse and reach no legacy path.
+  it("slice-1 reads never call a legacy path", async () => {
+    const t = buildTools();
+    for (const name of ["scopely_list_pricing_defaults"]) {
+      const result = JSON.parse(
+        (await t[name].execute("x", { scope_category: "ucaas" })).content[0].text,
+      );
+      expect(result.ok, name).toBe(false);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("read tools hit the correct BFF paths immediately", async () => {
     const t = buildTools();
     fetchMock.mockResolvedValue({ ok: true, status: 200, data: [] });
-    await t.scopely_list_pricing_defaults.execute("x", { scope_category: "ucaas" });
-    expect(fetchMock).toHaveBeenCalledWith("/api/admin/pricing-defaults/?scope_category=ucaas");
     await t.scopely_get_pricing_default.execute("x", { id: 4 });
     expect(fetchMock).toHaveBeenCalledWith("/api/admin/pricing-defaults/4/");
     await t.scopely_list_pricing_items.execute("x", { vendor_key: "zoom", project_type_id: 3 });

@@ -84,14 +84,25 @@ describe("vendor-config-tools", () => {
   it("read tools hit the correct BFF paths immediately", async () => {
     const t = buildTools();
     fetchMock.mockResolvedValue({ ok: true, status: 200, data: [] });
-    await t.scopely_list_vendors.execute("x", {});
-    expect(fetchMock).toHaveBeenCalledWith("/api/admin/vendors/");
-    await t.scopely_get_vendor.execute("x", { vendor_key: "zoom" });
-    expect(fetchMock).toHaveBeenCalledWith("/api/admin/vendors/zoom/");
-    await t.scopely_list_project_types.execute("x", { vendor_key: "zoom" });
-    expect(fetchMock).toHaveBeenCalledWith("/api/admin/vendors/zoom/project-types/");
     await t.scopely_list_vendor_terms.execute("x", { vendor_key: "zoom" });
     expect(fetchMock).toHaveBeenCalledWith("/api/admin/vendors/zoom/terms/");
+  });
+
+  // Slice-1 reads go only to the operator layer (ops-client.ts opsRead): with
+  // no registry call context they refuse and reach no legacy path.
+  it("slice-1 reads never call a legacy path", async () => {
+    const t = buildTools();
+    for (const name of [
+      "scopely_list_vendors",
+      "scopely_get_vendor",
+      "scopely_list_project_types",
+    ]) {
+      const result = JSON.parse(
+        (await t[name].execute("x", { vendor_key: "zoom" })).content[0].text,
+      );
+      expect(result.ok, name).toBe(false);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   // Core safety guarantee: every write stages, none touch prod during execute().

@@ -4,7 +4,8 @@ import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
 import { fetchDeploymentTypeKeys } from "./deployment-keys.js";
 import { describeChanges, pickBody, stageWrite } from "./gated.js";
-import { buildQuery, errorResult, jsonResult, scopelyFetch } from "./scopely-api.js";
+import { opsRead } from "./ops-client.js";
+import { errorResult, jsonResult, scopelyFetch } from "./scopely-api.js";
 
 // Pricing-config tools (Scopely VIP admin). All IsPlatformStaff. Reads run
 // immediately; writes are confirm-gated. Prices are decimal STRINGS (e.g. "15.00").
@@ -101,15 +102,7 @@ export function registerPricingTools(api: OpenClawPluginApi, logger: AuditLogger
         parameters: Type.Object({
           scope_category: Type.Optional(Type.String({ description: "Filter: ucaas or ccaas" })),
         }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const qs = buildQuery(params, ["scope_category"]);
-            const res = await scopelyFetch(`/api/admin/pricing-defaults/${qs}`);
-            return jsonResult({ ok: res.ok, status: res.status, data: res.data });
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+        execute: opsRead,
       },
       logger,
     ),

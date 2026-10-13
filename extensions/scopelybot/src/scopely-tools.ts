@@ -2,52 +2,41 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
+import { opsRead } from "./ops-client.js";
 import { redactText } from "./redaction.js";
 import { scopelyFetch, jsonResult, errorResult, buildQuery } from "./scopely-api.js";
 
 export function registerScopelyTools(api: OpenClawPluginApi, logger: AuditLogger) {
-  // scopely_auth_status — "Are we connected?"
+  // scopely_auth_status — "Who is the bot acting as for me?" (operator layer system.whoami)
   api.registerTool(() =>
     wrapToolWithAudit(
       {
         name: "scopely_auth_status",
         description:
-          "Check Scopely VIP authentication status. Returns current session and user info.",
+          "Check who the bot is acting as in the new ZW app for the person asking: the matched ZW " +
+          "user (or that none matched) and the bot's service principal. Read-only.",
         parameters: Type.Object({}),
-        async execute() {
-          try {
-            const result = await scopelyFetch("/api/auth/me/");
-            if (!result.ok) {
-              return jsonResult({ ok: false, error: `HTTP ${result.status}` });
-            }
-            return jsonResult({ ok: true, user: result.data });
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+        execute: opsRead,
       },
       logger,
     ),
   );
 
-  // Health goes through the guarded scopelyFetch like every other app request
-  // (INV-5) and no longer derives a host from env: the host is the live
-  // profile's baseUrl (prod: the API host api.vip.pscx.ai) and the path is the
-  // new app's health endpoint, the one app request M1 makes. The new app has no
-  // component health; that tool stays registry-blocked (capability-registry.ts).
+  // The new app has no component health; scopely_component_health stays
+  // registry-blocked (capability-registry.ts) and its body never runs.
   const HEALTH_PATH = "/api/v1/health/";
   // The health body is echoed to the model: a non-JSON answer (an HTML error or
   // Django debug page; prod DEBUG=0 is unconfirmed) is cut to about 1 KB.
   const HEALTH_TEXT_LIMIT = 1024;
 
-  async function fetchHealth(suffix: "" | "components/") {
+  async function fetchHealth(suffix: "components/") {
     const result = await scopelyFetch(`${HEALTH_PATH}${suffix}`);
     const data =
       typeof result.data === "string" ? redactText(result.data, HEALTH_TEXT_LIMIT) : result.data;
     return jsonResult({ ok: result.ok, status: result.status, data });
   }
 
-  // scopely_health_check — "Is the service up?"
+  // scopely_health_check — "Is the service up?" (operator layer system.health)
   api.registerTool(() =>
     wrapToolWithAudit(
       {
@@ -56,13 +45,7 @@ export function registerScopelyTools(api: OpenClawPluginApi, logger: AuditLogger
           "Check Scopely VIP service health. Returns service status and database connectivity. " +
           "Use this to determine if there is an immediate infrastructure problem.",
         parameters: Type.Object({}),
-        async execute() {
-          try {
-            return await fetchHealth("");
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+        execute: opsRead,
       },
       logger,
     ),
@@ -182,35 +165,9 @@ export function registerScopelyTools(api: OpenClawPluginApi, logger: AuditLogger
           ),
           vendor: Type.Optional(Type.String({ description: "Filter by destination vendor" })),
           search: Type.Optional(Type.String({ description: "Search by company name or contact" })),
-          created_by: Type.Optional(Type.String({ description: "Filter by creator user ID" })),
-          date_from: Type.Optional(Type.String({ description: "Start date filter (YYYY-MM-DD)" })),
-          date_to: Type.Optional(Type.String({ description: "End date filter (YYYY-MM-DD)" })),
-          limit: Type.Optional(Type.Number({ description: "Max results (default 50)" })),
+          limit: Type.Optional(Type.Integer({ description: "Max results (default 50)" })),
         }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const qs = buildQuery(params, [
-              "status",
-              "vendor",
-              "search",
-              "created_by",
-              "date_from",
-              "date_to",
-              "limit",
-            ]);
-            const result = await scopelyFetch(`/api/admin/sessions/${qs}`);
-            if (!result.ok) {
-              return jsonResult({
-                ok: false,
-                error: `HTTP ${result.status}`,
-                details: result.data,
-              });
-            }
-            return jsonResult({ ok: true, data: result.data });
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+        execute: opsRead,
       },
       logger,
     ),
@@ -225,25 +182,9 @@ export function registerScopelyTools(api: OpenClawPluginApi, logger: AuditLogger
           "Get detailed info about a specific Scopely VIP scoping session. " +
           "Returns wizard state, answers, pricing, status, company info, and who created it.",
         parameters: Type.Object({
-          id: Type.String({ description: "Session ID" }),
+          session_id: Type.String({ description: "Session ID" }),
         }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const result = await scopelyFetch(
-              `/api/admin/sessions/${encodeURIComponent(params.id as string)}/`,
-            );
-            if (!result.ok) {
-              return jsonResult({
-                ok: false,
-                error: `HTTP ${result.status}`,
-                details: result.data,
-              });
-            }
-            return jsonResult({ ok: true, data: result.data });
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+        execute: opsRead,
       },
       logger,
     ),

@@ -10,16 +10,17 @@
 // missing from the registry is refused (deny by default); a completeness test
 // derives the registered tool list from register() and fails on a missing row.
 //
-// Statuses reflect PK-7a/M1: the only live app request is the health GET. The
-// new app's anonymous catalog is a hard-coded one-vendor placeholder (dev-stack
-// spike; prod byte-identical), so the catalog reads wait for a bot identity
-// (blocked-on-identity) like the other gap families; later packets flip rows.
+// Statuses reflect M13 slice 1: the app tools that run are the slice-1 reads,
+// each bound in OPS_READS to one operator-layer capability and served by
+// ops-client.ts through the guarded invoke (the bot's service principal plus
+// the asking human). Every other tool still answers from its family row; later
+// slices flip rows.
 
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { boundedText } from "./audit-chain.js";
 import { auditBackendEvent, readBackendProfile } from "./backend-profile.js";
 import { currentCall, requesterFromToolCtx, runInCall } from "./call-context.js";
-import { jsonResult } from "./scopely-api.js";
+import { jsonResult, type OpsCapability } from "./scopely-api.js";
 
 export type FamilyId =
   | "F1"
@@ -299,10 +300,47 @@ const FAMILIES: Record<FamilyId, Family> = {
   },
 };
 
-// Tools whose M1 status differs from their family default.
+/** One operator-layer capability per tool, and the tool params passed as its args. */
+export type OpsBinding = { capability: OpsCapability; args: readonly string[] };
+
+// The slice-1 reads (SLICE1-CONTRACT section 7, parity-matrix.json). A tool
+// listed here is live and runs nothing but its capability (ops-client.ts
+// opsRead); the capability names are typed to the guard's read allow-list.
+// No other tool reaches the app.
+const OPS_READS: Record<string, OpsBinding> = {
+  scopely_health_check: { capability: "system.health", args: [] },
+  scopely_auth_status: { capability: "system.whoami", args: [] },
+  scopely_list_vendors: { capability: "catalog.vendors.list", args: [] },
+  scopely_get_vendor: { capability: "catalog.vendors.get", args: ["vendor_key"] },
+  scopely_vendor_config: { capability: "catalog.vendors.get", args: ["vendor_key"] },
+  scopely_list_project_types: { capability: "catalog.project_types.list", args: ["vendor_key"] },
+  scopely_list_deployment_types: {
+    capability: "catalog.deployment_types.list",
+    args: ["vendor_key", "project_type"],
+  },
+  scopely_list_scoping_cards: {
+    capability: "catalog.scoping_cards.list",
+    args: ["vendor_key", "project_type"],
+  },
+  scopely_get_scoping_card: {
+    capability: "catalog.scoping_cards.get",
+    args: ["vendor_key", "project_type", "card_key"],
+  },
+  scopely_list_pricing_defaults: { capability: "pricing.defaults.list", args: ["scope_category"] },
+  scopely_list_sessions: {
+    capability: "sessions.list",
+    args: ["status", "vendor", "search", "limit"],
+  },
+  scopely_get_session: { capability: "sessions.get", args: ["session_id"] },
+};
+
+/** The operator-layer binding of a tool, if it has one. */
+export function opsBindingFor(tool: string): OpsBinding | undefined {
+  return Object.hasOwn(OPS_READS, tool) ? OPS_READS[tool] : undefined;
+}
+
+// Tools whose status differs from their family default (besides OPS_READS).
 const STATUS_OVERRIDES: Record<string, CapabilityStatus> = {
-  // F2: GET /api/v1/health/ on the profile's host, through the guarded scopelyFetch.
-  scopely_health_check: "live",
   // F12: reads the bot's own approver file; never touches the app.
   scopely_list_approvers: "local",
   // F12: the legacy runner (Playwright against env URLs, outside the guard) was
@@ -343,12 +381,13 @@ export function capabilityFor(tool: string): Capability | undefined {
     return undefined;
   }
   const { effect, enablement, status } = FAMILIES[family];
+  const ops = opsBindingFor(tool);
   return {
     tool,
     family,
     effect: EFFECT_OVERRIDES[tool] ?? effect,
-    enablement,
-    status: STATUS_OVERRIDES[tool] ?? status,
+    enablement: ops ? "read-live-on-prod" : enablement,
+    status: ops ? "live" : (STATUS_OVERRIDES[tool] ?? status),
   };
 }
 

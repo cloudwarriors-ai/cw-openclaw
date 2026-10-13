@@ -13,7 +13,7 @@ The backend profile decides which ZW app host the bot may reach and whether it m
   "profile": "zw2",
   "env": "prod",
   "mode": "read-only",
-  "authMode": "anonymous",
+  "authMode": "service-token",
   "baseUrl": "https://api.vip.pscx.ai",
   "allowedHosts": ["api.vip.pscx.ai"],
   "digestEnabled": false
@@ -29,7 +29,7 @@ Keep `digestEnabled` false on production. With `true` (and the digest timer arme
   "profile": "zw2",
   "env": "dev",
   "mode": "read-only",
-  "authMode": "anonymous",
+  "authMode": "service-token",
   "baseUrl": "http://100.114.142.100:8022",
   "allowedHosts": ["100.114.142.100:8022"],
   "hostHeader": "vip.localhost",
@@ -43,7 +43,7 @@ Keep `digestEnabled` false on production. With `true` (and the digest timer arme
 - `read-write` is accepted only with `env: "dev"`. Production stays read-only: lifting that cap for a tool family is a reviewed code change (PK-14), never a profile edit.
 - `allowedHosts` must come from the env's host table in the code (prod: `api.vip.pscx.ai`; dev: `100.114.142.100:8022`), and `baseUrl` must be a bare origin on one of them (https; http only for dev).
 - `hostHeader` is dev-only and must be one of the dev stack's virtual hosts in the code (`vip.localhost`, `noob-root`), so it cannot pick another service behind the same proxy.
-- `authMode` is `anonymous` until PK-12 adds the bot's own sign-in.
+- `authMode` is `anonymous` (the default: no credential, so no app tool sends anything) or `service-token` (the operator-layer invoke carries the bot's service token; `docs/ops-client.md`). The token is never in this file: it is read on every invoke from `scopelybot-ops-token` next to it, a regular file owned by the gateway's user with mode `0600`. A missing or unsafe token file refuses the invoke (`auth_unavailable`), nothing else.
 - `maxRequestsPerMinute` (1 to 600, default 20) caps the bot's app requests.
 - `issueLinks` maps a family id (for example `F7`) to a `https://github.com/cloudwarriors-ai/` issue URL in canonical form. Without one, a refusal names only the manual path and makes no tracking claim.
 - Unknown keys are ignored.
@@ -69,7 +69,7 @@ The bot cannot tell which stack it runs on: `env` is whatever the file says. A p
 ## Rollout checks
 
 1. On every stack, check that `env`, `baseUrl` and `allowedHosts` name that stack (see above), and that the newest `policy_change` row says `valid: true` with the same `env` and `allowedHosts`.
-2. Kill-switch drill: replace the file with the same content plus `"mode": "off"`. The next health check must answer that the connection is switched off by the operator, with a `backend_off` row in the audit log and no request to the app. Put `"mode": "read-only"` back and check that the health check answers again.
+2. Kill-switch drill: replace the file with the same content plus `"mode": "off"`. The next health check must answer that the connection is switched off by the operator, with a `backend_off` row in the audit log and no request to the app (the token file is not even read). Put `"mode": "read-only"` back and check that the health check answers again.
 3. Rollback is `"mode": "off"`, which applies on the next request with no restart. It is NOT a revert of this change: a revert brings back the deleted legacy login that used the env credentials.
 
 ## Missing or invalid file

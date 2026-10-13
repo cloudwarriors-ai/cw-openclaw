@@ -33,10 +33,16 @@ vi.mock("./pending-confirm.js", async (importOriginal) => ({
 import plugin from "../index.js";
 import { correlatedId, readAuditRows, testCall } from "./audit.test-helpers.js";
 import { runInCall } from "./call-context.js";
-import { applyCapabilityRegistry, capabilityFor, registryTools } from "./capability-registry.js";
+import {
+  applyCapabilityRegistry,
+  capabilityFor,
+  opsBindingFor,
+  registryTools,
+} from "./capability-registry.js";
 import { stageWrite } from "./gated.js";
+import { SLICE1_SNAPSHOT } from "./ops-kernel.test-helpers.js";
 import { registerPassthroughTools } from "./passthrough-tools.js";
-import { resetScopelyGuardForTest } from "./scopely-api.js";
+import { OPS_READ_CAPABILITIES, resetScopelyGuardForTest } from "./scopely-api.js";
 
 type Tool = {
   name: string;
@@ -58,6 +64,27 @@ let workspace: string;
 
 function writeProfile(body: Record<string, unknown>) {
   fs.writeFileSync(path.join(workspace, "scopelybot-backend.json"), JSON.stringify(body));
+}
+
+// The prod profile with the operator layer's service token, and a kernel
+// envelope as every answer.
+function useServiceToken() {
+  writeProfile({
+    env: "prod",
+    baseUrl: "https://api.vip.pscx.ai",
+    allowedHosts: ["api.vip.pscx.ai"],
+    authMode: "service-token",
+  });
+  fs.writeFileSync(path.join(workspace, "scopelybot-ops-token"), "svc_registry-test-token-0001", {
+    mode: 0o600,
+  });
+  fetchMock.mockImplementation(
+    async () =>
+      new Response('{"ok":true,"request_id":"r1","data":{"status":"ok"}}', {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+  );
 }
 
 // Register the real plugin and build every tool its factories produce: the
@@ -151,7 +178,7 @@ describe("registry completeness (AC-7.2)", () => {
     expect(optional.every(Boolean)).toBe(true);
     // The startup banner (deploy runbooks grep "Registered .* tools") counts
     // the registry, not a hand-kept number.
-    expect(banner).toContain("[scopelybot] Registered 121 tools (2 live/local on the new app;");
+    expect(banner).toContain("[scopelybot] Registered 121 tools (13 live/local on the new app;");
     expect(new Set(rows).size).toBe(rows.length); // no tool in two families
     expect(registered.filter((t) => !capabilityFor(t))).toEqual([]);
     expect(manifest.filter((t) => !capabilityFor(t))).toEqual([]);
@@ -184,16 +211,50 @@ describe("registry completeness (AC-7.2)", () => {
     }
   });
 
-  it("only the health check and the local approver list run in M1; no write is live", () => {
+  // M13 slice 1: the app tools that run are exactly the slice-1 reads, each a
+  // pure read bound to one read capability of the kernel snapshot.
+  it("only the slice-1 operator-layer reads and the local approver list run; no write is live", () => {
     const runnable = registryTools().filter((t) => {
       const status = capabilityFor(t)?.status;
       return status === "live" || status === "local";
     });
-    expect(runnable).toEqual(["scopely_health_check", "scopely_list_approvers"]);
+    expect(runnable).toEqual([
+      "scopely_list_project_types",
+      "scopely_list_scoping_cards",
+      "scopely_get_scoping_card",
+      "scopely_list_deployment_types",
+      "scopely_list_vendors",
+      "scopely_get_vendor",
+      "scopely_vendor_config",
+      "scopely_health_check",
+      "scopely_auth_status",
+      "scopely_list_sessions",
+      "scopely_get_session",
+      "scopely_list_pricing_defaults",
+      "scopely_list_approvers",
+    ]);
+    const snapshot = new Map(SLICE1_SNAPSHOT.capabilities.map((c) => [c.name, c]));
+    for (const tool of runnable.filter((t) => t !== "scopely_list_approvers")) {
+      const binding = opsBindingFor(tool);
+      expect(capabilityFor(tool), tool).toMatchObject({ effect: "pure-read", status: "live" });
+      expect(OPS_READ_CAPABILITIES, tool).toContain(binding?.capability);
+      const cap = snapshot.get(binding!.capability);
+      expect(cap?.effect, tool).toBe("read");
+      // Every arg key the binding passes is one the capability's schema accepts.
+      expect(Object.keys(cap!.input_schema.properties), tool).toEqual(
+        expect.arrayContaining([...binding!.args]),
+      );
+    }
+    expect(capabilityFor("scopely_list_approvers")?.status).toBe("local");
+    expect(opsBindingFor("scopely_list_approvers")).toBeUndefined();
+    for (const name of ["constructor", "__proto__", "toString"]) {
+      expect(opsBindingFor(name), name).toBeUndefined();
+    }
     for (const tool of registryTools()) {
       const cap = capabilityFor(tool)!;
       if (cap.effect === "write") {
         expect(cap.status, tool).not.toMatch(/live|local/);
+        expect(opsBindingFor(tool), tool).toBeUndefined();
       }
     }
   });
@@ -212,12 +273,22 @@ describe("registry completeness (AC-7.2)", () => {
       "scopely_passthrough_status",
       "scopely_passthrough_run_now",
     ]);
-    // The anonymous catalog is a placeholder and staff reads need the bot's own
-    // sign-in: both wait for a bot identity.
+    // The slice-1 reads are live through the operator layer; the rest of
+    // their families still wait (no capability yet).
     for (const [tool, family] of [
       ["scopely_list_vendors", "F1"],
       ["scopely_list_sessions", "F5"],
       ["scopely_auth_status", "F5"],
+    ]) {
+      expect(capabilityFor(tool), tool).toMatchObject({
+        family,
+        enablement: "read-live-on-prod",
+        status: "live",
+      });
+    }
+    for (const [tool, family] of [
+      ["scopely_list_users", "F5"],
+      ["scopely_search", "F5"],
     ]) {
       expect(capabilityFor(tool), tool).toMatchObject({
         family,
@@ -245,8 +316,8 @@ describe("registry gating through the index.ts wrapper (AC-7.4)", () => {
   // claim at all (a search URL is not a tracker); the manual path still shows.
   it.each([
     ["scopely_list_orgs", "F6", "the ZW2 Django admin"],
-    ["scopely_list_vendors", "F1", "the ZW2 wizard or staff catalog screens"],
-    ["scopely_auth_status", "F5", "the ZW2 staff UI (All Orders)"],
+    ["scopely_list_users", "F5", "the ZW2 staff UI (All Orders)"],
+    ["scopely_get_pricing_default", "F5", "the ZW2 staff UI (All Orders)"],
     ["scopely_component_health", "F2", "ask the ZW2 team to check the app's health"],
   ])(
     "gap read %s answers 'not available on the new app yet' (%s) with no tracking claim",
@@ -339,13 +410,23 @@ describe("registry gating through the index.ts wrapper (AC-7.4)", () => {
     expect(result).toMatchObject({ ok: false, outcome: "not_ported", family: "F12" });
   });
 
-  it("the live health check runs through the guard", async () => {
+  it("the live health check runs through the guard as one operator-layer invoke", async () => {
+    useServiceToken();
     const result = parse(
       await registeredTools().tools.get("scopely_health_check")!.execute("x", {}),
     );
-    expect(result).toEqual({ ok: true, status: 200, data: { status: "ok" } });
+    expect(result).toMatchObject({ ok: true, capability: "system.health", data: { status: "ok" } });
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    correlatedId(fetchMock.mock.calls[0][0], "https://api.vip.pscx.ai/api/v1/health/");
+    correlatedId(fetchMock.mock.calls[0][0], "https://api.vip.pscx.ai/api/spine/v1/ops/invoke/");
+  });
+
+  it("under authMode anonymous a live read sends nothing and says why", async () => {
+    const result = parse(
+      await registeredTools().tools.get("scopely_list_vendors")!.execute("x", {}),
+    );
+    expect(result).toMatchObject({ ok: false });
+    expect(result.error).toMatch(/no service token/);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("a tool missing from the registry is refused (deny by default)", async () => {
@@ -433,6 +514,7 @@ describe("stageWrite read-only refusal (AC-7.4, INV-8)", () => {
 // PK-7b-1: the requester of every row a call writes comes from the trusted
 // tool-factory ctx of the coordinator's own run; anything else is unresolved.
 describe("requester attribution from the tool-factory ctx (PK-7b-1)", () => {
+  beforeEach(useServiceToken);
   const HUB = "agent:scopelybot:zoom:channel:room-1";
   const missing = { resolved: false, zoom_operator_id: null, source: "none", reason: "missing" };
   it.each([

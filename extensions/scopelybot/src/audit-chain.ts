@@ -32,6 +32,7 @@ export type AuditEventType =
   | "write_blocked_unattributed"
   | "host_blocked"
   | "header_blocked"
+  | "auth_unavailable"
   | "body_blocked"
   | "redirect_blocked"
   | "rate_limited"
@@ -605,7 +606,7 @@ function createAuditWriter(file: string): AuditWriter {
     }
     try {
       const buf = Buffer.from(out, "utf8");
-      for (let off = 0; off < buf.length; ) {
+      for (let off = 0; off < buf.length;) {
         off += d.fs.writeSync(fd, buf, off, buf.length - off);
       }
       d.fs.fsyncSync(fd);

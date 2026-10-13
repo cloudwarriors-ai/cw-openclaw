@@ -23,6 +23,7 @@ import { registerDeploymentConfigTools } from "./src/deployment-config-tools.js"
 import { registerGhTools } from "./src/gh-tools.js";
 import { guardInboundMessage } from "./src/inbound-guard.js";
 import { registerMonitoringTools } from "./src/monitoring-tools.js";
+import { setRequesterDirectory } from "./src/ops-client.js";
 import { registerOrgTools } from "./src/org-tools.js";
 import { registerPassthroughTools } from "./src/passthrough-tools.js";
 import { registerPricingTools } from "./src/pricing-tools.js";
@@ -77,7 +78,7 @@ const plugin = {
     // default); every later request re-reads the file (backend-profile.ts).
     const profile = readBackendProfile(workspaceDir);
     console.log(
-      `[scopelybot] backend profile ${profile.profile}/${profile.env} mode=${profile.mode} hosts=${profile.allowedHosts.join(",") || "none (fail-closed)"}`,
+      `[scopelybot] backend profile ${profile.profile}/${profile.env} mode=${profile.mode} auth=${profile.authMode} hosts=${profile.allowedHosts.join(",") || "none (fail-closed)"}`,
     );
     const pluginConfig = resolveScopelyBotConfig(api.config, config);
     // Config-seeded approvers are permanent; the store layers chat-granted approvers
@@ -87,6 +88,9 @@ const plugin = {
       workspaceDir,
       configuredIds: configuredWriteApprovers(pluginConfig),
     });
+    // The operator layer's requester claim (X-Ops-Requester) is the ledger's one
+    // email for the call's resolved Zoom sender (ops-client.ts).
+    setRequesterDirectory(approverStore);
 
     // Register every scopelybot tool as `optional: true` so per-agent allowlists
     // actually scope them: non-optional plugin tools bypass allowlists entirely and

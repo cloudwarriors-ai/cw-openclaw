@@ -9,6 +9,10 @@
 // request reaches any app host. There is deliberately no fallback to the legacy
 // env (SCOPELY_BASE_URL, SCOPELY_EMAIL, SCOPELY_PASSWORD) or GH_TOKEN.
 //
+// The operator-layer service token (authMode "service-token") is read the
+// same way, per request, from <workspace>/scopelybot-ops-token (readOpsToken):
+// never from env, never cached, never logged or audited.
+//
 // Boundaries: this module only reads/validates policy and records audit rows.
 // Enforcement lives in scopely-api.ts (method/host guard), gated.ts (staging
 // refusal), confirm.ts (CONFIRM refusal) and capability-registry.ts (per-tool
@@ -16,10 +20,12 @@
 
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import { userInfo } from "node:os";
 import { join } from "node:path";
 import { auditEventBestEffort, noteAuditPolicy } from "./audit.js";
 
 export type BackendMode = "off" | "read-only" | "read-write";
+export type AuthMode = "anonymous" | "service-token";
 
 export type BackendProfile = {
   profile: "zw2";
@@ -30,8 +36,11 @@ export type BackendProfile = {
   allowedHosts: string[];
   /** Host header the guard sends (dev only: the sprint accepts vip.localhost / noob-root). */
   hostHeader?: string;
-  /** Only anonymous GETs exist in M1; login modes (jwt) arrive with PK-12. */
-  authMode: "anonymous";
+  /**
+   * anonymous: no credential. service-token: the operator-layer invoke (and
+   * nothing else) carries the service token from readOpsToken.
+   */
+  authMode: AuthMode;
   mode: BackendMode;
   digestEnabled: boolean;
   maxRequestsPerMinute: number;
@@ -66,6 +75,7 @@ const DEV_HOST_HEADERS: readonly string[] = ["vip.localhost", "noob-root"];
 const DEFAULT_MAX_REQUESTS_PER_MINUTE = 20;
 
 const MODES: ReadonlySet<BackendMode> = new Set(["off", "read-only", "read-write"]);
+const AUTH_MODES: ReadonlySet<AuthMode> = new Set(["anonymous", "service-token"]);
 
 export function defaultBackendProfile(): BackendProfile {
   return {
@@ -125,8 +135,9 @@ export function parseBackendProfile(raw: string): ParseResult {
   if (value.profile !== undefined && value.profile !== "zw2") {
     return { error: 'profile must be "zw2"' };
   }
-  if (value.authMode !== undefined && value.authMode !== "anonymous") {
-    return { error: 'authMode must be "anonymous" (login modes arrive with PK-12)' };
+  const authMode = value.authMode ?? "anonymous";
+  if (!AUTH_MODES.has(authMode as AuthMode)) {
+    return { error: 'authMode must be "anonymous" or "service-token"' };
   }
   const env = value.env;
   if (env !== "prod" && env !== "dev") {
@@ -205,7 +216,7 @@ export function parseBackendProfile(raw: string): ParseResult {
       env,
       baseUrl: base.origin,
       allowedHosts,
-      authMode: "anonymous",
+      authMode: authMode as AuthMode,
       mode: mode as BackendMode,
       digestEnabled,
       maxRequestsPerMinute: rpm as number,
@@ -225,7 +236,11 @@ export function parseBackendProfile(raw: string): ParseResult {
  *   write_blocked_read_only guard, registry, stageWrite or CONFIRM refused a write
  *   host_blocked            guard: no valid profile, a path off the app host, or
  *                           a built URL whose host left allowedHosts
- *   header_blocked          guard: caller header outside the allow-list
+ *   header_blocked          guard: caller header outside the allow-list, or a
+ *                           malformed operator-layer requester
+ *   auth_unavailable        guard: an operator-layer invoke without a usable
+ *                           service token (authMode anonymous, or a token-file
+ *                           problem code; never the token)
  *   body_blocked            guard: a GET/HEAD request with a body
  *   redirect_blocked        guard: the app answered 3xx
  *   rate_limited            guard: per-minute cap reached, or the app said 429
@@ -239,6 +254,7 @@ export type BackendAuditEvent =
   | "write_blocked_read_only"
   | "host_blocked"
   | "header_blocked"
+  | "auth_unavailable"
   | "body_blocked"
   | "redirect_blocked"
   | "rate_limited"
@@ -270,25 +286,33 @@ const seen = new Map<
 >();
 let testOverride: BackendProfile | undefined;
 
-// Read the profile without trusting what sits at the path. O_NONBLOCK: opening
-// a FIFO must not block the event loop; fstat on the opened fd (no
+type SmallFile =
+  | { raw: string; uid: number; mode: number }
+  | { problem: "missing" | "not_regular_file" | "too_large"; code?: undefined }
+  | { problem: "unreadable"; code: string };
+
+// Read a small policy file without trusting what sits at the path. O_NONBLOCK:
+// opening a FIFO must not block the event loop; fstat on the opened fd (no
 // check-then-open race) then requires a regular file under the size cap.
-function readProfileText(file: string): { raw: string } | { error: string } {
+function readSmallFile(file: string, maxBytes: number, extraFlags = 0): SmallFile {
   let fd: number;
   try {
-    fd = openSync(file, constants.O_RDONLY | constants.O_NONBLOCK);
+    fd = openSync(file, constants.O_RDONLY | constants.O_NONBLOCK | extraFlags);
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    return {
-      error:
-        code === "ENOENT" ? "profile file missing" : `profile file unreadable (${code ?? "error"})`,
-    };
+    const code = (err as NodeJS.ErrnoException).code ?? "error";
+    // ELOOP: O_NOFOLLOW met a symlink.
+    return code === "ENOENT"
+      ? { problem: "missing" }
+      : code === "ELOOP"
+        ? { problem: "not_regular_file" }
+        : { problem: "unreadable", code };
   }
   try {
-    if (!fstatSync(fd).isFile()) {
-      return { error: "profile file is not a regular file" };
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) {
+      return { problem: "not_regular_file" };
     }
-    const buf = Buffer.alloc(MAX_PROFILE_BYTES + 1);
+    const buf = Buffer.alloc(maxBytes + 1);
     let size = 0;
     while (size < buf.length) {
       const n = readSync(fd, buf, size, buf.length - size, size);
@@ -297,15 +321,92 @@ function readProfileText(file: string): { raw: string } | { error: string } {
       }
       size += n;
     }
-    if (size > MAX_PROFILE_BYTES) {
-      return { error: "profile file is larger than 64 KB" };
+    if (size > maxBytes) {
+      return { problem: "too_large" };
     }
-    return { raw: buf.toString("utf8", 0, size) };
+    return { raw: buf.toString("utf8", 0, size), uid: stat.uid, mode: stat.mode };
   } catch (err) {
-    return { error: `profile file unreadable (${(err as NodeJS.ErrnoException).code ?? "error"})` };
+    return { problem: "unreadable", code: (err as NodeJS.ErrnoException).code ?? "error" };
   } finally {
     closeSync(fd);
   }
+}
+
+const PROFILE_PROBLEMS = {
+  missing: "profile file missing",
+  not_regular_file: "profile file is not a regular file",
+  too_large: "profile file is larger than 64 KB",
+} as const;
+
+function readProfileText(file: string): { raw: string } | { error: string } {
+  const read = readSmallFile(file, MAX_PROFILE_BYTES);
+  if ("raw" in read) {
+    return { raw: read.raw };
+  }
+  return {
+    error:
+      read.problem === "unreadable"
+        ? `profile file unreadable (${read.code})`
+        : PROFILE_PROBLEMS[read.problem],
+  };
+}
+
+// --- operator-layer service token ----------------------------------------------
+
+const OPS_TOKEN_FILE = "scopelybot-ops-token";
+const MAX_TOKEN_BYTES = 4096;
+// Printable token characters only, so a token can never split a header line.
+const TOKEN_RE = /^[A-Za-z0-9._~+/=-]{16,1024}$/;
+
+export type OpsTokenProblem =
+  | "missing"
+  | "unreadable"
+  | "not_regular_file"
+  | "too_large"
+  | "not_owner"
+  | "permissions"
+  | "empty"
+  | "malformed";
+
+// The gateway's own uid (root in production); -1 when it cannot be read, so the
+// owner check fails closed.
+function ownUid(): number {
+  try {
+    return userInfo().uid;
+  } catch {
+    return -1;
+  }
+}
+
+/**
+ * The service token from <workspace>/scopelybot-ops-token, read on every call.
+ * The file must be a regular file (no symlink) owned by the gateway's own user
+ * with no group or other permission bits (0600 or stricter), holding one token
+ * of printable characters (surrounding whitespace ignored). Any other state is
+ * a problem code; the token itself never appears in a problem, error or row.
+ */
+export function readOpsToken(
+  workspaceDir = resolveWorkspaceDir(),
+): { token: string } | { problem: OpsTokenProblem } {
+  const read = readSmallFile(
+    join(workspaceDir, OPS_TOKEN_FILE),
+    MAX_TOKEN_BYTES,
+    constants.O_NOFOLLOW,
+  );
+  if (!("raw" in read)) {
+    return { problem: read.problem };
+  }
+  if (read.uid !== ownUid()) {
+    return { problem: "not_owner" };
+  }
+  if ((read.mode & 0o077) !== 0) {
+    return { problem: "permissions" };
+  }
+  const token = read.raw.trim();
+  if (!token) {
+    return { problem: "empty" };
+  }
+  return TOKEN_RE.test(token) ? { token } : { problem: "malformed" };
 }
 
 export function readBackendProfile(workspaceDir = resolveWorkspaceDir()): BackendProfile {
@@ -314,6 +415,7 @@ export function readBackendProfile(workspaceDir = resolveWorkspaceDir()): Backen
       env: testOverride.env,
       state: "valid",
       mode: testOverride.mode,
+      auth_mode: testOverride.authMode,
       profile_sha256: null,
     });
     return testOverride;
@@ -335,6 +437,7 @@ export function readBackendProfile(workspaceDir = resolveWorkspaceDir()): Backen
     env: "error" in parsed ? ("unknown" as const) : profile.env,
     state: "error" in parsed ? ("fail_closed_default" as const) : ("valid" as const),
     mode: profile.mode,
+    auth_mode: profile.authMode,
     profile_sha256: "raw" in read ? sha : null,
   };
   seen.set(file, { sha, profile, policy });
@@ -353,6 +456,7 @@ export function readBackendProfile(workspaceDir = resolveWorkspaceDir()): Backen
           sha256: sha,
           env: profile.env,
           mode: profile.mode,
+          authMode: profile.authMode,
           allowedHosts: profile.allowedHosts,
         },
     workspaceDir,

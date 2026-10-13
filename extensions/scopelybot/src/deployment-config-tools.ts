@@ -3,6 +3,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
 import { describeChanges, pickBody, stageWrite } from "./gated.js";
+import { opsRead } from "./ops-client.js";
 import { errorResult, jsonResult, scopelyFetch } from "./scopely-api.js";
 
 // Deployment-type config tools (Scopely VIP admin). Two surfaces:
@@ -43,18 +44,11 @@ export function registerDeploymentConfigTools(api: OpenClawPluginApi, logger: Au
           "copilot, bespoke). Read-only — runs immediately.",
         parameters: Type.Object({
           vendor_key: Type.String({ description: "Vendor key (e.g. zoom)" }),
-          project_type_id: Type.Number({ description: "Project-type id" }),
+          project_type: Type.String({
+            description: "Project-type key (from scopely_list_project_types)",
+          }),
         }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const res = await scopelyFetch(
-              dtBase(params.vendor_key as string, params.project_type_id as number),
-            );
-            return jsonResult({ ok: res.ok, status: res.status, data: res.data });
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+        execute: opsRead,
       },
       logger,
     ),

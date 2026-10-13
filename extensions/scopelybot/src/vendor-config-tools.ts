@@ -3,6 +3,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
 import { describeChanges, pickBody, stageWrite } from "./gated.js";
+import { opsRead } from "./ops-client.js";
 import { errorResult, jsonResult, scopelyFetch } from "./scopely-api.js";
 
 // Vendor-config tools (Scopely VIP admin): vendors, their project types, and
@@ -39,17 +40,10 @@ export function registerVendorConfigTools(api: OpenClawPluginApi, logger: AuditL
       {
         name: "scopely_list_vendors",
         description:
-          "List Scopely VIP vendors with full admin records (key, display name, source/destination " +
-          "flags, status, extraction flag). Read-only — runs immediately.",
+          "List Scopely VIP vendors (key, display name, source/destination flags, status). " +
+          "Read-only — runs immediately.",
         parameters: Type.Object({}),
-        async execute() {
-          try {
-            const res = await scopelyFetch(`/api/admin/vendors/`);
-            return jsonResult({ ok: res.ok, status: res.status, data: res.data });
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+        execute: opsRead,
       },
       logger,
     ),
@@ -60,20 +54,11 @@ export function registerVendorConfigTools(api: OpenClawPluginApi, logger: AuditL
       {
         name: "scopely_get_vendor",
         description:
-          "Get a single Scopely VIP vendor's admin record by vendor key (e.g. zoom). Read-only — runs immediately.",
+          "Get a single Scopely VIP vendor by vendor key (e.g. zoom). Read-only — runs immediately.",
         parameters: Type.Object({
           vendor_key: Type.String({ description: "Vendor key (e.g. zoom, ringcentral)" }),
         }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const res = await scopelyFetch(
-              `/api/admin/vendors/${encodeURIComponent(params.vendor_key as string)}/`,
-            );
-            return jsonResult({ ok: res.ok, status: res.status, data: res.data });
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+        execute: opsRead,
       },
       logger,
     ),
@@ -206,14 +191,7 @@ export function registerVendorConfigTools(api: OpenClawPluginApi, logger: AuditL
         parameters: Type.Object({
           vendor_key: Type.String({ description: "Vendor key (e.g. zoom)" }),
         }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const res = await scopelyFetch(ptBase(params.vendor_key as string));
-            return jsonResult({ ok: res.ok, status: res.status, data: res.data });
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+        execute: opsRead,
       },
       logger,
     ),
