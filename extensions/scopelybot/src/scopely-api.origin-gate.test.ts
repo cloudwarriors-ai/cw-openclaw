@@ -8,6 +8,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readAuditRows } from "./audit.test-helpers.js";
 import type { BackendProfile } from "./backend-profile.js";
 import { resetScopelyGuardForTest, scopelyFetch } from "./scopely-api.js";
 
@@ -31,10 +32,7 @@ const BASE: BackendProfile = {
 const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
 let workspace: string;
 
-function lastAuditRow(): { resultSummary: string; params: Record<string, unknown> } {
-  const raw = fs.readFileSync(path.join(workspace, "scopelybot", "audit.jsonl"), "utf8");
-  return JSON.parse(raw.trim().split("\n").at(-1) ?? "{}");
-}
+const lastAuditRow = () => readAuditRows(workspace).at(-1);
 
 beforeEach(() => {
   workspace = fs.mkdtempSync(path.join(os.tmpdir(), "scopely-origin-"));
@@ -66,8 +64,8 @@ describe("last-gate host check (the built URL against allowedHosts)", () => {
     await expect(scopelyFetch("/api/v1/health/")).rejects.toMatchObject({ code: "host_blocked" });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(lastAuditRow()).toMatchObject({
-      resultSummary: "host_blocked",
-      params: { method: "GET", host },
+      event_type: "host_blocked",
+      http: { method: "GET", host },
     });
   });
 });

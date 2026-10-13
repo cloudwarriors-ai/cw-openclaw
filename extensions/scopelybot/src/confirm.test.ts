@@ -202,13 +202,13 @@ describe("read-only refusal before the pending store (INV-2, INV-8)", () => {
     expect(takePendingMock).not.toHaveBeenCalled();
     expect(run).not.toHaveBeenCalled();
     const rows = fs
-      .readFileSync(path.join(workspace, "scopelybot", "audit.jsonl"), "utf8")
+      .readFileSync(path.join(workspace, "scopelybot", "audit-v2.jsonl"), "utf8")
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line));
     expect(rows.at(-1)).toMatchObject({
-      resultSummary: "write_blocked_read_only",
-      params: { via: "confirm" },
+      event_type: "write_blocked_read_only",
+      detail: { via: "confirm" },
     });
   });
 

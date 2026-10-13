@@ -8,10 +8,20 @@
 // Every test runs against a real profile file in a temp workspace; fetch is a
 // mock, so nothing leaves the process.
 
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { verifyChain } from "../scripts/verify-audit-chain.mjs";
+import { getAuditWriter, setAuditDepsForTest } from "./audit-chain.js";
+import {
+  auditFile,
+  correlatedId,
+  correlationHeaders,
+  readAuditRows,
+} from "./audit.test-helpers.js";
+import { readBackendProfile } from "./backend-profile.js";
 import {
   errorResult,
   resetScopelyGuardForTest,
@@ -33,17 +43,7 @@ function writeProfile(body: Record<string, unknown> | null) {
   }
 }
 
-function auditRows(): Array<{ resultSummary: string; params: Record<string, unknown> }> {
-  const file = path.join(workspace, "scopelybot", "audit.jsonl");
-  if (!fs.existsSync(file)) {
-    return [];
-  }
-  return fs
-    .readFileSync(file, "utf8")
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line));
-}
+const auditRows = () => readAuditRows(workspace);
 
 // A real fetch Response (so the guard's bounded stream read is exercised).
 function httpResponse(opts: {
@@ -110,6 +110,8 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
+  vi.restoreAllMocks();
+  setAuditDepsForTest(null);
   delete process.env.OPENCLAW_WORKSPACE;
   fs.rmSync(workspace, { recursive: true, force: true });
 });
@@ -161,8 +163,8 @@ describe("method guard (AC-7.3)", () => {
       await expectRefused(scopelyFetch(p, { method, body: "{}" }), "write_blocked_read_only");
       expect(fetchMock).not.toHaveBeenCalled();
       expect(auditRows().at(-1)).toMatchObject({
-        resultSummary: "write_blocked_read_only",
-        params: { method: method.toUpperCase(), path: p },
+        event_type: "write_blocked_read_only",
+        http: { method: method.toUpperCase(), path_template: p },
       });
     },
   );
@@ -172,9 +174,10 @@ describe("method guard (AC-7.3)", () => {
     await scopelyFetch("/api/v1/health/", { method: "HEAD" });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe(`http://${DEV_HOST}/api/v1/health/`);
+    const id = correlatedId(url, `http://${DEV_HOST}/api/v1/health/`);
     expect(init).toMatchObject({ method: "GET", redirect: "manual" });
-    expect(Object.keys(init.headers)).toEqual([]); // no Cookie, no Authorization
+    // No Cookie, no Authorization: only the guard's correlation headers.
+    expect(init.headers).toEqual(correlationHeaders(id, "dev"));
     expect(fetchMock.mock.calls[1][1].method).toBe("HEAD");
   });
 
@@ -195,8 +198,8 @@ describe("method guard (AC-7.3)", () => {
       expect(err.message).toBe(`Blocked: a ${method.toUpperCase()} request cannot carry a body.`);
       expect(fetchMock).not.toHaveBeenCalled();
       expect(auditRows().at(-1)).toMatchObject({
-        resultSummary: "body_blocked",
-        params: { method: method.toUpperCase() },
+        event_type: "body_blocked",
+        http: { method: method.toUpperCase() },
       });
       await scopelyFetch("/api/v1/health/");
       expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -215,8 +218,8 @@ describe("method guard (AC-7.3)", () => {
     await expectRefused(scopelyFetch("/api/v1/health/"), "backend_off");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(auditRows().at(-1)).toMatchObject({
-      resultSummary: "backend_off",
-      params: { method: "GET", host: DEV_HOST, path: "/api/v1/health/" },
+      event_type: "backend_off",
+      http: { method: "GET", host: DEV_HOST, path_template: "/api/v1/health/" },
     });
   });
 
@@ -253,8 +256,9 @@ describe("method guard (AC-7.3)", () => {
       );
       expect(fetchMock).not.toHaveBeenCalled();
       expect(auditRows().at(-1)).toMatchObject({
-        resultSummary: "header_blocked",
-        params: { method: "GET", header: name.toLowerCase() },
+        event_type: "header_blocked",
+        http: { method: "GET" },
+        detail: { header: name.toLowerCase() },
       });
     }
   });
@@ -274,9 +278,11 @@ describe("method guard (AC-7.3)", () => {
     await scopelyFetch("/api/v1/health/", {
       headers: new Headers({ Accept: "application/json", "Content-Type": "text/plain" }),
     });
+    const id = correlatedId(fetchMock.mock.calls[0][0], `http://${DEV_HOST}/api/v1/health/`);
     expect(fetchMock.mock.calls[0][1].headers).toEqual({
       accept: "application/json",
       "content-type": "text/plain",
+      ...correlationHeaders(id, "dev"),
     });
   });
 
@@ -300,13 +306,21 @@ describe("method guard (AC-7.3)", () => {
     expect(init).toMatchObject({ method: "POST", body: "{}", redirect: "manual" });
     expect(init.dispatcher).toBeUndefined();
     expect(init.keepalive).toBeUndefined();
-    expect(init.headers).toEqual({ "content-type": "application/json" });
+    const id = correlatedId(fetchMock.mock.calls[0][0], `http://${DEV_HOST}/api/x/`);
+    expect(init.headers).toEqual({
+      "content-type": "application/json",
+      ...correlationHeaders(id, "dev"),
+    });
   });
 
   it("the dev profile's own hostHeader is the only Host override sent", async () => {
     writeProfile({ ...DEV, hostHeader: "vip.localhost" });
     await scopelyFetch("/api/v1/health/");
-    expect(fetchMock.mock.calls[0][1].headers).toEqual({ host: "vip.localhost" });
+    const id = correlatedId(fetchMock.mock.calls[0][0], `http://${DEV_HOST}/api/v1/health/`);
+    expect(fetchMock.mock.calls[0][1].headers).toEqual({
+      host: "vip.localhost",
+      ...correlationHeaders(id, "dev"),
+    });
   });
 });
 
@@ -324,8 +338,8 @@ describe("host guard", () => {
     await expectRefused(scopelyFetch(p), "host_blocked");
     expect(fetchMock).not.toHaveBeenCalled();
     expect(auditRows().at(-1)).toMatchObject({
-      resultSummary: "host_blocked",
-      params: { method: "GET" },
+      event_type: "host_blocked",
+      http: { method: "GET" },
     });
   });
 
@@ -342,7 +356,7 @@ describe("host guard", () => {
 
   // Property check behind the guard's single host rule: the request URL is
   // baseUrl + a single-slash path, so no accepted path can change the origin.
-  it("2,000 seeded adversarial paths either refuse or fetch exactly the profile origin", async () => {
+  it("2,000 seeded adversarial paths either refuse or fetch exactly the profile origin, correlated", async () => {
     const parts = [
       "/",
       "\\",
@@ -370,6 +384,9 @@ describe("host guard", () => {
       "ß",
       "a",
     ];
+    // This test is about origin and correlation, not durability (the intent and
+    // fs-surface tests pin fsync): skip the ~5 ms fsync of each of ~2,000 appends.
+    setAuditDepsForTest({ fs: { ...fs, fsyncSync: () => undefined } });
     let seed = 12345;
     const next = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
     const offOrigin: string[] = [];
@@ -381,9 +398,14 @@ describe("host guard", () => {
         p += parts[Math.floor(next() * parts.length)];
       }
       await scopelyFetch(p).catch(() => undefined);
-      for (const [url] of fetchMock.mock.calls) {
+      for (const [url, init] of fetchMock.mock.calls) {
         const u = new URL(url);
-        if (u.origin !== `http://${DEV_HOST}` || u.username || u.password) {
+        const ids = u.searchParams.getAll("bot_audit_id");
+        const correlated =
+          ids.length === 1 &&
+          /^[0-9A-HJKMNP-TV-Z]{26}$/.test(ids[0]) &&
+          init.headers["x-correlation-id"] === ids[0];
+        if (u.origin !== `http://${DEV_HOST}` || u.username || u.password || !correlated) {
           offOrigin.push(`${JSON.stringify(p)} -> ${url}`);
         }
       }
@@ -425,8 +447,8 @@ describe("host guard", () => {
     await expectRefused(scopelyFetch("/api/v1/vendors/"), "host_blocked");
     expect(fetchMock).not.toHaveBeenCalled();
     expect(auditRows().at(-1)).toMatchObject({
-      resultSummary: "host_blocked",
-      params: { method: "GET" },
+      event_type: "host_blocked",
+      http: { method: "GET" },
     });
   });
 });
@@ -450,8 +472,9 @@ describe("redirects (AC-7.16): every 3xx is refused, never followed", () => {
     expect(err.message).toMatch(/redirect/);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(auditRows().at(-1)).toMatchObject({
-      resultSummary: "redirect_blocked",
-      params: { method: "GET", host: DEV_HOST, path: "/api/v1/health", status },
+      event_type: "redirect_blocked",
+      phase: "outcome",
+      http: { method: "GET", host: DEV_HOST, path_template: "/api/v1/health", status },
     });
   });
 
@@ -478,7 +501,7 @@ describe("request cap and 429 (AC-7.14)", () => {
       ok: false,
       error: "The new app is busy, try again shortly.",
     });
-    expect(auditRows().at(-1)?.resultSummary).toBe("rate_limited");
+    expect(auditRows().at(-1)?.event_type).toBe("rate_limited");
     clock.mockReturnValue(61_000); // exactly 60 s later the first two have expired
     await scopelyFetch("/d/");
     expect(fetchMock).toHaveBeenCalledTimes(3);
@@ -502,8 +525,9 @@ describe("request cap and 429 (AC-7.14)", () => {
     const err = await expectRefused(scopelyFetch("/api/v1/health/"), "rate_limited");
     expect(err.message).toBe("The new app is busy, try again shortly.");
     expect(auditRows().at(-1)).toMatchObject({
-      resultSummary: "rate_limited",
-      params: { status: 429 },
+      event_type: "rate_limited",
+      phase: "outcome",
+      http: { status: 429 },
     });
     expect(state.cancelled).toBe(true); // the refused body is released, not left pinned
   });
@@ -560,6 +584,426 @@ describe("no login replay (INV-16)", () => {
     const res = await scopelyFetch("/api/v1/vendors/");
     expect(res).toEqual({ ok: false, status: 401, data: { detail: "no" } });
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0][0]).toBe(`http://${DEV_HOST}/api/v1/vendors/`);
+    correlatedId(fetchMock.mock.calls[0][0], `http://${DEV_HOST}/api/v1/vendors/`);
+  });
+});
+
+// INV-15 (audit before action) and INV-5 (correlation), spec tests 18-25.
+// Appends fail through an fs proxy that refuses chosen opens of the audit file.
+function failingAudit(shouldFail: () => boolean, code = "ENOSPC") {
+  const target = auditFile(workspace);
+  const proxy = new Proxy(fs, {
+    get(real, prop: string) {
+      const fn = (real as unknown as Record<string, unknown>)[prop];
+      if (prop !== "openSync" || typeof fn !== "function") {
+        return fn;
+      }
+      return (...args: unknown[]) => {
+        const append = typeof args[1] === "number" && (args[1] & fs.constants.O_APPEND) !== 0;
+        if (args[0] === target && append && shouldFail()) {
+          throw Object.assign(new Error(code), { code });
+        }
+        return (fn as (...a: unknown[]) => unknown).apply(real, args);
+      };
+    },
+  });
+  return proxy as unknown as typeof fs;
+}
+
+const ok = () => httpResponse({ status: 200, body: '{"ok":1}', contentType: "application/json" });
+const chain = () => fs.readFileSync(auditFile(workspace), "utf8");
+const byId = (id: string) => auditRows().filter((r) => r.audit_id === id);
+
+describe("audit before request (INV-15) and correlation (INV-5)", () => {
+  it("writes a durable http_intent before the request, then exactly one http_outcome with the same audit_id", async () => {
+    let atFetch: ReturnType<typeof auditRows> = [];
+    fetchMock.mockImplementation(async () => {
+      atFetch = auditRows();
+      return ok();
+    });
+    await scopelyFetch("/api/v1/health/?zeta=VALUE-ZETA&alpha=VALUE-ALPHA");
+    const intent = atFetch.at(-1);
+    expect(intent).toMatchObject({
+      event_type: "http_intent",
+      phase: "intent",
+      http: {
+        method: "GET",
+        host: DEV_HOST,
+        path_template: "/api/v1/health/",
+        query_keys: ["alpha", "zeta"],
+        status: null,
+      },
+    });
+    expect(atFetch.some((r) => r.event_type === "http_outcome")).toBe(false);
+    const [url, init] = fetchMock.mock.calls[0];
+    const id = correlatedId(
+      url,
+      `http://${DEV_HOST}/api/v1/health/?zeta=VALUE-ZETA&alpha=VALUE-ALPHA`,
+    );
+    expect(id).toBe(intent?.audit_id);
+    expect(init.headers["x-correlation-id"]).toBe(id);
+    expect(byId(id).map((r) => [r.event_type, r.phase])).toEqual([
+      ["http_intent", "intent"],
+      ["http_outcome", "outcome"],
+    ]);
+    expect(byId(id)[1]).toMatchObject({ http: { status: 200 }, result: { status: "ok" } });
+    expect(chain()).not.toContain("VALUE-"); // query keys only, never values
+    expect(verifyChain(chain(), { requirePaired: true }).ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses with audit_unavailable and sends nothing when the intent row cannot be written; the rate slot is not spent", async () => {
+    writeProfile({ ...DEV, maxRequestsPerMinute: 1 });
+    let failing = true;
+    setAuditDepsForTest({ fs: failingAudit(() => failing) });
+    const err = await expectRefused(scopelyFetch("/api/v1/health/"), "audit_unavailable");
+    expect(err.message).toBe("Request not sent: the audit log is unavailable.");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(getAuditWriter(workspace).degraded()).toMatchObject({ code: "ENOSPC" });
+    failing = false;
+    // The one per-minute slot is still free.
+    await expect(scopelyFetch("/api/v1/health/")).resolves.toMatchObject({ ok: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(getAuditWriter(workspace).degraded()).toBeNull();
+    const gap = auditRows().find((r) => r.event_type === "audit_gap");
+    expect(gap).toMatchObject({ detail: { refused_requests: 1, error_code: "ENOSPC" } });
+    expect(auditRows().map((r) => r.event_type)).toEqual([
+      "audit_gap",
+      "http_intent",
+      "http_outcome",
+    ]);
+  });
+
+  it("returns the answer when the outcome row fails (audit_degraded), closes the gap next append, and records the orphan as indeterminate after its deadline", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    let failNext = false;
+    let clock = Date.now();
+    setAuditDepsForTest({
+      now: () => clock,
+      fs: failingAudit(() => {
+        const fail = failNext;
+        failNext = false;
+        return fail;
+      }),
+    });
+    fetchMock.mockImplementationOnce(async () => {
+      failNext = true;
+      return ok();
+    });
+    await expect(scopelyFetch("/api/v1/health/")).resolves.toEqual({
+      ok: true,
+      status: 200,
+      data: { ok: 1 },
+    });
+    expect(errors).toHaveBeenCalledWith(
+      expect.stringMatching(/^\[scopelybot-audit\] audit_degraded ENOSPC/),
+    );
+    expect(getAuditWriter(workspace).degraded()).toMatchObject({ code: "ENOSPC" });
+    const orphan = auditRows().find((r) => r.event_type === "http_intent");
+    expect(byId(String(orphan?.audit_id))).toHaveLength(1);
+
+    fetchMock.mockImplementation(async () => ok());
+    await scopelyFetch("/api/v1/health/");
+    expect(auditRows().find((r) => r.event_type === "audit_gap")).toMatchObject({
+      detail: { failures: 1, refused_requests: 0, error_code: "ENOSPC" },
+    });
+    expect(verifyChain(chain(), { requirePaired: true })).toMatchObject({
+      ok: false,
+      reason: "unpaired_intent",
+    });
+
+    clock += 14_000; // still inside the orphan's 15 s deadline: no recovery yet
+    await scopelyFetch("/api/v1/health/");
+    expect(byId(String(orphan?.audit_id))).toHaveLength(1);
+
+    clock += 2_000; // past the 15 s deadline
+    await scopelyFetch("/api/v1/health/");
+    expect(byId(String(orphan?.audit_id)).at(-1)).toMatchObject({
+      event_type: "http_outcome",
+      result: { status: "indeterminate", reason: "crash_recovery" },
+      recovery: { source: "recovery", intent_seq: orphan?.seq },
+    });
+    expect(verifyChain(chain(), { requirePaired: true }).ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(4); // four requests, nothing retried
+  });
+
+  it("dev read-write: a failed outcome row of a write latches further writes (no request), reads continue", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    writeProfile({ ...DEV, mode: "read-write" });
+    let failNext = false;
+    setAuditDepsForTest({
+      fs: failingAudit(() => {
+        const fail = failNext;
+        failNext = false;
+        return fail;
+      }),
+    });
+    fetchMock.mockImplementationOnce(async () => {
+      failNext = true;
+      return ok();
+    });
+    await scopelyFetch("/api/x/", { method: "POST", body: "{}" });
+    fetchMock.mockImplementation(async () => ok());
+    await expectRefused(
+      scopelyFetch("/api/x/", { method: "POST", body: "{}" }),
+      "audit_unavailable",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await expect(scopelyFetch("/api/v1/health/")).resolves.toMatchObject({ ok: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    resetScopelyGuardForTest(); // a restart clears the latch
+    await scopelyFetch("/api/x/", { method: "POST", body: "{}" });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    ["a timeout", new DOMException("timed out", "TimeoutError"), "indeterminate", "TimeoutError"],
+    [
+      "a connection reset",
+      Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET" } }),
+      "indeterminate",
+      "TypeError",
+    ],
+    [
+      "a refused connection",
+      Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } }),
+      "not_sent",
+      "ECONNREFUSED",
+    ],
+    [
+      "a DNS failure",
+      Object.assign(new TypeError("fetch failed"), { cause: { code: "ENOTFOUND" } }),
+      "not_sent",
+      "ENOTFOUND",
+    ],
+  ])("%s: one fetch, no retry, outcome %s", async (_label, error, status, errorClass) => {
+    fetchMock.mockImplementation(async () => {
+      throw error;
+    });
+    await expect(scopelyFetch("/api/v1/health/")).rejects.toBe(error);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const intent = auditRows().find((r) => r.event_type === "http_intent");
+    expect(byId(String(intent?.audit_id)).at(-1)).toMatchObject({
+      event_type: "http_outcome",
+      http: { status: null },
+      result: { status, error_class: errorClass },
+    });
+  });
+
+  it("a 5xx is one fetch and an http_error outcome", async () => {
+    respond({ status: 503, body: "busy" });
+    const res = await scopelyFetch("/api/v1/health/");
+    expect(res).toMatchObject({ ok: false, status: 503 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(auditRows().at(-1)).toMatchObject({
+      event_type: "http_outcome",
+      http: { status: 503 },
+      result: { status: "http_error" },
+    });
+  });
+
+  it("an intent's deadline is 15 s after it was written (the recovery boundary)", async () => {
+    await scopelyFetch("/api/v1/health/");
+    const intent = auditRows().find((r) => r.event_type === "http_intent");
+    const gap = Date.parse(String(intent?.http.deadline_ts)) - Date.parse(String(intent?.ts));
+    expect(gap).toBeGreaterThan(14_900);
+    expect(gap).toBeLessThanOrEqual(15_000);
+  });
+
+  it.each([
+    ["a plain id", "abc-123:XY.z_", "abc-123:XY.z_"],
+    ["exactly 128 characters", "a".repeat(128), "a".repeat(128)],
+    ["129 characters", "a".repeat(129), null],
+    ["a space", "bad id", null],
+    ["a quote", 'id"injected', null],
+  ])(
+    "x-request-id with %s is stored only when it matches the id pattern",
+    async (_l, value, stored) => {
+      fetchMock.mockResolvedValueOnce(
+        new Response("{}", { status: 200, headers: { "x-request-id": value } }),
+      );
+      await scopelyFetch("/api/v1/health/");
+      expect(auditRows().at(-1)).toMatchObject({
+        event_type: "http_outcome",
+        http: { x_request_id: stored },
+      });
+    },
+  );
+
+  it("a very long redirect host is bounded: exactly one terminal row, never a refusal or an orphan", async () => {
+    const host = `${"a".repeat(15_600)}.example`;
+    respond({ status: 302, location: `http://${host}/` });
+    await expectRefused(scopelyFetch("/api/v1/health/"), "redirect_blocked");
+    const intent = auditRows().find((r) => r.event_type === "http_intent");
+    const rows = byId(String(intent?.audit_id));
+    expect(rows.map((r) => r.event_type)).toEqual(["http_intent", "redirect_blocked"]);
+    const recorded = String(rows[1].http.redirect_to_host);
+    expect(recorded.length).toBeLessThanOrEqual(253);
+    expect(recorded).toBe(
+      `${host.slice(0, 240)}~${createHash("sha256").update(host).digest("hex").slice(0, 12)}`,
+    );
+    expect(verifyChain(chain(), { requirePaired: true }).ok).toBe(true);
+  });
+
+  it("a very long query key is bounded in the row, and the request is still sent", async () => {
+    const key = "k".repeat(20_000);
+    await expect(scopelyFetch(`/api/v1/health/?${key}=1`)).resolves.toMatchObject({ ok: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const keys = auditRows().find((r) => r.event_type === "http_intent")?.http.query_keys;
+    expect(keys).toEqual([
+      `${key.slice(0, 240)}~${createHash("sha256").update(key).digest("hex").slice(0, 12)}`,
+    ]);
+    expect(verifyChain(chain(), { requirePaired: true }).ok).toBe(true);
+  });
+
+  it("rows carry the live profile's env and policy; the fail-closed default reads env unknown", async () => {
+    const raw = fs.readFileSync(path.join(workspace, "scopelybot-backend.json"));
+    await scopelyFetch("/api/v1/health/");
+    expect(auditRows().find((r) => r.event_type === "http_intent")).toMatchObject({
+      env: "dev",
+      policy: {
+        state: "valid",
+        mode: "read-only",
+        profile_sha256: createHash("sha256").update(raw).digest("hex"),
+      },
+    });
+    writeProfile(null);
+    await expectRefused(scopelyFetch("/api/v1/health/"), "host_blocked");
+    expect(auditRows().at(-1)).toMatchObject({
+      event_type: "host_blocked",
+      env: "unknown",
+      policy: { state: "fail_closed_default", mode: "read-only", profile_sha256: null },
+    });
+    // Back to the first content (re-parsed: the cache keeps one entry per path).
+    fs.writeFileSync(path.join(workspace, "scopelybot-backend.json"), raw);
+    await scopelyFetch("/api/v1/health/");
+    expect(auditRows().at(-1)).toMatchObject({ event_type: "http_outcome", env: "dev" });
+    // Another workspace's profile read in between; this workspace's next read is
+    // served from the cache and must still report its own policy.
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), "scopely-api-other-"));
+    try {
+      readBackendProfile(other);
+    } finally {
+      fs.rmSync(other, { recursive: true, force: true });
+    }
+    await scopelyFetch("/api/v1/health/");
+    expect(auditRows().at(-1)).toMatchObject({ event_type: "http_outcome", env: "dev" });
+  });
+
+  it("a 3xx pairs its intent with redirect_blocked and records only the redirect host, never Location", async () => {
+    respond({ status: 302, location: "https://evil.test/LOCATION-SECRET-PATH?x=1" });
+    await expectRefused(scopelyFetch("/api/v1/health/"), "redirect_blocked");
+    const intent = auditRows().find((r) => r.event_type === "http_intent");
+    expect(byId(String(intent?.audit_id)).map((r) => r.event_type)).toEqual([
+      "http_intent",
+      "redirect_blocked",
+    ]);
+    expect(auditRows().at(-1)).toMatchObject({
+      http: { status: 302, redirect_to_host: "evil.test" },
+    });
+    expect(chain()).not.toContain("LOCATION-SECRET-PATH");
+  });
+
+  it("a 429 pairs its intent with an outcome rate_limited row; the local cap writes one row and no intent", async () => {
+    fetchMock.mockResolvedValueOnce(httpResponse({ status: 429 }));
+    await expectRefused(scopelyFetch("/api/v1/health/"), "rate_limited");
+    const intent = auditRows().find((r) => r.event_type === "http_intent");
+    expect(byId(String(intent?.audit_id)).map((r) => [r.event_type, r.phase])).toEqual([
+      ["http_intent", "intent"],
+      ["rate_limited", "outcome"],
+    ]);
+    resetScopelyGuardForTest();
+    vi.spyOn(performance, "now").mockReturnValue(1_000);
+    writeProfile({ ...DEV, maxRequestsPerMinute: 1 });
+    await scopelyFetch("/a/");
+    const before = auditRows().length;
+    await expectRefused(scopelyFetch("/b/"), "rate_limited");
+    expect(auditRows().slice(before)).toEqual([
+      expect.objectContaining({ event_type: "rate_limited", phase: "single" }),
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("a body that fails mid-stream gets an outcome with its status and error_class body_read", async () => {
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulls++ === 0) {
+          controller.enqueue(new Uint8Array(8).fill(0x61));
+        } else {
+          controller.error(new Error("socket closed"));
+        }
+      },
+    });
+    fetchMock.mockResolvedValueOnce(httpResponse({ status: 200, body }));
+    await expect(scopelyFetch("/api/v1/health/")).rejects.toThrow("socket closed");
+    expect(auditRows().at(-1)).toMatchObject({
+      event_type: "http_outcome",
+      http: { status: 200 },
+      result: { status: "error", error_class: "body_read" },
+    });
+  });
+
+  it("overwrites a caller bot_audit_id, keeps the caller's other params, and sends the id exactly once", async () => {
+    await scopelyFetch("/api/v1/x/?bot_audit_id=FORGED&keep=1");
+    const u = new URL(fetchMock.mock.calls[0][0]);
+    expect(u.searchParams.getAll("bot_audit_id")).toHaveLength(1);
+    expect(u.searchParams.get("bot_audit_id")).not.toBe("FORGED");
+    expect(u.searchParams.get("keep")).toBe("1");
+    const intent = auditRows().find((r) => r.event_type === "http_intent");
+    expect(u.searchParams.get("bot_audit_id")).toBe(intent?.audit_id);
+    expect(intent?.http.query_keys).toEqual(["keep"]);
+    expect(fetchMock.mock.calls[0][1].headers["x-vipbot-client"]).toBe("scopelybot/0.1.0 (dev)");
+  });
+
+  it.each(["X-Correlation-ID", "x-vipbot-client"])(
+    "a caller-supplied %s header is still refused (header_blocked), before any intent",
+    async (name) => {
+      await expectRefused(
+        scopelyFetch("/api/v1/health/", { headers: { [name]: "forged" } }),
+        "header_blocked",
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(auditRows().some((r) => r.event_type === "http_intent")).toBe(false);
+    },
+  );
+
+  it("guard refusals before the request write one row and no intent", async () => {
+    await expectRefused(
+      scopelyFetch("/api/x/", { method: "POST", body: "{}" }),
+      "write_blocked_read_only",
+    );
+    await expectRefused(scopelyFetch("//evil.test/x"), "host_blocked");
+    const rows = auditRows().filter((r) => r.event_type !== "policy_change");
+    expect(rows.map((r) => r.event_type)).toEqual(["write_blocked_read_only", "host_blocked"]);
+  });
+
+  it("templates id-like path segments; rows never carry the raw ids", async () => {
+    await scopelyFetch("/api/v1/users/4711/sessions/0f8fad5b-d9cb-469f-a165-70867728950e/");
+    expect(auditRows().at(-1)?.http.path_template).toBe("/api/v1/users/:id/sessions/:id/");
+    expect(chain()).not.toContain("0f8fad5b");
+  });
+
+  it("a tampered chain tail fails every request closed (INTEGRITY): no request until an operator reseal (Q3)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await scopelyFetch("/api/v1/health/");
+    fs.writeFileSync(auditFile(workspace), chain().replace('"status":200', '"status":201'));
+    await expectRefused(scopelyFetch("/api/v1/health/"), "audit_unavailable");
+    await expectRefused(scopelyFetch("/api/v1/health/"), "audit_unavailable");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(getAuditWriter(workspace).degraded()).toMatchObject({ code: "INTEGRITY" });
+  });
+
+  it("5 concurrent GETs: 5 intent/outcome pairs with unique ids, one verifiable chain", async () => {
+    await Promise.all(Array.from({ length: 5 }, () => scopelyFetch("/api/v1/health/")));
+    const intents = auditRows().filter((r) => r.event_type === "http_intent");
+    expect(new Set(intents.map((r) => r.audit_id)).size).toBe(5);
+    for (const intent of intents) {
+      expect(byId(intent.audit_id).map((r) => r.event_type)).toEqual([
+        "http_intent",
+        "http_outcome",
+      ]);
+    }
+    expect(verifyChain(chain(), { requirePaired: true }).ok).toBe(true);
   });
 });

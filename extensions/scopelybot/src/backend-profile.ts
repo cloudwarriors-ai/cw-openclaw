@@ -17,8 +17,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
-import { type AuditLogger, createAuditLogger } from "./audit.js";
-import { redactValue } from "./redaction.js";
+import { auditEventBestEffort, noteAuditPolicy } from "./audit.js";
 
 export type BackendMode = "off" | "read-only" | "read-write";
 
@@ -46,8 +45,6 @@ const PROFILE_FILE = "scopelybot-backend.json";
 const MAX_PROFILE_BYTES = 64 * 1024;
 // Issue links reach users in refusal text: only the org's GitHub, canonical form.
 const ISSUE_LINK_PREFIX = "https://github.com/cloudwarriors-ai/";
-// Audit strings are bounded (details carry request paths and parse errors).
-const AUDIT_MAX_STRING = 256;
 
 // The ONLY app hosts each environment may reach (INV-11): a profile's
 // allowedHosts must be a subset of its env's list, so a copied or mistyped file
@@ -221,8 +218,8 @@ export function parseBackendProfile(raw: string): ParseResult {
 // --- audit sink for policy/guard events ---------------------------------------
 
 /**
- * The complete PK-7a audit vocabulary (resultSummary of every row written
- * here). The ro-proof grep and the audit-v2 enum must match this list:
+ * The policy/guard subset of the audit-v2 event_type enum (AuditEventType in
+ * audit-chain.ts; the scopelyFetch guard writes its own rows of these types):
  *   policy_change           profile file read (valid, or fail-closed default)
  *   backend_off             guard: mode "off" (kill switch)
  *   write_blocked_read_only guard, registry, stageWrite or CONFIRM refused a write
@@ -248,30 +245,18 @@ export type BackendAuditEvent =
   | "not_available"
   | "digest_skipped";
 
-const loggers = new Map<string, AuditLogger>();
-
 /**
- * Append a policy/guard event to the workspace audit log. Callers pass method,
- * host, path and codes only; every detail is still redacted and length-bounded
- * here.
+ * Append a policy/guard event to the workspace audit-v2 chain (best-effort:
+ * nothing was sent, so a failed append only marks the writer degraded).
+ * Callers pass codes and short values only; every detail is still redacted
+ * and length-bounded in audit.ts.
  */
 export function auditBackendEvent(
   event: BackendAuditEvent,
   details: Record<string, unknown>,
   workspaceDir = resolveWorkspaceDir(),
 ): void {
-  let logger = loggers.get(workspaceDir);
-  if (!logger) {
-    logger = createAuditLogger(workspaceDir);
-    loggers.set(workspaceDir, logger);
-  }
-  logger({
-    ts: new Date().toISOString(),
-    tool: "scopely_backend_policy",
-    actor: "scopelybot",
-    resultSummary: event,
-    params: redactValue(details, { maxStringLength: AUDIT_MAX_STRING }) as Record<string, unknown>,
-  });
+  auditEventBestEffort(workspaceDir, event, { detail: details });
 }
 
 // --- live read ------------------------------------------------------------------
@@ -279,7 +264,10 @@ export function auditBackendEvent(
 // Last seen file content (by sha256) per profile path. Parsing happens only when
 // the content changes, and every change writes ONE policy_change row, so a bad
 // edit is audited once rather than on every request.
-const seen = new Map<string, { sha: string; profile: BackendProfile }>();
+const seen = new Map<
+  string,
+  { sha: string; profile: BackendProfile; policy: Parameters<typeof noteAuditPolicy>[0] }
+>();
 let testOverride: BackendProfile | undefined;
 
 // Read the profile without trusting what sits at the path. O_NONBLOCK: opening
@@ -322,6 +310,12 @@ function readProfileText(file: string): { raw: string } | { error: string } {
 
 export function readBackendProfile(workspaceDir = resolveWorkspaceDir()): BackendProfile {
   if (testOverride) {
+    noteAuditPolicy({
+      env: testOverride.env,
+      state: "valid",
+      mode: testOverride.mode,
+      profile_sha256: null,
+    });
     return testOverride;
   }
   const file = join(workspaceDir, PROFILE_FILE);
@@ -329,13 +323,22 @@ export function readBackendProfile(workspaceDir = resolveWorkspaceDir()): Backen
   const sha = "raw" in read ? createHash("sha256").update(read.raw).digest("hex") : read.error;
   const cached = seen.get(file);
   if (cached?.sha === sha) {
+    noteAuditPolicy(cached.policy);
     return cached.profile;
   }
 
   const parsed: ParseResult = "raw" in read ? parseBackendProfile(read.raw) : read;
   // Frozen: every caller shares this cached object, so none may loosen it.
   const profile = Object.freeze("profile" in parsed ? parsed.profile : defaultBackendProfile());
-  seen.set(file, { sha, profile });
+  // Rows carry env "unknown" under the fail-closed default (its env is not the file's).
+  const policy = {
+    env: "error" in parsed ? ("unknown" as const) : profile.env,
+    state: "error" in parsed ? ("fail_closed_default" as const) : ("valid" as const),
+    mode: profile.mode,
+    profile_sha256: "raw" in read ? sha : null,
+  };
+  seen.set(file, { sha, profile, policy });
+  noteAuditPolicy(policy);
   auditBackendEvent(
     "policy_change",
     "error" in parsed

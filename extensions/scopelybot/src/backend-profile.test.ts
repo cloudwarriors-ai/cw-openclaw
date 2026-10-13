@@ -8,6 +8,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readAuditRows } from "./audit.test-helpers.js";
 import {
   auditBackendEvent,
   parseBackendProfile,
@@ -48,20 +49,10 @@ function writeRaw(raw: string) {
   fs.writeFileSync(path.join(workspace, "scopelybot-backend.json"), raw);
 }
 
-function auditRows() {
-  const file = path.join(workspace, "scopelybot", "audit.jsonl");
-  if (!fs.existsSync(file)) {
-    return [];
-  }
-  return fs
-    .readFileSync(file, "utf8")
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line));
-}
+const auditRows = () => readAuditRows(workspace);
 
 function policyRows() {
-  return auditRows().filter((row) => row.resultSummary === "policy_change");
+  return auditRows().filter((row) => row.event_type === "policy_change");
 }
 
 function expectFailClosedDefault() {
@@ -90,7 +81,7 @@ describe("fail-closed default", () => {
     readBackendProfile(workspace);
     const rows = policyRows();
     expect(rows).toHaveLength(1);
-    expect(rows[0].params).toMatchObject({ valid: false, error: "profile file missing" });
+    expect(rows[0].detail).toMatchObject({ valid: false, error: "profile file missing" });
   });
 
   it("an invalid file yields the same default plus one policy_change error row", () => {
@@ -99,14 +90,14 @@ describe("fail-closed default", () => {
     readBackendProfile(workspace);
     const rows = policyRows();
     expect(rows).toHaveLength(1);
-    expect(rows[0].params).toMatchObject({ valid: false, error: "not valid JSON" });
-    expect(rows[0].params.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(rows[0].detail).toMatchObject({ valid: false, error: "not valid JSON" });
+    expect(rows[0].detail.sha256).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("a directory at the profile path fails closed (not a regular file)", () => {
     fs.mkdirSync(path.join(workspace, "scopelybot-backend.json"));
     expectFailClosedDefault();
-    expect(policyRows()[0].params.error).toBe("profile file is not a regular file");
+    expect(policyRows()[0].detail.error).toBe("profile file is not a regular file");
   });
 
   // A FIFO would block a plain read (and the event loop) until a writer shows
@@ -118,7 +109,7 @@ describe("fail-closed default", () => {
       const fifo = path.join(workspace, "scopelybot-backend.json");
       expect(spawnSync("mkfifo", [fifo]).status).toBe(0);
       expectFailClosedDefault();
-      expect(policyRows()[0].params.error).toBe("profile file is not a regular file");
+      expect(policyRows()[0].detail.error).toBe("profile file is not a regular file");
     },
   );
 
@@ -126,7 +117,7 @@ describe("fail-closed default", () => {
     const valid = JSON.stringify(PROD);
     writeRaw(valid.padEnd(64 * 1024 + 1, " "));
     expectFailClosedDefault();
-    expect(policyRows()[0].params.error).toBe("profile file is larger than 64 KB");
+    expect(policyRows()[0].detail.error).toBe("profile file is larger than 64 KB");
     writeRaw(valid.padEnd(64 * 1024, " "));
     expect(readBackendProfile(workspace).baseUrl).toBe(PROD.baseUrl);
   });
@@ -197,7 +188,7 @@ describe("fail-closed default", () => {
   ])("rejects %s", (_label, body) => {
     writeRaw(JSON.stringify(body));
     expectFailClosedDefault();
-    expect(policyRows()[0].params.valid).toBe(false);
+    expect(policyRows()[0].detail.valid).toBe(false);
   });
 });
 
@@ -253,7 +244,7 @@ describe("valid profiles", () => {
     expect(readBackendProfile(workspace).mode).toBe("off");
     expect(readBackendProfile(workspace).mode).toBe("off");
     const rows = policyRows();
-    expect(rows.map((r) => r.params.mode)).toEqual(["read-only", "off"]);
+    expect(rows.map((r) => r.detail.mode)).toEqual(["read-only", "off"]);
   });
 
   // Every caller shares the cached object: one that wrote to it would loosen
@@ -340,7 +331,7 @@ describe("profile and audit hygiene (F8)", () => {
   it("never echoes an owner-typed host into the error or the audit row", () => {
     writeRaw(JSON.stringify({ ...PROD, allowedHosts: ["api.vip.pscx.ai", "evil.test\u001b[31m"] }));
     expectFailClosedDefault();
-    const error = policyRows()[0].params.error as string;
+    const error = policyRows()[0].detail.error as string;
     expect(error).toBe("allowedHosts entry 2 is not an allowed prod app host");
     expect(JSON.stringify(auditRows())).not.toContain("evil.test");
   });
@@ -351,10 +342,10 @@ describe("profile and audit hygiene (F8)", () => {
       { path: `/x/${"a".repeat(5000)}`, token: "s3cret", note: "mail bot@example.test" },
       workspace,
     );
-    const row = auditRows().at(-1);
-    expect(row.params.token).toBe("[REDACTED]");
-    expect(row.params.note).toBe("mail [REDACTED_EMAIL]");
-    expect((row.params.path as string).length).toBeLessThanOrEqual(256 + "...[truncated]".length);
+    const detail = auditRows().at(-1)?.detail ?? {};
+    expect(detail.token).toBe("[REDACTED]");
+    expect(detail.note).toBe("mail [REDACTED_EMAIL]");
+    expect((detail.path as string).length).toBeLessThanOrEqual(256 + "...[truncated]".length);
   });
 
   it("an empty OPENCLAW_WORKSPACE falls back to the default, never the process cwd", () => {

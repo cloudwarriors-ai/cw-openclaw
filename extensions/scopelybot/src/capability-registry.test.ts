@@ -31,12 +31,9 @@ vi.mock("./pending-confirm.js", async (importOriginal) => ({
 }));
 
 import plugin from "../index.js";
-import {
-  applyCapabilityRegistry,
-  capabilityFor,
-  registryTools,
-  runInToolContext,
-} from "./capability-registry.js";
+import { correlatedId, readAuditRows, testCall } from "./audit.test-helpers.js";
+import { runInCall } from "./call-context.js";
+import { applyCapabilityRegistry, capabilityFor, registryTools } from "./capability-registry.js";
 import { stageWrite } from "./gated.js";
 import { registerPassthroughTools } from "./passthrough-tools.js";
 import { resetScopelyGuardForTest } from "./scopely-api.js";
@@ -67,14 +64,18 @@ function writeProfile(body: Record<string, unknown>) {
 // tool list comes from registration itself, never from a hand-kept copy.
 let banner = "";
 
-function registeredTools(): { tools: Map<string, Tool>; optional: boolean[]; names: string[] } {
+function registeredTools(ctx: unknown = {}): {
+  tools: Map<string, Tool>;
+  optional: boolean[];
+  names: string[];
+} {
   const tools = new Map<string, Tool>();
   const names: string[] = [];
   const optional: boolean[] = [];
   const api = {
     registerTool: (factory: (ctx: unknown) => Tool | Tool[], opts?: { optional?: boolean }) => {
       optional.push(opts?.optional === true);
-      const built = factory({});
+      const built = factory(ctx);
       for (const tool of Array.isArray(built) ? built : [built]) {
         names.push(tool.name);
         tools.set(tool.name, tool);
@@ -93,13 +94,7 @@ function registeredTools(): { tools: Map<string, Tool>; optional: boolean[]; nam
   return { tools, optional, names };
 }
 
-function auditRows(): Array<{ resultSummary: string; params: Record<string, unknown> }> {
-  return fs
-    .readFileSync(path.join(workspace, "scopelybot", "audit.jsonl"), "utf8")
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line));
-}
+const auditRows = () => readAuditRows(workspace);
 
 function parse(result: { content: { text: string }[] }) {
   return JSON.parse(result.content[0].text);
@@ -350,7 +345,7 @@ describe("registry gating through the index.ts wrapper (AC-7.4)", () => {
     );
     expect(result).toEqual({ ok: true, status: 200, data: { status: "ok" } });
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0][0]).toBe("https://api.vip.pscx.ai/api/v1/health/");
+    correlatedId(fetchMock.mock.calls[0][0], "https://api.vip.pscx.ai/api/v1/health/");
   });
 
   it("a tool missing from the registry is refused (deny by default)", async () => {
@@ -373,8 +368,8 @@ describe("registry gating through the index.ts wrapper (AC-7.4)", () => {
   ])("audits the refusal of %s as %s", async (tool, event, family, reason) => {
     await registeredTools().tools.get(tool)!.execute("x", {});
     expect(auditRows().at(-1)).toMatchObject({
-      resultSummary: event,
-      params: { tool, family, reason },
+      event_type: event,
+      detail: { tool, family, reason },
     });
   });
 
@@ -384,8 +379,8 @@ describe("registry gating through the index.ts wrapper (AC-7.4)", () => {
     );
     await (wrapped as (ctx: unknown) => Tool)({}).execute("x", {});
     expect(auditRows().at(-1)).toMatchObject({
-      resultSummary: "not_available",
-      params: { tool: "scopely_brand_new", family: null, reason: "tool_not_registered" },
+      event_type: "not_available",
+      detail: { tool: "scopely_brand_new", family: null, reason: "tool_not_registered" },
     });
   });
 });
@@ -395,7 +390,9 @@ describe("stageWrite read-only refusal (AC-7.4, INV-8)", () => {
 
   it("refuses before a code, a pending action or a CONFIRM prompt exists", async () => {
     const result = parse(
-      await runInToolContext("scopely_update_scoping_card", () => stageWrite("update card", run)),
+      await runInCall(testCall("scopely_update_scoping_card"), () =>
+        stageWrite("update card", run),
+      ),
     );
     expect(result).toMatchObject({ ok: false, outcome: "blocked_read_only", family: "F7" });
     expect(result.error).toContain("paused");
@@ -406,8 +403,8 @@ describe("stageWrite read-only refusal (AC-7.4, INV-8)", () => {
     expect(sendScopelyTextMock).not.toHaveBeenCalled();
     expect(run).not.toHaveBeenCalled();
     expect(auditRows().at(-1)).toMatchObject({
-      resultSummary: "write_blocked_read_only",
-      params: {
+      event_type: "write_blocked_read_only",
+      detail: {
         tool: "scopely_update_scoping_card",
         family: "F7",
         reason: "tool_blocked_read_only",
@@ -430,5 +427,111 @@ describe("stageWrite read-only refusal (AC-7.4, INV-8)", () => {
     expect(result).toMatchObject({ staged: true });
     expect(putPendingMock).toHaveBeenCalledTimes(1);
     expect(sendScopelyTextMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// PK-7b-1: the requester of every row a call writes comes from the trusted
+// tool-factory ctx of the coordinator's own run; anything else is unresolved.
+describe("requester attribution from the tool-factory ctx (PK-7b-1)", () => {
+  const HUB = "agent:scopelybot:zoom:channel:room-1";
+  const missing = { resolved: false, zoom_operator_id: null, source: "none", reason: "missing" };
+  it.each([
+    [
+      "a human-triggered coordinator run",
+      { agentId: "scopelybot", sessionKey: HUB, requesterSenderId: "op_123" },
+      { resolved: true, zoom_operator_id: "op_123", source: "ctx", reason: null },
+    ],
+    [
+      "a coordinator announce run (no sender)",
+      { agentId: "scopelybot", sessionKey: HUB },
+      { resolved: false, zoom_operator_id: null, source: "none", reason: "announce_run" },
+    ],
+    [
+      "a spoke the coordinator spawned in its own agent, even with a sender",
+      {
+        agentId: "scopelybot",
+        sessionKey: "agent:scopelybot:subagent:7c9e6679",
+        requesterSenderId: "op_999",
+      },
+      missing,
+    ],
+    [
+      "a spoke, even if its ctx carried a sender",
+      {
+        agentId: "scopely-catalog",
+        sessionKey: "agent:scopely-catalog:subagent:0f8fad5b",
+        requesterSenderId: "op_999",
+      },
+      missing,
+    ],
+    [
+      "another agent's session",
+      {
+        agentId: "pulsebot",
+        sessionKey: "agent:pulsebot:zoom:channel:x",
+        requesterSenderId: "op_777",
+      },
+      missing,
+    ],
+    ["no ctx at all", {}, missing],
+  ])("%s", async (_label, ctx, requester) => {
+    const health = registeredTools(ctx).tools.get("scopely_health_check")!;
+    await health.execute("call-7", { requester: "op_evil", actor: "op_evil" });
+    const rows = auditRows().filter((r) =>
+      ["http_intent", "http_outcome", "tool_call"].includes(r.event_type),
+    );
+    expect(rows.map((r) => r.event_type)).toEqual(["http_intent", "http_outcome", "tool_call"]);
+    for (const row of rows) {
+      expect(row.requester).toEqual(requester); // params never name the requester
+      expect(row.openclaw).toEqual({
+        agent_id: (ctx as { agentId?: string }).agentId ?? null,
+        session_key: (ctx as { sessionKey?: string }).sessionKey ?? null,
+        tool_call_id: "call-7",
+      });
+    }
+    expect(auditRows().map((r) => r.requester.zoom_operator_id)).not.toContain("scopelybot");
+  });
+
+  it("host-supplied ids are bounded: a 20,000-character tool call id or sender still audits and sends", async () => {
+    const long = (c: string) => c.repeat(20_000);
+    const tools = registeredTools({
+      agentId: long("a"),
+      sessionKey: `${HUB}:${long("s")}`,
+      requesterSenderId: long("u"),
+    }).tools;
+    await tools.get("scopely_health_check")!.execute(long("t"), {});
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const rows = auditRows().filter((r) =>
+      ["http_intent", "http_outcome", "tool_call"].includes(r.event_type),
+    );
+    expect(rows.map((r) => r.event_type)).toEqual(["http_intent", "http_outcome", "tool_call"]);
+    for (const row of rows) {
+      for (const value of [
+        row.requester.zoom_operator_id,
+        ...Object.values(row.openclaw as Record<string, unknown>),
+      ]) {
+        expect(String(value).length).toBeLessThanOrEqual(253);
+        expect(String(value)).toMatch(/~[0-9a-f]{12}$/);
+      }
+    }
+  });
+
+  it("a refused tool's row carries the requester too", async () => {
+    const tools = registeredTools({ sessionKey: HUB, requesterSenderId: "op_123" }).tools;
+    await tools.get("scopely_list_orgs")!.execute("call-8", {});
+    expect(auditRows().at(-1)).toMatchObject({
+      event_type: "not_available",
+      requester: { resolved: true, zoom_operator_id: "op_123" },
+      action: { tool: "scopely_list_orgs", family: "F6", op_class: "read" },
+    });
+  });
+
+  it("a tool registered as a plain object (no factory ctx) resolves missing", async () => {
+    const wrapped = applyCapabilityRegistry({
+      name: "scopely_list_orgs",
+      execute: vi.fn(),
+    } as never) as unknown as Tool;
+    await wrapped.execute("call-9", {});
+    expect(auditRows().at(-1)?.requester).toEqual(missing);
   });
 });

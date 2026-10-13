@@ -213,11 +213,11 @@ describe("runDigestTick", () => {
     expect(scopelyFetchMock).not.toHaveBeenCalled();
     expect(sendMock).not.toHaveBeenCalled();
     const rows = fs
-      .readFileSync(path.join(workspace, "scopelybot", "audit.jsonl"), "utf8")
+      .readFileSync(path.join(workspace, "scopelybot", "audit-v2.jsonl"), "utf8")
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line));
-    expect(rows.filter((r) => r.resultSummary === "digest_skipped")).toHaveLength(1);
+    expect(rows.filter((r) => r.event_type === "digest_skipped")).toHaveLength(1);
     expect(readDigestState(workspace).lastPostedDate).toBeUndefined();
   });
 

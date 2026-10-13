@@ -15,9 +15,10 @@
 // spike; prod byte-identical), so the catalog reads wait for a bot identity
 // (blocked-on-identity) like the other gap families; later packets flip rows.
 
-import { AsyncLocalStorage } from "node:async_hooks";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import { boundedText } from "./audit-chain.js";
 import { auditBackendEvent, readBackendProfile } from "./backend-profile.js";
+import { currentCall, requesterFromToolCtx, runInCall } from "./call-context.js";
 import { jsonResult } from "./scopely-api.js";
 
 export type FamilyId =
@@ -412,28 +413,56 @@ export function capabilityRefusal(tool: string, forced?: "blocked_read_only") {
   });
 }
 
-// The tool currently executing (set by the wrapper), so gated.ts can name the
-// family in its read-only refusal without threading a tool name through every
-// stageWrite call site.
-const toolContext = new AsyncLocalStorage<string>();
-
+// The tool currently executing (set by the wrapper, in the call context), so
+// gated.ts can name the family in its read-only refusal without threading a
+// tool name through every stageWrite call site.
 export function currentToolName(): string | undefined {
-  return toolContext.getStore();
-}
-
-export function runInToolContext<T>(tool: string, fn: () => T): T {
-  return toolContext.run(tool, fn);
+  return currentCall()?.tool;
 }
 
 type ToolArg = Parameters<OpenClawPluginApi["registerTool"]>[0];
 type AgentTool = Exclude<ToolArg, (...args: never[]) => unknown>;
 
-function gateTool(tool: AgentTool): AgentTool {
-  const status = capabilityFor(tool.name)?.status;
+const OP_CLASS: Record<EffectClass, string> = {
+  "pure-read": "read",
+  "read-with-bookkeeping": "read",
+  write: "write",
+  "non-api": "non_api",
+};
+
+type ToolOrigin = { agentId?: string; sessionKey?: string; requesterSenderId?: string };
+
+// Both branches run inside the call context, so a refusal row
+// (write_blocked_read_only, not_available) carries the requester too. A tool
+// registered as a plain object (no factory ctx) has no requester: missing.
+function gateTool(tool: AgentTool, origin?: ToolOrigin): AgentTool {
+  const cap = capabilityFor(tool.name);
+  const status = cap?.status;
+  const action = {
+    tool: tool.name,
+    family: cap?.family ?? null,
+    op_class: cap ? OP_CLASS[cap.effect] : "unknown",
+    registry_status: status ?? "unregistered",
+  };
+  const requester = requesterFromToolCtx(origin);
+  const inCall = <T>(toolCallId: unknown, fn: () => T): T => {
+    // Host-supplied ids are bounded so none can push a row over the size cap.
+    const id = (value: unknown) => (typeof value === "string" ? boundedText(value) : null);
+    const openclaw = {
+      agent_id: id(origin?.agentId),
+      session_key: id(origin?.sessionKey),
+      tool_call_id: id(toolCallId),
+    };
+    return runInCall({ tool: tool.name, trigger: "tool", requester, action, openclaw }, fn);
+  };
   const execute: AgentTool["execute"] =
     status === "live" || status === "local"
-      ? (...args) => runInToolContext(tool.name, () => tool.execute(...args))
-      : async () => capabilityRefusal(tool.name) as Awaited<ReturnType<AgentTool["execute"]>>;
+      ? (...args) => inCall(args[0], () => tool.execute(...args))
+      : async (...args) =>
+          inCall(
+            args[0],
+            () => capabilityRefusal(tool.name) as Awaited<ReturnType<AgentTool["execute"]>>,
+          );
   return { ...tool, execute };
 }
 
@@ -443,10 +472,12 @@ export function applyCapabilityRegistry(tool: ToolArg): ToolArg {
     return gateTool(tool);
   }
   return (ctx) => {
+    // The factory ctx is the run's trusted context (sender, session): every
+    // tool it builds carries it, so each call resolves its requester from it.
     const built = tool(ctx);
     if (!built) {
       return built;
     }
-    return Array.isArray(built) ? built.map(gateTool) : gateTool(built);
+    return Array.isArray(built) ? built.map((t) => gateTool(t, ctx)) : gateTool(built, ctx);
   };
 }

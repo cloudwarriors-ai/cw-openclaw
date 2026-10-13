@@ -20,7 +20,7 @@ The backend profile decides which ZW app host the bot may reach and whether it m
 }
 ```
 
-Keep `digestEnabled` false on production. With `true` (and the digest timer armed by `SCOPELYBOT_DAILY_DIGEST=1`), the daily digest sends 4 extra GETs a day to legacy admin paths the new app does not serve, and the health GET is no longer the bot's only app request.
+Keep `digestEnabled` false on production. With `true` (and the digest timer armed by `SCOPELYBOT_DAILY_DIGEST=1`), the daily digest sends 4 extra GETs a day to legacy admin paths the new app does not serve, and the health GET is no longer the bot's only app request. M1a's audit-attribution claim depends on it too (`docs/PK-7a-DO-NOT-DEPLOY-ALONE.md`).
 
 ## Dev (zw2 sprint stack on noob-root)
 
@@ -60,7 +60,7 @@ mv scopelybot-backend.json.tmp scopelybot-backend.json
 
 To stop anything but an owner from changing the file, the host owner can make it immutable with `chattr +i scopelybot-backend.json` (Linux, root), and remove the flag with `chattr -i` before the next edit. This is a host step; the bot never does it.
 
-Each content change writes one `policy_change` row to `<workspace>/scopelybot/audit.jsonl` (valid, or the error and the fail-closed default).
+Each content change writes one `policy_change` row to the audit-v2 chain `<workspace>/scopelybot/audit-v2.jsonl` (valid, or the error and the fail-closed default). Nothing writes the v1 `audit.jsonl` any more.
 
 ## env is self-declared
 

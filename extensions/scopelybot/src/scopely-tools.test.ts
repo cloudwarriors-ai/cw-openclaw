@@ -9,6 +9,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { correlatedId } from "./audit.test-helpers.js";
 import { resetScopelyGuardForTest } from "./scopely-api.js";
 import { registerScopelyTools } from "./scopely-tools.js";
 
@@ -75,7 +76,7 @@ describe("health tools", () => {
   it("health_check GETs /api/v1/health/ on the prod profile's API host through the guard", async () => {
     const result = parse(await buildTools().scopely_health_check.execute("x", {}));
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0][0]).toBe("https://api.vip.pscx.ai/api/v1/health/");
+    correlatedId(fetchMock.mock.calls[0][0], "https://api.vip.pscx.ai/api/v1/health/");
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "GET", redirect: "manual" });
     expect(result).toEqual({ ok: true, status: 200, data: { status: "ok" } });
   });
@@ -84,7 +85,7 @@ describe("health tools", () => {
     process.env.SCOPELY_BASE_URL = "https://vip.pscx.ai";
     process.env.SCOPELY_HEALTH_URL = "https://dev.api.vip.pscx.ai/health/";
     await buildTools().scopely_health_check.execute("x", {});
-    expect(fetchMock.mock.calls[0][0]).toBe("https://api.vip.pscx.ai/api/v1/health/");
+    correlatedId(fetchMock.mock.calls[0][0], "https://api.vip.pscx.ai/api/v1/health/");
   });
 
   it("without a valid profile the health check makes no request and reports the refusal", async () => {

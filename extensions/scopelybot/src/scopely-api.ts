@@ -22,8 +22,19 @@
 // An AST scan of index.ts's import closure (single-choke-point.test.ts) fails
 // if any other module reaches the network. Refusals throw ScopelyGuardError
 // and are audited.
+//
+// Audit before action (INV-15, PK-7b): a validated request first gets an
+// audit_id and an http_intent row, appended and fsynced; if that append fails
+// the request is NOT sent (audit_unavailable). The request carries the id as
+// ?bot_audit_id= and x-correlation-id (INV-5), and exactly one terminal row
+// with the same audit_id follows (http_outcome, redirect_blocked or
+// rate_limited). A failed outcome append is reported (audit_degraded) and the
+// writer's recovery sweep later records the intent as indeterminate. Nothing
+// here retries a request.
 
-import { auditBackendEvent, type BackendProfile, readBackendProfile } from "./backend-profile.js";
+import { boundedText, newAuditId } from "./audit-chain.js";
+import { auditEvent, auditEventBestEffort, PLUGIN_VERSION } from "./audit.js";
+import { type BackendProfile, readBackendProfile, resolveWorkspaceDir } from "./backend-profile.js";
 import { redactText, redactValue } from "./redaction.js";
 
 export interface ScopelyFetchResult {
@@ -39,7 +50,8 @@ export type GuardCode =
   | "header_blocked"
   | "body_blocked"
   | "redirect_blocked"
-  | "rate_limited";
+  | "rate_limited"
+  | "audit_unavailable";
 
 export class ScopelyGuardError extends Error {
   constructor(
@@ -64,39 +76,76 @@ const REQUEST_TIMEOUT_MS = 10_000;
 // Bodies are read up to this size and the rest cancelled, so a huge or endless
 // answer (the sprint serves an 80 KB Django debug page) cannot pin memory.
 const MAX_BODY_BYTES = 64 * 1024;
+// An intent without a terminal row is orphaned only after this deadline, which
+// is past the 10 s bound on fetch plus body read.
+const INTENT_DEADLINE_MS = 15_000;
+const AUDIT_UNAVAILABLE = "Request not sent: the audit log is unavailable.";
+const X_REQUEST_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
+const NOT_SENT_CODES = new Set(["ENOTFOUND", "ECONNREFUSED", "EAI_AGAIN"]);
 
 // performance.now() stamps of admitted requests in the last minute (one process
 // owns this). Monotonic: a wall clock stepped back must not pin the bot busy.
 let recentRequests: number[] = [];
+// Set when an outcome row of a mutating request could not be written: further
+// non-GET/HEAD requests are refused until restart (reads recover by themselves).
+let writesLatched = false;
 
-function refuse(code: GuardCode, message: string, details: Record<string, unknown>): never {
-  auditBackendEvent(code, details);
+type HttpFields = { method: string; host?: string; path_template?: string; query_keys?: string[] };
+
+// The pathname with id-like segments (digits, UUID, ULID) as ":id", charset
+// checked and bounded: rows never carry raw ids or query values.
+function pathTemplate(pathname: string): string {
+  const template = pathname
+    .split("/")
+    .map((seg) =>
+      /^\d+$|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$|^[0-9A-HJKMNP-TV-Z]{26}$/i.test(
+        seg,
+      )
+        ? ":id"
+        : seg,
+    )
+    .join("/");
+  return /^[A-Za-z0-9._~:/-]{0,200}$/.test(template) ? template : "/:unsafe";
+}
+
+function refuse(
+  code: GuardCode,
+  message: string,
+  http: HttpFields,
+  detail?: Record<string, unknown>,
+): never {
+  auditEventBestEffort(
+    resolveWorkspaceDir(),
+    code === "audit_unavailable" ? "write_blocked_read_only" : code,
+    {
+      http: { ...http, status: null },
+      detail: { ...detail, ...(code === "audit_unavailable" ? { reason: code } : {}) },
+    },
+  );
   throw new ScopelyGuardError(code, message);
 }
 
 // The mode and rate checks: the last gate before the request hits the network.
-function admit(profile: BackendProfile, method: string, url: URL): void {
-  const where = { method, host: url.host, path: url.pathname };
+// The rate slot is committed only after the intent row is durable.
+function admit(profile: BackendProfile, method: string, http: HttpFields): void {
   if (profile.mode === "off") {
-    refuse(
-      "backend_off",
-      "The bot's connection to the app is switched off by the operator.",
-      where,
-    );
+    refuse("backend_off", "The bot's connection to the app is switched off by the operator.", http);
   }
   if (!SAFE_METHODS.has(method) && profile.mode !== "read-write") {
     refuse(
       "write_blocked_read_only",
       `Blocked: the bot is read-only on the new app, so ${method} requests are refused.`,
-      where,
+      http,
     );
+  }
+  if (!SAFE_METHODS.has(method) && writesLatched) {
+    refuse("audit_unavailable", AUDIT_UNAVAILABLE, http);
   }
   const now = performance.now();
   recentRequests = recentRequests.filter((t) => now - t < 60_000);
   if (recentRequests.length >= profile.maxRequestsPerMinute) {
-    refuse("rate_limited", BUSY_MESSAGE, where);
+    refuse("rate_limited", BUSY_MESSAGE, http);
   }
-  recentRequests.push(now);
 }
 
 /** What a caller may ask for; any other RequestInit option is never forwarded. */
@@ -118,10 +167,12 @@ function guardHeaders(
   const headers: Record<string, string> = {};
   for (const [name, value] of caller) {
     if (!ALLOWED_HEADERS.has(name)) {
-      refuse("header_blocked", `Blocked: the ${name} request header is refused.`, {
-        method,
-        header: name,
-      });
+      refuse(
+        "header_blocked",
+        `Blocked: the ${name} request header is refused.`,
+        { method },
+        { header: name },
+      );
     }
     headers[name] = value;
   }
@@ -165,40 +216,139 @@ export async function scopelyFetch(
   const headers = guardHeaders(profile, method, opts);
 
   const url = new URL(`${profile.baseUrl}${path}`);
+  const http: HttpFields = {
+    method,
+    host: url.host,
+    path_template: pathTemplate(url.pathname),
+    query_keys: [...new Set(url.searchParams.keys())]
+      .filter((k) => k !== "bot_audit_id")
+      .map(boundedText)
+      .toSorted(),
+  };
   // Last gate, independent of how the URL was assembled: the target host must be
   // one the validated profile names, with no userinfo. Redundant today (the URL is
   // baseUrl plus a single-slash path); it fails closed if URL assembly, baseUrl
   // handling or profile validation ever drift apart.
   if (!profile.allowedHosts.includes(url.host) || url.username || url.password) {
-    refuse("host_blocked", "Blocked: the request target is not an allowed app host.", {
-      method,
-      host: url.host,
-    });
+    refuse("host_blocked", "Blocked: the request target is not an allowed app host.", http);
   }
-  admit(profile, method, url);
-  const resp = await fetch(url.href, {
-    method,
-    headers,
-    body: opts.body,
-    redirect: "manual",
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
-  const where = { method, host: url.host, path: url.pathname, status: resp.status };
+  admit(profile, method, http);
+
+  // Correlation (INV-5): set by the guard only, after every caller input; the
+  // param is set (never appended), so it appears exactly once.
+  const auditId = newAuditId();
+  url.searchParams.set("bot_audit_id", auditId);
+  headers["x-correlation-id"] = auditId;
+  headers["x-vipbot-client"] = `scopelybot/${PLUGIN_VERSION} (${profile.env})`;
+
+  const workspace = resolveWorkspaceDir();
+  const started = Date.now();
+  try {
+    auditEvent(workspace, "http_intent", {
+      audit_id: auditId,
+      phase: "intent",
+      http: {
+        ...http,
+        status: null,
+        x_request_id: null,
+        duration_ms: null,
+        deadline_ts: new Date(started + INTENT_DEADLINE_MS).toISOString(),
+      },
+    });
+  } catch {
+    throw new ScopelyGuardError("audit_unavailable", AUDIT_UNAVAILABLE);
+  }
+  recentRequests.push(performance.now());
+
+  // Exactly one terminal row per intent, written even when the request fails.
+  const outcome = (
+    event: "http_outcome" | "redirect_blocked" | "rate_limited",
+    status: number | null,
+    result: Record<string, unknown>,
+    extra: Record<string, unknown> = {},
+  ) => {
+    try {
+      auditEvent(workspace, event, {
+        audit_id: auditId,
+        phase: "outcome",
+        http: { ...http, status, duration_ms: Date.now() - started, ...extra },
+        result,
+      });
+    } catch {
+      // The request already happened: return its result; the intent stays open
+      // until the writer's recovery sweep records it as indeterminate.
+      if (!SAFE_METHODS.has(method)) {
+        writesLatched = true;
+      }
+    }
+  };
+
+  let resp: Response;
+  try {
+    resp = await fetch(url.href, {
+      method,
+      headers,
+      body: opts.body,
+      redirect: "manual",
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch (err) {
+    const code = (err as { cause?: { code?: unknown } })?.cause?.code;
+    const notSent = typeof code === "string" && NOT_SENT_CODES.has(code);
+    outcome("http_outcome", null, {
+      status: notSent ? "not_sent" : "indeterminate",
+      error_class: notSent ? code : ((err as Error)?.name ?? "error").slice(0, 64),
+    });
+    throw err;
+  }
+  const requestId = resp.headers.get("x-request-id");
+  const xRequestId = requestId && X_REQUEST_ID_RE.test(requestId) ? requestId : null;
   if (resp.status === 429 || (resp.status >= 300 && resp.status < 400)) {
     // Neither answer is read: release its connection, then refuse. A 429 is the
     // busy reply; a 3xx is never followed, because M1 calls one fixed URL and a
     // hop would be a second request the guard (and the kill switch) never saw.
+    // Only the redirect's host is recorded, never the Location value.
     await resp.body?.cancel().catch(() => undefined);
     if (resp.status === 429) {
-      refuse("rate_limited", BUSY_MESSAGE, where);
+      outcome("rate_limited", 429, { status: "http_error" }, { x_request_id: xRequestId });
+      throw new ScopelyGuardError("rate_limited", BUSY_MESSAGE);
     }
-    refuse(
+    let redirectHost: string | null = null;
+    try {
+      redirectHost = boundedText(new URL(resp.headers.get("location") ?? "", url).host);
+    } catch {
+      // unparseable Location: no host to record
+    }
+    outcome(
+      "redirect_blocked",
+      resp.status,
+      { status: "blocked" },
+      { x_request_id: xRequestId, redirect_to_host: redirectHost },
+    );
+    throw new ScopelyGuardError(
       "redirect_blocked",
       `Blocked: the app answered with a redirect (HTTP ${resp.status}) and the bot does not follow redirects.`,
-      where,
     );
   }
-  return readResult(resp);
+  let result: ScopelyFetchResult;
+  try {
+    result = await readResult(resp);
+  } catch (err) {
+    outcome(
+      "http_outcome",
+      resp.status,
+      { status: "error", error_class: "body_read" },
+      { x_request_id: xRequestId },
+    );
+    throw err;
+  }
+  outcome(
+    "http_outcome",
+    resp.status,
+    { status: resp.ok ? "ok" : "http_error" },
+    { x_request_id: xRequestId },
+  );
+  return result;
 }
 
 // Read as text first, then parse. DRF answers DELETE with 204 No Content but
@@ -256,6 +406,7 @@ export function resetScopelyGuardForTest(): void {
     throw new Error("resetScopelyGuardForTest is test-only");
   }
   recentRequests = [];
+  writesLatched = false;
 }
 
 export function jsonResult(data: unknown) {
