@@ -33,6 +33,7 @@ vi.mock("./comfort.js", () => ({
 }));
 
 import { setBackendProfileForTest } from "./backend-profile.js";
+import { opsBindingFor } from "./capability-registry.js";
 import { tryExecuteConfirm } from "./confirm.js";
 import { registerPricingTools } from "./pricing-tools.js";
 
@@ -74,7 +75,11 @@ const WRITE_TOOLS: Record<string, Record<string, unknown>> = {
     unit_price: "1.00",
     category: "c",
   },
-  scopely_update_pricing_default: { id: 1, unit_price: "2.00" },
+  scopely_update_pricing_default: {
+    vendor_key: "ops-test-canary",
+    pricing_key: "seat",
+    unit_price: "2.00",
+  },
   scopely_delete_pricing_default: { id: 1 },
   scopely_delete_pricing_item: { vendor_key: "zoom", project_type_id: 1, id: 2 },
   scopely_create_currency: { code: "EUR", symbol: "€", name: "Euro" },
@@ -180,7 +185,7 @@ describe("pricing-tools", () => {
       const t = buildTools();
       fetchMock.mockResolvedValueOnce(TEMPLATES);
       const res = parse(
-        await t.scopely_update_pricing_default.execute("x", {
+        await t.scopely_create_pricing_default.execute("x", {
           vendor_key: "dialpad",
           project_type_id: 99,
           id: 1080,
@@ -203,8 +208,8 @@ describe("pricing-tools", () => {
       );
       expect(item.staged).toBe(true);
       const dflt = parse(
-        await t.scopely_update_pricing_default.execute("x", {
-          id: 3,
+        await t.scopely_create_pricing_default.execute("x", {
+          ...ITEM_ARGS,
           deployment_types: ["tnm"],
         }),
       );
@@ -267,9 +272,13 @@ describe("pricing-tools", () => {
     });
   });
 
-  it.each(["create", "update"])(
-    "routes %s through native shared pricing without dropping obsolete args",
-    async (action) => {
+  it.each([
+    ["create", "item", "pricing.items.create"],
+    ["update", "item", "pricing.items.update"],
+    ["update", "default", "pricing.defaults.update"],
+  ])(
+    "routes %s pricing %s through native shared pricing without dropping obsolete args",
+    async (action, kind, capability) => {
       const params = {
         vendor_key: "ops-test-canary",
         pricing_key: "seat",
@@ -278,7 +287,7 @@ describe("pricing-tools", () => {
         id: 42,
         is_active: false,
       };
-      const tool = buildTools()[`scopely_${action}_pricing_item`];
+      const tool = buildTools()[`scopely_${action}_pricing_${kind}`];
       const checked = validateToolArguments(tool as never, {
         type: "toolCall",
         id: "call",
@@ -287,19 +296,22 @@ describe("pricing-tools", () => {
       });
       expect(checked).toEqual(params);
       await tool.execute("call", checked as Record<string, unknown>);
-      expect(nativeStage).toHaveBeenCalledExactlyOnceWith(`pricing.items.${action}`, params);
+      expect(nativeStage).toHaveBeenCalledExactlyOnceWith(capability, params);
       expect(nativeStage.mock.calls[0][1]).toEqual(params);
       expect(fetchMock).not.toHaveBeenCalled();
     },
   );
 
-  it.each(["create", "update"])("never falls back when native %s refuses", async (action) => {
-    const refused = { content: [{ type: "text", text: '{"ok":false,"error":"refused"}' }] };
-    nativeStage.mockResolvedValue(refused);
-    expect(await buildTools()[`scopely_${action}_pricing_item`].execute("call", {})).toBe(refused);
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(sendScopelyTextMock).not.toHaveBeenCalled();
-  });
+  it.each(["create_pricing_item", "update_pricing_item", "update_pricing_default"])(
+    "never falls back when native %s refuses",
+    async (action) => {
+      const refused = { content: [{ type: "text", text: '{"ok":false,"error":"refused"}' }] };
+      nativeStage.mockResolvedValue(refused);
+      expect(await buildTools()[`scopely_${action}`].execute("call", {})).toBe(refused);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(sendScopelyTextMock).not.toHaveBeenCalled();
+    },
+  );
 
   it("delete_currency confirms to DELETE", async () => {
     const t = buildTools();
@@ -316,6 +328,20 @@ describe("pricing-tools", () => {
       "/api/admin/currencies/9/",
       expect.objectContaining({ method: "DELETE" }),
     );
+  });
+
+  it("preserves explicit all-scope requests through model validation and the native binding", () => {
+    const tool = buildTools().scopely_list_pricing_defaults;
+    const args = { vendor_key: "ops-test-canary", scope_mode: "all", offset: 20 };
+    expect(
+      validateToolArguments(tool as never, {
+        type: "toolCall",
+        id: "all-scopes",
+        name: tool.name,
+        arguments: args,
+      }),
+    ).toEqual(args);
+    expect(opsBindingFor(tool.name)?.args).toContain("scope_mode");
   });
 
   it("registers all 15 pricing tools", () => {

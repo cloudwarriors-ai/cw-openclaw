@@ -2,6 +2,8 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const nativeStage = vi.hoisted(() => vi.fn());
+vi.mock("./ops-write-client.js", () => ({ opsStageWrite: nativeStage }));
 const scopelyFetchMock = vi.fn();
 const stageWriteMock = vi.fn();
 vi.mock("./scopely-api.js", async () => {
@@ -54,12 +56,14 @@ function parse(result: { content: { text: string }[] }) {
 
 describe("Scopely support tools", () => {
   beforeEach(() => {
+    nativeStage.mockReset();
+    nativeStage.mockResolvedValue({ content: [{ type: "text", text: '{"staged":true}' }] });
     scopelyFetchMock.mockReset();
     stageWriteMock.mockReset();
   });
 
   it("registers the exact eleven support tools", () => {
-    expect(Object.keys(buildTools()).sort()).toEqual(
+    expect(Object.keys(buildTools()).toSorted()).toEqual(
       [
         "scopely_compare_session_versions",
         "scopely_list_services",
@@ -72,7 +76,7 @@ describe("Scopely support tools", () => {
         "scopely_support_session",
         "scopely_trace_logs",
         "scopely_unlock_user",
-      ].sort(),
+      ].toSorted(),
     );
   });
 
@@ -119,7 +123,8 @@ describe("Scopely support tools", () => {
     await tools.scopely_reassign_session.execute("x", { session_id: 1, organization_id: 2 });
     await tools.scopely_refresh_docusign_status.execute("x", { session_id: 1 });
     await tools.scopely_resend_docusign.execute("x", { session_id: 1 });
-    expect(stageWriteMock).toHaveBeenCalledTimes(5);
+    expect(stageWriteMock).toHaveBeenCalledTimes(4);
+    expect(nativeStage).toHaveBeenCalledTimes(1);
     expect(scopelyFetchMock).not.toHaveBeenCalled();
   });
 

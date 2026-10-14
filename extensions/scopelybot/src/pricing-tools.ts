@@ -105,13 +105,27 @@ export function registerPricingTools(api: OpenClawPluginApi, logger: AuditLogger
         name: "scopely_list_pricing_defaults",
         description:
           "List the platform default rates of a vendor's governing rate card (amounts as strings, " +
-          "with the card's version and effective window). Read-only. Optionally filter by " +
-          "scope_category (ucaas or ccaas). Paged: 20 rows at a time; the answer's next_offset " +
-          "names the offset of the next page. This is the spine rate-card authority; live /api/v1 " +
-          "order pricing still reads the legacy BasePricing row, so do not quote these as order prices.",
+          "with the card's version and effective window). Read-only. To list ALL scopes, set " +
+          "scope_mode=all and omit scope_category. Never invent a scope filter. For an exact " +
+          "scope, set scope_mode=exact and scope_category; blank selects only unclassified rows. " +
+          "Paged: 20 rows at a time; the answer's next_offset " +
+          "names the offset of the next page. These are VIP native rates. The older ZW pricing " +
+          "table is separate and is not changed by the bot.",
         parameters: Type.Object({
           vendor_key: Type.String({ description: "Vendor key (e.g. zoom)" }),
-          scope_category: Type.Optional(Type.String({ description: "Filter: ucaas or ccaas" })),
+          scope_mode: Type.Optional(
+            Type.String({
+              enum: ["all", "exact"],
+              description:
+                "all = every scope, no scope_category; exact = only the supplied scope_category",
+            }),
+          ),
+          scope_category: Type.Optional(
+            Type.String({
+              description:
+                "Exact scope only; empty selects unclassified rows, not all scopes. Omit with scope_mode=all.",
+            }),
+          ),
           limit: Type.Optional(
             Type.Integer({ minimum: 1, maximum: 20, description: "Rows per page (default 20)" }),
           ),
@@ -186,56 +200,6 @@ export function registerPricingTools(api: OpenClawPluginApi, logger: AuditLogger
   api.registerTool(() =>
     wrapToolWithAudit(
       {
-        name: "scopely_update_pricing_default",
-        description:
-          "Update a Scopely VIP pricing default (admin action). You ARE authorized — CALL this tool. " +
-          "Pass only fields to change. It only STAGES the change; nothing applies until `CONFIRM <code>`.",
-        parameters: Type.Object({
-          id: Type.Number({ description: "Pricing default id" }),
-          display_name: Type.Optional(Type.String()),
-          description: Type.Optional(Type.String()),
-          unit_price: Type.Optional(Type.String({ description: 'Decimal string, e.g. "15.00"' })),
-          unit_price_by_deployment: Type.Optional(Type.Record(Type.String(), Type.String())),
-          category: Type.Optional(Type.String()),
-          sort_order: Type.Optional(Type.Number()),
-          deployment_types: Type.Optional(
-            Type.Array(Type.String(), {
-              description:
-                "Deployment type KEYS (e.g. autopilot, copilot, bespoke) — NOT a pricing " +
-                "category. Unknown keys are rejected with the valid list.",
-            }),
-          ),
-          is_active: Type.Optional(Type.Boolean()),
-        }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const id = params.id as number;
-            const keyError = await rejectUnknownDeploymentKeys(params);
-            if (keyError) {
-              return jsonResult({ ok: false, error: keyError });
-            }
-            const body = pickBody(params, PRICING_FIELDS);
-            if (Object.keys(body).length === 0) {
-              return jsonResult({ ok: false, error: "No fields to update." });
-            }
-            return stageWrite(`update pricing default id ${id}: ${describeChanges(body)}`, () =>
-              scopelyFetch(`/api/admin/pricing-defaults/${id}/`, {
-                method: "PATCH",
-                body: JSON.stringify(body),
-              }),
-            );
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
-      },
-      logger,
-    ),
-  );
-
-  api.registerTool(() =>
-    wrapToolWithAudit(
-      {
         name: "scopely_delete_pricing_default",
         description:
           "Delete a Scopely VIP pricing default (admin action). You ARE authorized — CALL this tool. " +
@@ -286,11 +250,15 @@ export function registerPricingTools(api: OpenClawPluginApi, logger: AuditLogger
     ),
   );
 
-  for (const action of ["create", "update"] as const) {
+  for (const [action, kind, capability] of [
+    ["create", "item", "pricing.items.create"],
+    ["update", "item", "pricing.items.update"],
+    ["update", "default", "pricing.defaults.update"],
+  ] as const) {
     api.registerTool(() =>
       wrapToolWithAudit(
         {
-          name: `scopely_${action}_pricing_item`,
+          name: `scopely_${action}_pricing_${kind}`,
           description:
             `${action === "create" ? "Create" : "Update"} a VIP/ZW shared vendor rate by pricing_key. ` +
             "Stages an exact preview for human CONFIRM; applies across project types using this key. " +
@@ -324,7 +292,7 @@ export function registerPricingTools(api: OpenClawPluginApi, logger: AuditLogger
             { additionalProperties: true },
           ),
           execute: (_id: string, params: Record<string, unknown>) =>
-            opsStageWrite(`pricing.items.${action}`, params),
+            opsStageWrite(capability, params),
         },
         logger,
       ),

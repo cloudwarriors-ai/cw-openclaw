@@ -8,6 +8,7 @@ import type { ScopelyBotConfig } from "./config.js";
 import { fetchDeploymentTypeKeys } from "./deployment-keys.js";
 import { traceScopelyLogs, listScopelyServices } from "./devtools-client.js";
 import { stageWrite } from "./gated.js";
+import { opsStageWrite } from "./ops-write-client.js";
 import { buildQuery, errorResult, jsonResult, scopelyFetch } from "./scopely-api.js";
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -18,8 +19,9 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function positiveId(value: unknown, name: string): number {
   const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0)
+  if (!Number.isInteger(parsed) || parsed <= 0) {
     throw new Error(`${name} must be a positive integer`);
+  }
   return parsed;
 }
 
@@ -61,7 +63,9 @@ function shapeTimeline(value: unknown) {
 }
 
 function shapeVersions(value: unknown) {
-  if (!Array.isArray(value)) return [];
+  if (!Array.isArray(value)) {
+    return [];
+  }
   return value.slice(0, 100).map((entry) => {
     const row = asRecord(entry);
     return {
@@ -322,18 +326,14 @@ export function registerSupportTools(
       {
         name: "scopely_unlock_user",
         description:
-          "Stage clearing a Scopely user's login lockout. PROD write; nothing executes until a separately authorized Zoom sender confirms the system-posted code.",
-        parameters: Type.Object({ user_id: Type.Number({ description: "Numeric user id" }) }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const userId = positiveId(params.user_id, "user_id");
-            return stageWrite(`unlock user id ${userId}`, () =>
-              scopelyFetch(`/api/auth/users/${userId}/unlock/`, { method: "POST", body: "{}" }),
-            );
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+          "Stage clearing the native VIP/ZW user's current email and username login lockouts. " +
+          "Local allowlisted synthetic users only; requires human confirmation. Later failed logins can lock again.",
+        parameters: Type.Object(
+          { user_id: Type.Integer({ minimum: 1, description: "Native VIP/ZW user id" }) },
+          { additionalProperties: true },
+        ),
+        execute: (_id: string, params: Record<string, unknown>) =>
+          opsStageWrite("identity.users.unlock", params),
       },
       logger,
     ),

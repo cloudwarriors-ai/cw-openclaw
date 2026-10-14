@@ -3,6 +3,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
 import { stageWrite } from "./gated.js";
+import { opsStageWrite } from "./ops-write-client.js";
 import { scopelyFetch, jsonResult, errorResult } from "./scopely-api.js";
 
 // Each gated tool resolves a target and stages a pending action via stageWrite(),
@@ -54,33 +55,20 @@ export function registerUserMaintenanceTools(api: OpenClawPluginApi, logger: Aud
       {
         name: "scopely_set_user_active",
         description:
-          "Activate or deactivate a Scopely VIP user (admin action). You ARE authorized to do this. " +
-          "When an admin asks, CALL this tool — do NOT refuse or defer to the admin UI. It is safe: it " +
-          "only STAGES the change and returns a confirmation code; nothing applies until the requester " +
-          "replies `CONFIRM <code>`. Look up the user id first with scopely_list_users.",
-        parameters: Type.Object({
-          user_id: Type.Number({ description: "Numeric user id" }),
-          is_active: Type.Boolean({ description: "true = activate, false = deactivate" }),
-          email: Type.Optional(
-            Type.String({ description: "User email, for the confirmation message" }),
-          ),
-        }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const userId = params.user_id as number;
-            const isActive = params.is_active as boolean;
-            const email = (params.email as string) || `id ${userId}`;
-            const summary = `${isActive ? "ACTIVATE" : "DEACTIVATE"} ${email} (id ${userId})`;
-            return await stageWrite(summary, () =>
-              scopelyFetch(`/api/auth/users/${userId}/`, {
-                method: "PATCH",
-                body: JSON.stringify({ is_active: isActive }),
-              }),
-            );
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+          "Stage a native VIP/ZW global account activation change for human confirmation. " +
+          "Local allowlisted synthetic users only. The preview explains account-wide access and token effects; " +
+          "does not change roles or organization membership.",
+        parameters: Type.Object(
+          {
+            user_id: Type.Integer({ minimum: 1, description: "Native VIP/ZW user id" }),
+            is_active: Type.Boolean({
+              description: "true = activate, false = deactivate globally",
+            }),
+          },
+          { additionalProperties: true },
+        ),
+        execute: (_id: string, params: Record<string, unknown>) =>
+          opsStageWrite("identity.users.set_active", params),
       },
       logger,
     ),

@@ -5,6 +5,8 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const nativeStage = vi.hoisted(() => vi.fn());
+vi.mock("./ops-write-client.js", () => ({ opsStageWrite: nativeStage }));
 const scopelyFetchMock = vi.fn();
 const stageWriteMock = vi.fn();
 vi.mock("./scopely-api.js", async () => {
@@ -56,13 +58,15 @@ async function runStaged() {
 
 describe("session lifecycle tools", () => {
   beforeEach(() => {
+    nativeStage.mockReset();
+    nativeStage.mockResolvedValue({ content: [{ type: "text", text: '{"staged":true}' }] });
     scopelyFetchMock.mockReset();
     scopelyFetchMock.mockResolvedValue({ ok: true, status: 200, data: {} });
     stageWriteMock.mockReset();
   });
 
   it("registers the exact eleven tools", () => {
-    expect(Object.keys(buildTools()).sort()).toEqual(
+    expect(Object.keys(buildTools()).toSorted()).toEqual(
       [
         "scopely_add_session_discount",
         "scopely_approve_session",
@@ -75,7 +79,7 @@ describe("session lifecycle tools", () => {
         "scopely_reopen_session",
         "scopely_request_session_approval",
         "scopely_revise_session",
-      ].sort(),
+      ].toSorted(),
     );
   });
 
@@ -95,7 +99,8 @@ describe("session lifecycle tools", () => {
       value: 10,
     });
     await tools.scopely_remove_session_discount.execute("x", { session_id: 7, discount_id: 3 });
-    expect(stageWriteMock).toHaveBeenCalledTimes(10);
+    expect(stageWriteMock).toHaveBeenCalledTimes(9);
+    expect(nativeStage).toHaveBeenCalledTimes(1);
     expect(scopelyFetchMock).not.toHaveBeenCalled();
   });
 

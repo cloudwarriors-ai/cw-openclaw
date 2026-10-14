@@ -189,3 +189,26 @@ it("channel drift after staging cannot confirm", async () => {
   expect(await confirm()).not.toContain("✅ Done");
   expect(request).toHaveBeenCalledTimes(1);
 });
+
+it.each([
+  [
+    "pricing.defaults.update",
+    { vendor_key: "ops-test-canary", pricing_key: "seat", unit_price: "15.00" },
+  ],
+  ["identity.users.unlock", { user_id: 7 }],
+  ["identity.users.set_active", { user_id: 7, is_active: false }],
+  ["sessions.archive", { session_id: 7, reason: "Synthetic duplicate" }],
+] as const)("%s uses the trusted one-shot confirmation path", async (capability, args) => {
+  const staged = await runInCall(context, () => opsStageWrite(capability, args));
+  expect(body(staged).staged).toBe(true);
+  expect(JSON.parse(request.mock.calls[0][1].body)).toMatchObject({ capability, args });
+  const confirmation = code();
+  expect(await confirm(confirmation, "outsider")).toContain("not authorized");
+  expect(request).toHaveBeenCalledTimes(1);
+  expect(await confirm(confirmation)).toContain("✅ Done");
+  expect(new Headers(request.mock.calls[1][1].headers).get("x-ops-requester-zoom-id")).toBe(
+    "synthetic-admin",
+  );
+  expect(await confirm(confirmation)).toContain("No pending action");
+  expect(request).toHaveBeenCalledTimes(2);
+});

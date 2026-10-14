@@ -1,0 +1,11 @@
+{
+  "profile": "zw2",
+  "env": "prod",
+  "baseUrl": "https://api.vip.pscx.ai",
+  "allowedHosts": ["api.vip.pscx.ai"],
+  "authMode": "service-token",
+  "mode": "read-only",
+  "digestEnabled": false,
+  "maxRequestsPerMinute": 20,
+  "issueLinks": {}
+}

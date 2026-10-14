@@ -339,7 +339,7 @@ const OPS_READS: Record<string, OpsBinding> = {
   // limit; without a limit the kernel's default page is 50 rows.
   scopely_list_pricing_defaults: {
     capability: "pricing.defaults.list",
-    args: ["vendor_key", "scope_category", "limit", "offset"],
+    args: ["vendor_key", "scope_mode", "scope_category", "limit", "offset"],
     defaults: { limit: 20 },
   },
   scopely_list_sessions: {
@@ -412,6 +412,10 @@ export function capabilityFor(tool: string): Capability | undefined {
             "scopely_delete_scoping_card",
             "scopely_create_pricing_item",
             "scopely_update_pricing_item",
+            "scopely_update_pricing_default",
+            "scopely_unlock_user",
+            "scopely_set_user_active",
+            "scopely_archive_session",
           ].includes(tool) && readBackendProfile().env === "local"
         ? "local"
         : (STATUS_OVERRIDES[tool] ?? status),

@@ -12,7 +12,11 @@ type LocalWrite =
   | "catalog.scoping_cards.update"
   | "catalog.scoping_cards.delete"
   | "pricing.items.create"
-  | "pricing.items.update";
+  | "pricing.items.update"
+  | "pricing.defaults.update"
+  | "identity.users.unlock"
+  | "identity.users.set_active"
+  | "sessions.archive";
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }

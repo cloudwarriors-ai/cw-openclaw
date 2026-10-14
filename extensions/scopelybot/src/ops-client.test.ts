@@ -705,10 +705,10 @@ describe("mock kernel fidelity", () => {
     expect(success.response.untrusted_output).toBe(false);
   });
 
-  it("the fixture is the byte copy of the kernel snapshot at 87b8b516", () => {
+  it("the fixture is the byte copy of the kernel snapshot for explicit scope selection", () => {
     const sha = createHash("sha256").update(fs.readFileSync(SNAPSHOT_FILE)).digest("hex");
-    // Kernel commit 87b8b516 (pricing.defaults.list paging), byte copy.
-    expect(sha).toBe("a38f89c3b7f1d863aa1ba4257ce4c99bb82cd6114270681fd76ec256a4f90d5c");
+    // Generated with OPS_LOCAL_WRITES=False; same bytes as the paired backend snapshot.
+    expect(sha).toBe("7202472815bd38c7656e4c18c94eff66f13f3a6468c1a70f4b97c90da9e37f3b");
   });
 });
 
@@ -946,9 +946,9 @@ describe("outcome rows and secrets on every path", () => {
   });
 });
 
-describe("pricing defaults carry the kernel's money-authority caveat", () => {
+describe("pricing defaults identify VIP native rate authority", () => {
   const CAVEAT =
-    "This is the spine rate-card authority; live /api/v1 order pricing still reads the legacy BasePricing row, so do not quote these as order prices.";
+    "These are VIP native rates. The older ZW pricing table is separate and is not changed by the bot.";
 
   it("in the result, verbatim from the kernel's summary", async () => {
     const result = await run("scopely_list_pricing_defaults", { vendor_key: "zoom" });
@@ -1243,4 +1243,85 @@ describe("a personal service-slot token never supplies a missing bot identity", 
       );
     },
   );
+});
+
+// Native DB-only P3 adapters, with real plugin registration and HTTP serialization.
+// Fetch and Zoom delivery are mocked; backend effects are covered by PostgreSQL tests.
+it("forwards explicit all scopes without inventing a scope_category", async () => {
+  const result = await run("scopely_list_pricing_defaults", {
+    vendor_key: "zoom",
+    scope_mode: "all",
+  });
+  expect(result.ok).toBe(true);
+  expect(JSON.parse(fetchMock.mock.calls[0][1].body).args).toEqual({
+    vendor_key: "zoom",
+    scope_mode: "all",
+    limit: 20,
+  });
+});
+
+describe("local native workflow adapters", () => {
+  const cases = [
+    [
+      "scopely_update_pricing_default",
+      "pricing.defaults.update",
+      { vendor_key: "ops-test-canary", pricing_key: "seat", unit_price: "15.00" },
+    ],
+    ["scopely_unlock_user", "identity.users.unlock", { user_id: 7 }],
+    ["scopely_set_user_active", "identity.users.set_active", { user_id: 7, is_active: false }],
+    [
+      "scopely_archive_session",
+      "sessions.archive",
+      { session_id: 7, reason: "Duplicate synthetic draft" },
+    ],
+  ] as const;
+
+  it.each(cases)("%s prepares only its native capability", async (tool, capability, args) => {
+    fs.writeFileSync(
+      path.join(workspace, "scopelybot-backend.json"),
+      JSON.stringify({
+        profile: "zw2",
+        env: "local",
+        baseUrl: "http://127.0.0.1:8100",
+        allowedHosts: ["127.0.0.1:8100"],
+        authMode: "service-token",
+        mode: "read-write",
+      }),
+    );
+    vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", "room-1");
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          data: {
+            state: "pending",
+            confirmation_required: true,
+            pending_action_id: "12345678-1234-4234-9234-123456789abc",
+            preview: "Exact synthetic change",
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      ),
+    );
+    try {
+      const result = await run(tool, args);
+      expect(result.staged, JSON.stringify(result)).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const url = new URL(fetchMock.mock.calls[0][0]);
+      expect(url.origin + url.pathname).toBe("http://127.0.0.1:8100/api/spine/v1/ops/invoke/");
+      expect(url.searchParams.get("bot_audit_id")).toBeTruthy();
+      const opts = fetchMock.mock.calls[0][1];
+      expect(JSON.parse(opts.body)).toMatchObject({ capability, args });
+      expect(new Headers(opts.headers).get(ZID)).toBe(ALICE.zoomId);
+      expect(JSON.stringify(result)).not.toContain("12345678-1234-4234-9234-123456789abc");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.each(cases)("%s stays blocked in production", async (tool, _capability, args) => {
+    const result = await run(tool, args);
+    expect(result.ok).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });

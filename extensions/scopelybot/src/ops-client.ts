@@ -121,7 +121,7 @@ const REFUSALS = new Map<string, string>(
 // pricing.defaults.list: the last sentence of its snapshot summary, verbatim.
 const CAVEATS: Partial<Record<OpsCapability, string>> = {
   "pricing.defaults.list":
-    "This is the spine rate-card authority; live /api/v1 order pricing still reads the legacy BasePricing row, so do not quote these as order prices.",
+    "These are VIP native rates. The older ZW pricing table is separate and is not changed by the bot.",
 };
 
 type Answer =

@@ -228,6 +228,44 @@
       "family": "pricing",
       "input_schema": {
         "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "scope_mode": {
+                  "const": "all"
+                }
+              },
+              "required": [
+                "scope_mode"
+              ]
+            },
+            "then": {
+              "not": {
+                "required": [
+                  "scope_category"
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "scope_mode": {
+                  "const": "exact"
+                }
+              },
+              "required": [
+                "scope_mode"
+              ]
+            },
+            "then": {
+              "required": [
+                "scope_category"
+              ]
+            }
+          }
+        ],
         "properties": {
           "category": {
             "maxLength": 100,
@@ -246,7 +284,15 @@
             "type": "integer"
           },
           "scope_category": {
+            "description": "Exact stored scope; empty means unclassified. Forbidden with scope_mode=all.",
             "maxLength": 16,
+            "type": "string"
+          },
+          "scope_mode": {
+            "enum": [
+              "all",
+              "exact"
+            ],
             "type": "string"
           },
           "vendor_key": {
@@ -263,7 +309,7 @@
       },
       "max_items": 100,
       "name": "pricing.defaults.list",
-      "summary": "The platform default rates for one vendor: the governing rate card's entries (amounts as strings) with the card's version and effective window. Optional filters: scope_category, category, is_active. Paged: limit 1-100 (default 50) and offset; total is the full count and next_offset the next page's offset (null on the last page). Staff only. This is the spine rate-card authority; live /api/v1 order pricing still reads the legacy BasePricing row, so do not quote these as order prices.",
+      "summary": "The platform default rates for one vendor: the governing rate card's entries (amounts as strings) with the card's version and effective window. Use scope_mode=all without scope_category for every scope, or scope_mode=exact with scope_category (empty matches unclassified rows). A scope_category without scope_mode retains exact matching. Optional filters: category, is_active. Paged: limit 1-100 (default 50) and offset; total is the full count and next_offset the next page's offset (null on the last page). Staff only. These are VIP native rates. The older ZW pricing table is separate and is not changed by the bot.",
       "untrusted_output": false,
       "wire_name": "pricing-defaults-list"
     },
