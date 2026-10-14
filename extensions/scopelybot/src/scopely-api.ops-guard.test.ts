@@ -536,3 +536,47 @@ describe("missing requester is blocked before credentials or network", () => {
     },
   );
 });
+
+describe("local write argument byte boundary", () => {
+  beforeEach(() => vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", "synthetic-channel"));
+  afterEach(() => vi.unstubAllEnvs());
+  it.each([4096, 4097, 16384, 16385])(
+    "bounds a %i-byte write independently of reads",
+    async (bytes) => {
+      writeProfile({
+        env: "local",
+        baseUrl: "http://127.0.0.1:8100",
+        allowedHosts: ["127.0.0.1:8100"],
+        authMode: "service-token",
+        mode: "read-write",
+      });
+      const args = { description: "x".repeat(bytes - 18) };
+      expect(Buffer.byteLength(JSON.stringify(args))).toBe(bytes);
+      const request = scopelyOpsInvoke(op({ capability: "catalog.scoping_cards.create", args }));
+      if (bytes <= 16384) {
+        await expect(request).resolves.toMatchObject({ ok: true });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      } else {
+        await refused(request, "body_blocked");
+        expect(fetchMock).not.toHaveBeenCalled();
+      }
+    },
+  );
+  it("counts multibyte writes in UTF-8 bytes", async () => {
+    writeProfile({
+      env: "local",
+      baseUrl: "http://127.0.0.1:8100",
+      allowedHosts: ["127.0.0.1:8100"],
+      authMode: "service-token",
+      mode: "read-write",
+    });
+    const args = { description: "😀".repeat(4092) };
+    expect(JSON.stringify(args).length).toBeLessThan(16384);
+    expect(Buffer.byteLength(JSON.stringify(args))).toBeGreaterThan(16384);
+    await refused(
+      scopelyOpsInvoke(op({ capability: "catalog.scoping_cards.create", args })),
+      "body_blocked",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

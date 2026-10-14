@@ -2,9 +2,8 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
-import { describeChanges, pickBody, stageWrite } from "./gated.js";
 import { opsRead } from "./ops-client.js";
-import { errorResult, jsonResult, scopelyFetch } from "./scopely-api.js";
+import { opsStageWrite } from "./ops-write-client.js";
 
 // Scoping-card config tools (Scopely VIP admin). Cards are the wizard questions
 // shown per project type: /api/admin/vendors/<key>/project-types/<pt>/cards/.
@@ -14,18 +13,6 @@ import { errorResult, jsonResult, scopelyFetch } from "./scopely-api.js";
 // REPLACES the card's entire field set (delete-all + recreate). Same for the
 // `visibility` dict. Tool descriptions warn the model to send the FULL desired
 // set, never a delta.
-
-const CARD_FIELDS = [
-  "key",
-  "title",
-  "description",
-  "icon",
-  "gate_question",
-  "sort_order",
-  "fields",
-  "visibility",
-  "visibility_condition",
-] as const;
 
 // One wizard field inside a card. options[] only applies to select fields.
 const cardFieldSchema = Type.Object({
@@ -56,9 +43,6 @@ const cardFieldSchema = Type.Object({
 });
 
 export function registerScopingCardTools(api: OpenClawPluginApi, logger: AuditLogger) {
-  const cardBase = (vendorKey: string, ptPk: number) =>
-    `/api/admin/vendors/${encodeURIComponent(vendorKey)}/project-types/${ptPk}/cards/`;
-
   api.registerTool(() =>
     wrapToolWithAudit(
       {
@@ -104,13 +88,17 @@ export function registerScopingCardTools(api: OpenClawPluginApi, logger: AuditLo
       {
         name: "scopely_create_scoping_card",
         description:
-          "Create a scoping card on a Scopely VIP project type (admin action). You ARE authorized — CALL " +
-          "this tool. It only STAGES the create; nothing happens until `CONFIRM <code>`. visibility maps " +
-          'deployment-type keys to "yes" | "gated" | "skip". visibility_condition is {} or ' +
-          "{field_key, operator(eq|neq|gt|gte|lt|lte|in|not_in), value}.",
+          "Prepare a synthetic local scoping card; human CONFIRM is required. " +
+          "Supports unpriced fields and deployment visibility. New pricing bindings and " +
+          "visibility_condition are not supported. Exact oversized previews refuse.",
         parameters: Type.Object({
           vendor_key: Type.String({ description: "Vendor key" }),
-          project_type_id: Type.Number({ description: "Project-type id" }),
+          project_type_id: Type.Optional(
+            Type.Number({ description: "Project-type id; provide this or project_type, not both" }),
+          ),
+          project_type: Type.Optional(
+            Type.String({ description: "Stable project-type key from catalog reads" }),
+          ),
           key: Type.String({ description: "Card key (machine id)" }),
           title: Type.String({ description: "Card title" }),
           description: Type.Optional(Type.String()),
@@ -131,24 +119,8 @@ export function registerScopingCardTools(api: OpenClawPluginApi, logger: AuditLo
             }),
           ),
         }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const vendorKey = params.vendor_key as string;
-            const ptPk = params.project_type_id as number;
-            const body = pickBody(params, CARD_FIELDS);
-            const fieldCount = Array.isArray(params.fields) ? params.fields.length : 0;
-            return stageWrite(
-              `create scoping card ${params.key as string} ("${params.title as string}", ${fieldCount} fields) on ${vendorKey}/pt ${ptPk}`,
-              () =>
-                scopelyFetch(cardBase(vendorKey, ptPk), {
-                  method: "POST",
-                  body: JSON.stringify(body),
-                }),
-            );
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+        execute: (_id: string, params: Record<string, unknown>) =>
+          opsStageWrite("catalog.scoping_cards.create", params),
       },
       logger,
     ),
@@ -159,15 +131,25 @@ export function registerScopingCardTools(api: OpenClawPluginApi, logger: AuditLo
       {
         name: "scopely_update_scoping_card",
         description:
-          "Update a scoping card on a Scopely VIP project type (admin action). You ARE authorized — CALL " +
-          "this tool. It only STAGES the change; nothing applies until `CONFIRM <code>`. ⚠️ If you supply " +
+          "Prepare a synthetic local scoping-card update; human CONFIRM is required. " +
+          "Keys are immutable; richer metadata replacement and pricing remapping refuse. If you supply " +
           "`fields` or `visibility`, the backend REPLACES the card's ENTIRE field set / visibility map — " +
-          "always fetch the card first (scopely_get_scoping_card) and send the complete desired set, " +
-          "never just the delta. Omit `fields`/`visibility` entirely to leave them unchanged.",
+          "send the complete authoring set. The ordinary read omits retired fields and may cap options; " +
+          "do not treat it as a full replacement source. Omit fields/visibility to preserve them.",
         parameters: Type.Object({
           vendor_key: Type.String({ description: "Vendor key" }),
-          project_type_id: Type.Number({ description: "Project-type id" }),
-          card_id: Type.Number({ description: "Card id" }),
+          project_type_id: Type.Optional(
+            Type.Number({ description: "Project-type id; provide this or project_type, not both" }),
+          ),
+          project_type: Type.Optional(
+            Type.String({ description: "Stable project-type key from catalog reads" }),
+          ),
+          card_id: Type.Optional(
+            Type.Number({ description: "Card id; provide this or card_key, not both" }),
+          ),
+          card_key: Type.Optional(
+            Type.String({ description: "Stable card key from catalog reads" }),
+          ),
           key: Type.Optional(Type.String()),
           title: Type.Optional(Type.String()),
           description: Type.Optional(Type.String()),
@@ -186,36 +168,8 @@ export function registerScopingCardTools(api: OpenClawPluginApi, logger: AuditLo
           ),
           visibility_condition: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
         }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const vendorKey = params.vendor_key as string;
-            const ptPk = params.project_type_id as number;
-            const cardId = params.card_id as number;
-            const body = pickBody(params, CARD_FIELDS);
-            if (Object.keys(body).length === 0) {
-              return jsonResult({ ok: false, error: "No fields to update." });
-            }
-            // Summarize scalar changes; flag full-set replacements explicitly.
-            const scalar = Object.fromEntries(
-              Object.entries(body).filter(([k]) => k !== "fields" && k !== "visibility"),
-            );
-            const parts: string[] = [];
-            if (Object.keys(scalar).length > 0) parts.push(describeChanges(scalar));
-            if (body.fields)
-              parts.push(`REPLACE fields (${(body.fields as unknown[]).length} total)`);
-            if (body.visibility) parts.push("REPLACE visibility map");
-            return stageWrite(
-              `update scoping card id ${cardId} on ${vendorKey}/pt ${ptPk}: ${parts.join("; ")}`,
-              () =>
-                scopelyFetch(`${cardBase(vendorKey, ptPk)}${cardId}/`, {
-                  method: "PATCH",
-                  body: JSON.stringify(body),
-                }),
-            );
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+        execute: (_id: string, params: Record<string, unknown>) =>
+          opsStageWrite("catalog.scoping_cards.update", params),
       },
       logger,
     ),
@@ -226,26 +180,25 @@ export function registerScopingCardTools(api: OpenClawPluginApi, logger: AuditLo
       {
         name: "scopely_delete_scoping_card",
         description:
-          "Delete a scoping card from a Scopely VIP project type (admin action, destructive — removes the " +
-          "card and all its fields). You ARE authorized — CALL this tool. It only STAGES the delete; " +
-          "nothing happens until `CONFIRM <code>`.",
+          "Prepare deletion of a synthetic local scoping card and its fields. " +
+          "Human CONFIRM is required. Remaining dependencies must still validate.",
         parameters: Type.Object({
           vendor_key: Type.String({ description: "Vendor key" }),
-          project_type_id: Type.Number({ description: "Project-type id" }),
-          card_id: Type.Number({ description: "Card id" }),
+          project_type_id: Type.Optional(
+            Type.Number({ description: "Project-type id; provide this or project_type, not both" }),
+          ),
+          project_type: Type.Optional(
+            Type.String({ description: "Stable project-type key from catalog reads" }),
+          ),
+          card_id: Type.Optional(
+            Type.Number({ description: "Card id; provide this or card_key, not both" }),
+          ),
+          card_key: Type.Optional(
+            Type.String({ description: "Stable card key from catalog reads" }),
+          ),
         }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const vendorKey = params.vendor_key as string;
-            const ptPk = params.project_type_id as number;
-            const cardId = params.card_id as number;
-            return stageWrite(`DELETE scoping card id ${cardId} on ${vendorKey}/pt ${ptPk}`, () =>
-              scopelyFetch(`${cardBase(vendorKey, ptPk)}${cardId}/`, { method: "DELETE" }),
-            );
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+        execute: (_id: string, params: Record<string, unknown>) =>
+          opsStageWrite("catalog.scoping_cards.delete", params),
       },
       logger,
     ),

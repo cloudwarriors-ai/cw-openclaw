@@ -404,8 +404,13 @@ export function capabilityFor(tool: string): Capability | undefined {
     enablement: ops ? "read-live-on-prod" : enablement,
     status: ops
       ? "live"
-      : ["scopely_update_project_type", "scopely_update_deployment_type"].includes(tool) &&
-          readBackendProfile().env === "local"
+      : [
+            "scopely_update_project_type",
+            "scopely_update_deployment_type",
+            "scopely_create_scoping_card",
+            "scopely_update_scoping_card",
+            "scopely_delete_scoping_card",
+          ].includes(tool) && readBackendProfile().env === "local"
         ? "local"
         : (STATUS_OVERRIDES[tool] ?? status),
   };

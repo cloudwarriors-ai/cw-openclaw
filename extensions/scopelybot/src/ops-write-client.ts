@@ -5,7 +5,12 @@ import { stageWrite } from "./gated.js";
 import { currentWriteRequester } from "./ops-client.js";
 import { canonicalZoomId, errorResult, jsonResult, scopelyOpsInvoke } from "./scopely-api.js";
 
-type LocalWrite = "catalog.project_types.update" | "catalog.deployment_types.update";
+type LocalWrite =
+  | "catalog.project_types.update"
+  | "catalog.deployment_types.update"
+  | "catalog.scoping_cards.create"
+  | "catalog.scoping_cards.update"
+  | "catalog.scoping_cards.delete";
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }

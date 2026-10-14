@@ -108,6 +108,9 @@ export const OPS_READ_CAPABILITIES = [
   "sessions.get",
 ] as const;
 export const OPS_LOCAL_WRITE_CAPABILITIES = [
+  "catalog.scoping_cards.create",
+  "catalog.scoping_cards.update",
+  "catalog.scoping_cards.delete",
   "catalog.project_types.update",
   "catalog.deployment_types.update",
   "ops.confirm",
@@ -134,6 +137,10 @@ const OPS_BOT_AUDIT_HEADER = "x-ops-bot-audit-id";
 const OPS_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
 // Slice-1 args are a few short keys; anything bigger is not a read argument.
 const MAX_OPS_ARGS_BYTES = 4096;
+// Backend pending envelopes are capped at16KiB including args, preview and
+// identity. Let it validate that combined budget; never preclude valid writes
+// with the smaller read budget. Its exact preview limit also remains in force.
+const MAX_OPS_WRITE_ARGS_BYTES = 16 * 1024;
 // The canonical Zoom user id, the same rule as the kernel's normaliser
 // (journey_models.normalize_zoom_user_id; shared vectors, zoom_id_vectors.json).
 const ZOOM_ID_RE = /^[a-z0-9_-]{6,64}$/;
@@ -341,7 +348,10 @@ function checkOpsInvocation(op: OpsInvocation, http: HttpFields, profile: Backen
   } catch {
     // a cycle or a BigInt: not a JSON argument object
   }
-  if (args === undefined || Buffer.byteLength(args) > MAX_OPS_ARGS_BYTES) {
+  if (
+    args === undefined ||
+    Buffer.byteLength(args) > (localWrite ? MAX_OPS_WRITE_ARGS_BYTES : MAX_OPS_ARGS_BYTES)
+  ) {
     refuse("body_blocked", "Blocked: the capability arguments are not a small JSON object.", http);
   }
   return args;

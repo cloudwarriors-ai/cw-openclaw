@@ -158,3 +158,20 @@ The current coordinator sender must still match the latest inbound sender. The g
 The human CONFIRM gate keeps its channel and approver checks, then sends the trusted confirming Zoom ID to `ops.confirm`. The backend independently rechecks current authority. Only state `succeeded` yields Done; failed/claimed states do not, even under HTTP200. A claimed outcome requires reconciliation, never an automatic repeat. The audit policy records env `local` explicitly.
 
 Project fields: label/enabled/sort_order/product_info_url. Deployment fields: label/description/long_description/icon/sort_order. Other legacy fields refuse. The other16 used writes remain unported. Claude uses the same backend through native MCP prepare/confirm/cancel/pending, with approval inside its client; actual human-client and live Zoom UAT are still required. No separate approval page.
+
+### Local scoping-card writes
+
+The existing create/update/delete scoping-card tool names now stage the native
+`catalog.scoping_cards.*` capabilities, with no legacy write fallback. Select a
+project by ID or its stable key, and a card by ID or its stable key; use exactly
+one selector at each level. Fields are a complete replacement when supplied.
+The backend rejects unsupported field metadata and oversized exact previews;
+normal offered-field reads are not complete replacement exports. Confirmation
+rechecks the full catalog version and uses the existing Zoom CONFIRM flow.
+These tools are partial local parity only: synthetic guards remain in force,
+real channel delivery and human Claude approval are untested, and VIP/ZW
+production remains read only.
+
+Read arguments remain capped at 4 KiB. Guarded local-write arguments may use up
+to 16 KiB; the backend still enforces its combined 16 KiB pending envelope and
+2,000-character exact preview. Oversized requests refuse before any effect.
