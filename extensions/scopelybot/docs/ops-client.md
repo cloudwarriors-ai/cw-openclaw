@@ -283,3 +283,18 @@ approved for shared Noob/production rollout. Future writers can still create new
 unresolved references after commit; this is transaction-time cleanup only.
 Production stays read-only. Mocked Zoom transport and local native tests are
 separate from actual connected-channel and human approval evidence.
+
+### Confirmation failures and unknown outcomes
+
+Only an intact successful backend response with durable `succeeded` state and
+`reconcile_required: false` reports completion. Confirmed failed, cancelled or
+expired states report that the change was not applied. Missing, malformed,
+truncated, nonterminal or server-error responses cannot establish that result.
+Timeouts and callback exceptions likewise report **Outcome unknown**: inspect
+and reconcile the existing pending action and audit before a new request; do not
+retry blindly. The consumed Zoom code never invokes its callback a second time.
+
+Unknown confirmation audit entries use a fixed category. Arbitrary exception
+text is not logged, even when it does not resemble a recognizable credential.
+This is local automated evidence; a real human confirmation and deployed runtime
+still require their own UAT. Production remains read only.

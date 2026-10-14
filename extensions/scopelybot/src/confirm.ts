@@ -22,6 +22,16 @@ export function isApprovedWriteActor(actor: string, approverIds: string[]): bool
   return Boolean(normalized) && allowed.size > 0 && allowed.has(normalized);
 }
 
+function uncertainBundleItem(value: unknown): boolean {
+  if (value === null || typeof value !== "object") {
+    return true;
+  }
+  const item = value as { ok?: boolean; status?: number };
+  return (
+    item.ok !== true && (typeof item.status !== "number" || item.status < 400 || item.status >= 500)
+  );
+}
+
 // Compact, redacted extract of a backend error body so a failed confirm
 // explains itself. Live gap 2026-07-21: a category-validation 400 surfaced
 // as a bare "Failed (HTTP 400)" — the backend's message ("Category must be
@@ -107,12 +117,25 @@ export async function tryExecuteConfirm(params: {
   const start = Date.now();
   try {
     const res = await action.run({ actor: params.actor });
+    const bundle = res.data as { bundle?: boolean; applied?: number; results?: unknown[] } | null;
+    const uncertain =
+      !res.ok &&
+      (res.status < 400 ||
+        res.status >= 500 ||
+        (bundle?.bundle === true &&
+          Array.isArray(bundle.results) &&
+          bundle.results.some(uncertainBundleItem)) ||
+        (res.data !== null &&
+          typeof res.data === "object" &&
+          "code" in res.data &&
+          res.data.code === "outcome_unknown"));
     params.logger({
       ts: new Date().toISOString(),
       tool: "scopely_confirm_execute",
       actor: params.actor || "unknown",
       params: { summary: action.summary },
-      resultSummary: res.ok ? "ok" : `error: ${res.status}`,
+      resultSummary: uncertain ? "outcome_unknown" : res.ok ? "ok" : `error: ${res.status}`,
+      ...(uncertain ? { error: "confirmation_outcome_unknown" } : {}),
       durationMs: Date.now() - start,
     });
     if (res.ok) {
@@ -122,7 +145,6 @@ export async function tryExecuteConfirm(params: {
     // failure: HTTP ops are not transactional, so the human must see exactly
     // which items applied and which did not — a bare "Failed" would hide a
     // partial application.
-    const bundle = res.data as { bundle?: boolean; applied?: number; results?: unknown[] } | null;
     if (bundle && bundle.bundle === true && Array.isArray(bundle.results)) {
       const lines = bundle.results
         .slice(0, 10)
@@ -131,25 +153,33 @@ export async function tryExecuteConfirm(params: {
           if (item.ok) {
             return `✅ ${item.summary}`;
           }
+          if (uncertainBundleItem(item)) {
+            return `⚠️ ${item.summary} (HTTP ${item.status}) — outcome unknown`;
+          }
           const itemDetail = item.detail ? ` — ${item.detail}` : "";
           return `❌ ${item.summary} (HTTP ${item.status})${itemDetail}`;
         })
         .join("\n");
-      return `⚠️ Applied ${bundle.applied ?? 0} of ${bundle.results.length}:\n${lines}`;
+      const warning = uncertain
+        ? "\nThese are confirmed successes; remaining outcomes may be unknown. Inspect and reconcile the existing pending action and audit. Do not retry blindly."
+        : "";
+      return `⚠️ Applied ${bundle.applied ?? 0} of ${bundle.results.length}:\n${lines}${warning}`;
+    }
+    if (uncertain) {
+      return `⚠️ Outcome unknown (HTTP ${res.status}): ${action.summary}. Inspect and reconcile the existing pending action and audit before a new request. Do not retry blindly.`;
     }
     const detail = res.status >= 400 && res.status < 500 ? formatBackendErrorDetail(res.data) : "";
     return `❌ Failed (HTTP ${res.status}): ${action.summary}.${detail ? ` — ${detail}` : ""}`;
-  } catch (err) {
-    const msg = redactText(err instanceof Error ? err.message : String(err), 500);
+  } catch {
     params.logger({
       ts: new Date().toISOString(),
       tool: "scopely_confirm_execute",
       actor: params.actor || "unknown",
       params: { summary: action.summary },
-      resultSummary: "error: exception",
-      error: msg,
+      resultSummary: "outcome_unknown",
+      error: "confirmation_outcome_unknown",
       durationMs: Date.now() - start,
     });
-    return `❌ Error executing ${action.summary}.`;
+    return `⚠️ Outcome unknown: ${action.summary}. Inspect and reconcile the existing pending action and audit before a new request. Do not retry blindly.`;
   }
 }

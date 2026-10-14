@@ -14,6 +14,8 @@ vi.mock("./pending-confirm.js", () => ({
   takePending: (...args: unknown[]) => takePendingMock(...args),
 }));
 
+import { createAuditLogger } from "./audit.js";
+import { readAuditRows } from "./audit.test-helpers.js";
 import { setBackendProfileForTest } from "./backend-profile.js";
 import { isApprovedWriteActor, tryExecuteConfirm } from "./confirm.js";
 
@@ -35,6 +37,64 @@ describe("ScopelyBot confirmation actor gate", () => {
     expect(isApprovedWriteActor("other", [approver])).toBe(false);
     expect(isApprovedWriteActor(approver, [])).toBe(false);
   });
+
+  it("reports callback exceptions as unknown without logging arbitrary exception text", async () => {
+    const run = vi.fn().mockRejectedValue(new Error("unpatterned private customer detail"));
+    takePendingMock.mockReturnValue({ summary: "unlock user 7", run });
+    const result = await tryExecuteConfirm({
+      text: "CONFIRM 12341234123412341234123412341234",
+      actor: approver,
+      conversationId: "vipbot_prod",
+      approverIds: [approver],
+      logger,
+    });
+    expect(result).toMatch(/outcome unknown/i);
+    expect(result).toMatch(/do not retry/i);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(logger.mock.calls)).not.toContain("unpatterned private");
+    expect(logger.mock.calls[0][0].resultSummary).toBe("outcome_unknown");
+  });
+
+  it.each([
+    { ok: false, status: 503, data: {} },
+    { ok: false, status: 409, data: { code: "outcome_unknown" } },
+    {
+      ok: false,
+      status: 400,
+      data: {
+        bundle: true,
+        applied: 1,
+        results: [
+          { ok: false, status: 400, summary: "refused" },
+          { ok: false, status: 502, summary: "uncertain" },
+          { ok: true, status: 200, summary: "applied" },
+        ],
+      },
+    },
+  ])(
+    "persists returned uncertainty as a confirmation error through the real logger",
+    async (response) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "confirm-audit-"));
+      try {
+        takePendingMock.mockReturnValue({
+          summary: "synthetic change",
+          run: vi.fn().mockResolvedValue(response),
+        });
+        await tryExecuteConfirm({
+          text: "CONFIRM 12341234123412341234123412341234",
+          actor: approver,
+          conversationId: "vipbot_prod",
+          approverIds: [approver],
+          logger: createAuditLogger(dir),
+        });
+        const event = readAuditRows(dir).at(-1)!;
+        expect(event.event_type).toBe("confirm_error");
+        expect(event.result.status).toBe("error");
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("does not consume a valid code when the same-channel actor is unauthorized", async () => {
     const result = await tryExecuteConfirm({

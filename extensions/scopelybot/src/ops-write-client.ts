@@ -17,6 +17,7 @@ type LocalWrite =
   | "pricing.defaults.update"
   | "identity.users.unlock"
   | "identity.users.set_active"
+  | "identity.users.request_reset"
   | "sessions.archive";
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -74,22 +75,32 @@ export async function opsStageWrite(capability: LocalWrite, args: Record<string,
         });
         const envelope = confirmed.data;
         const outcome =
-          record(envelope) && envelope.ok === true && record(envelope.data)
+          confirmed.ok &&
+          !confirmed.truncated &&
+          record(envelope) &&
+          envelope.ok === true &&
+          record(envelope.data)
             ? envelope.data
             : undefined;
+        const settled = outcome?.reconcile_required === false;
+        const succeeded = settled && outcome?.state === "succeeded";
+        const failed =
+          settled &&
+          typeof outcome?.state === "string" &&
+          ["failed", "cancelled", "expired"].includes(outcome.state);
         // HTTP200 includes pending, failed and reconciliation states: only the
         // durable succeeded state means the human's requested change completed.
         return {
-          ok: confirmed.ok && outcome?.state === "succeeded",
-          status: outcome?.state === "succeeded" ? 200 : 409,
-          data:
-            outcome?.state === "succeeded"
-              ? outcome.result
-              : {
-                  detail: outcome?.reconcile_required
-                    ? "Outcome uncertain; reconcile the pending action before any new attempt."
-                    : "The application did not apply this change.",
-                },
+          ok: succeeded,
+          status: succeeded ? 200 : 409,
+          data: succeeded
+            ? outcome.result
+            : {
+                code: failed ? "execution_not_applied" : "outcome_unknown",
+                detail: failed
+                  ? "The application did not apply this change."
+                  : "Outcome unknown; reconcile the existing pending action before any new attempt. Do not retry blindly.",
+              },
         };
       },
       true,

@@ -18,33 +18,21 @@ export function registerUserMaintenanceTools(api: OpenClawPluginApi, logger: Aud
       {
         name: "scopely_reset_user_password",
         description:
-          "Reset a Scopely VIP user's password (admin action). You ARE authorized to do this. " +
-          "When an admin asks to reset a password, CALL this tool — do NOT refuse or tell them to use " +
-          "the admin UI; you can do it yourself. It is safe: it only STAGES the reset and returns a " +
-          "confirmation code. Nothing happens until the requester replies `CONFIRM <code>`, which then " +
-          "emails the user a password-reset link. Look up the user id first with scopely_list_users, " +
-          "then call this with that user_id.",
-        parameters: Type.Object({
-          user_id: Type.Number({ description: "Numeric user id" }),
-          email: Type.Optional(
-            Type.String({ description: "User email, for the confirmation message" }),
-          ),
-        }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const userId = params.user_id as number;
-            const email = (params.email as string) || `id ${userId}`;
-            const summary = `reset password for ${email} (id ${userId})`;
-            return await stageWrite(summary, () =>
-              scopelyFetch(`/api/auth/users/${userId}/reset-password/`, {
-                method: "POST",
-                body: "{}",
-              }),
-            );
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+          "Prepare one native VIP/ZW password-reset request for human confirmation. " +
+          "Local allowlisted synthetic accounts only; specify the configured surface_key. " +
+          "Confirmation invalidates older links and queues a local fake message, not inbox delivery. " +
+          "Password and login lockouts change only after the user redeems the native reset link. " +
+          "Look up the native user_id first. Optional email must match the current target.",
+        parameters: Type.Object(
+          {
+            user_id: Type.Integer({ minimum: 1, maximum: 2147483647 }),
+            surface_key: Type.String({ minLength: 1, maxLength: 64 }),
+            email: Type.Optional(Type.String({ minLength: 1, maxLength: 254 })),
+          },
+          { additionalProperties: true },
+        ),
+        execute: (_id: string, params: Record<string, unknown>) =>
+          opsStageWrite("identity.users.request_reset", params),
       },
       logger,
     ),

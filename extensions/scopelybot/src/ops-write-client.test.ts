@@ -137,6 +137,38 @@ it.each(["failed", "claimed", "pending", "cancelled"])(
     expect(request).toHaveBeenCalledTimes(2);
   },
 );
+it.each(["503", "malformed", "truncated", "timeout", "reset", "pending", "unknown-state"])(
+  "reports %s confirmation as uncertain without a second attempt",
+  async (failure) => {
+    await stage();
+    const confirmation = code();
+    request.mockImplementationOnce(async () => {
+      if (failure === "timeout" || failure === "reset") {
+        throw new Error("arbitrary sensitive exception text");
+      }
+      if (failure === "malformed") {
+        return new Response("not json", { status: 200 });
+      }
+      if (failure === "truncated") {
+        return new Response(JSON.stringify({ data: "x".repeat(300000) }), { status: 200 });
+      }
+      return new Response(
+        JSON.stringify({
+          ok: failure !== "503",
+          data: { state: failure === "pending" ? "pending" : "future-state" },
+        }),
+        { status: failure === "503" ? 503 : 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    const result = await confirm(confirmation);
+    expect(result).toMatch(/outcome (unknown|uncertain)/i);
+    expect(result).toMatch(/reconcil|inspect/i);
+    expect(result).not.toContain("did not apply");
+    expect(result).not.toContain("arbitrary sensitive");
+    expect(await confirm(confirmation)).toContain("No pending action");
+    expect(request).toHaveBeenCalledTimes(2);
+  },
+);
 it.each(["sender", "sender-returned", "missing-epoch", "channel", "readonly", "prod", "dev"])(
   "refuses %s before network",
   async (reason) => {

@@ -444,6 +444,7 @@ export function capabilityFor(tool: string): Capability | undefined {
             "scopely_update_pricing_default",
             "scopely_unlock_user",
             "scopely_set_user_active",
+            "scopely_reset_user_password",
             "scopely_archive_session",
           ].includes(tool) && readBackendProfile().env === "local"
         ? "local"

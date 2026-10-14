@@ -100,7 +100,11 @@ beforeEach(() => {
       body.capability === "pricing.defaults.list"
         ? { items: [NATIVE] }
         : body.capability === "ops.confirm"
-          ? { state: "succeeded", result: { version: 2, history_retained: true } }
+          ? {
+              state: "succeeded",
+              reconcile_required: false,
+              result: { version: 2, history_retained: true },
+            }
           : {
               state: "pending",
               confirmation_required: true,

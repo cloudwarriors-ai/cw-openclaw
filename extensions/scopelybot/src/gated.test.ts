@@ -128,9 +128,41 @@ describe("stageWrite bundling", () => {
     const reply = await confirmAs(lastPromptCode() as string);
     expect(reply).toContain("⚠️ Applied 2 of 3");
     expect(reply).toContain("✅ update card ok");
-    expect(reply).toContain("❌ delete card broken (HTTP 502)");
+    expect(reply).toContain("⚠️ delete card broken (HTTP 502) — outcome unknown");
     expect(reply).toContain("✅ update card also-ok");
+    expect(reply).toContain("Do not retry blindly");
   });
+
+  it.each(["later-502", "thrown"])(
+    "preserves successes and uncertainty for %s after a definite refusal",
+    async (failure) => {
+      process.env.SCOPELYBOT_CONFIRM_BUNDLE_MS = "1500";
+      await stageWrite(
+        "known refusal",
+        vi.fn().mockResolvedValue({ ok: false, status: 400, data: {} }),
+      );
+      const uncertain =
+        failure === "thrown"
+          ? vi.fn().mockRejectedValue(new Error("unpatterned private exception"))
+          : vi.fn().mockResolvedValue({ ok: false, status: 502, data: {} });
+      await stageWrite("unknown change", uncertain);
+      const success = vi.fn().mockResolvedValue({ ok: true, status: 200, data: {} });
+      await stageWrite("known success", success);
+      await flushStagedBundlesForTest();
+      const confirmation = lastPromptCode() as string;
+      const reply = await confirmAs(confirmation);
+      expect(reply).toContain("❌ known refusal (HTTP 400)");
+      expect(reply).toContain("⚠️ unknown change");
+      expect(reply).toContain("outcome unknown");
+      expect(reply).toContain("✅ known success");
+      expect(reply).toContain("Inspect and reconcile");
+      expect(reply).toContain("Do not retry blindly");
+      expect(reply).not.toContain("unpatterned private");
+      expect(await confirmAs(confirmation)).toContain("No pending action");
+      expect(uncertain).toHaveBeenCalledTimes(1);
+      expect(success).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("a bundled code is single-use: second CONFIRM finds nothing", async () => {
     process.env.SCOPELYBOT_CONFIRM_BUNDLE_MS = "1500";

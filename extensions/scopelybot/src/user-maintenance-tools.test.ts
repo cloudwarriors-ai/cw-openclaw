@@ -96,31 +96,18 @@ describe("user-maintenance-tools", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/auth/access-requests/");
   });
 
-  it("staging delivers the code to the channel (threaded) and returns NO code to the model", async () => {
+  it("native reset refuses missing sender context before any legacy request or prompt", async () => {
     const tools = buildTools();
-
-    const staged = parse(
+    const result = parse(
       await tools.scopely_reset_user_password.execute("t", {
         user_id: 123,
-        email: "matt@example.com",
+        surface_key: "vip",
+        email: "target@example.invalid",
       }),
     );
-
-    // The model-facing result is code-free — it cannot fabricate/relay/duplicate it.
-    expect(staged.staged).toBe(true);
-    expect(staged.awaiting_confirmation).toBe(true);
-    expect(JSON.stringify(staged)).not.toMatch(/CONFIRM [a-f0-9]{32}/);
-    expect(JSON.stringify(staged)).not.toMatch(/\b[a-f0-9]{32}\b/);
-
-    // The real prompt — with the code — was posted to the channel, threaded.
-    expect(sendScopelyTextMock).toHaveBeenCalledTimes(1);
-    const [channel, text, replyTo] = sendScopelyTextMock.mock.calls[0];
-    expect(channel).toBe(CHANNEL);
-    expect(text).toMatch(/CONFIRM [a-f0-9]{32}/);
-    expect(replyTo).toBe("MSG-ANCHOR");
-
-    // Staging must not touch prod until confirmed.
+    expect(result.ok).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(sendScopelyTextMock).not.toHaveBeenCalled();
   });
 
   it("scopely_update_user stages only the supplied fields and does NOT execute until confirmed", async () => {
