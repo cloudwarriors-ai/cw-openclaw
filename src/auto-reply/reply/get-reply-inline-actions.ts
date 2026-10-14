@@ -359,6 +359,7 @@ export async function handleInlineActions(params: {
           originatingTo: ctx.OriginatingTo,
           to: ctx.To,
           messageThreadId: ctx.MessageThreadId,
+          currentMessageId: ctx.MessageSidFull ?? ctx.MessageSid,
           memberRoleIds: ctx.MemberRoleIds,
         },
         cfg,

@@ -12,7 +12,7 @@
  *      preview) or that races a state change is rejected.
  */
 
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { PraxisIssueState } from "./praxis-write-client.js";
 
 /** Trusted, runtime-supplied request context. Mirrors the OpenClaw tool context
@@ -21,6 +21,7 @@ export interface ToolRequestContext {
   requesterSenderId?: string;
   messageChannel?: string;
   deliveryContext?: { channel?: string; to?: string; threadId?: string | number };
+  currentMessageId?: string;
   sessionId?: string;
 }
 
@@ -28,6 +29,7 @@ export interface ActorContext {
   requestedBy: string;
   channel: string;
   messageId: string;
+  inboundMessageId: string;
   toolCallId: string;
 }
 
@@ -65,13 +67,31 @@ export function deriveActorContext(ctx: ToolRequestContext, toolCallId: string):
     ctx.deliveryContext?.to ?? ctx.deliveryContext?.channel ?? ctx.messageChannel ?? "";
   const threadId = ctx.deliveryContext?.threadId;
   const messageId =
-    threadId !== undefined && threadId !== null ? String(threadId) : (ctx.sessionId ?? "");
+    ctx.currentMessageId ??
+    (threadId !== undefined && threadId !== null ? String(threadId) : (ctx.sessionId ?? ""));
   return {
     requestedBy: ctx.requesterSenderId ?? "",
     channel,
     messageId,
+    inboundMessageId: ctx.currentMessageId?.trim() ?? "",
     toolCallId,
   };
+}
+
+/** One human inbound message can cause at most one mutation of each conversation purpose.
+ * The key stays stable across model/tool retries and intentionally excludes lifecycle stage:
+ * a retry after uat1 advanced to user_uat must replay uat1, never become uat2. */
+export function conversationIdempotencyKey(
+  purpose: "verdict" | "info",
+  issueId: number,
+  actor: ActorContext,
+): string {
+  if (!actor.inboundMessageId) {
+    throw new Error("trusted inbound message id required for conversation idempotency");
+  }
+  const identity = `${actor.channel}\n${actor.requestedBy}\n${actor.inboundMessageId}`;
+  const digest = createHash("sha256").update(identity).digest("hex");
+  return `conversation:${purpose}:${issueId}:${digest}`;
 }
 
 /** Each configured dimension must match; an empty allowlist authorizes nobody.

@@ -37,6 +37,28 @@ function loadDeliverRuntime() {
   return messageRuntimeLoader.load();
 }
 
+/** Visible fallback shown (only for opted-in channels) when the model produced no reply. */
+const SILENT_REPLY_FALLBACK_TEXT =
+  "I couldn't put together an answer for that — could you rephrase or give me a bit more detail?";
+
+/**
+ * Whether a channel has opted into converting silent/empty replies into a visible fallback
+ * (so an inbound message NEVER goes unanswered). Strictly opt-in per Zoom channel via
+ * `channels.zoom.channels[<jid>].fallbackOnSilent: true`. Any other channel returns false and
+ * keeps the default behavior (silent drop), so bots that intentionally stay quiet are unaffected.
+ */
+function shouldFallbackOnSilent(
+  cfg: OpenClawConfig,
+  channel: OriginatingChannelType,
+  to: string,
+): boolean {
+  if (normalizeMessageChannel(channel) !== "zoom") return false;
+  const zoomCfg = cfg.channels?.zoom as
+    | { channels?: Record<string, { fallbackOnSilent?: boolean } | undefined> }
+    | undefined;
+  return zoomCfg?.channels?.[to]?.fallbackOnSilent === true;
+}
+
 export type RouteReplyParams = {
   /** The reply payload to send. */
   payload: ReplyPayload;
@@ -128,7 +150,7 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
     : cfg.messages?.responsePrefix === "auto"
       ? undefined
       : cfg.messages?.responsePrefix;
-  const normalized = normalizeReplyPayload(payload, {
+  const normalizedInitial = normalizeReplyPayload(payload, {
     responsePrefix,
     transformReplyPayload: messaging?.transformReplyPayload
       ? (nextPayload) =>
@@ -139,6 +161,19 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
           }) ?? nextPayload
       : undefined,
   });
+  // Loud-failure guard (scoped, opt-in): normalizeReplyPayload returns null when the model
+  // produced an empty/NO_REPLY response, which by default drops the reply SILENTLY — the user
+  // sees nothing. For channels that opt in via `channels.zoom.channels[<jid>].fallbackOnSilent`,
+  // we instead substitute a visible fallback so an inbound message ALWAYS gets a reply (no silent
+  // failure). Strictly scoped: any channel without the flag behaves exactly as before (a bot that
+  // intentionally stays silent via NO_REPLY keeps doing so).
+  let normalized = normalizedInitial;
+  if (!normalized && shouldFallbackOnSilent(cfg, channel, to)) {
+    normalized = normalizeReplyPayload(
+      { ...payload, text: SILENT_REPLY_FALLBACK_TEXT },
+      { responsePrefix },
+    );
+  }
   if (!normalized) {
     return { ok: true };
   }

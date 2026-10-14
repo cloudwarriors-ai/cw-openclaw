@@ -192,6 +192,19 @@ function parseCrossTrainingArg(text: string): boolean | null {
   return match[1] === "on";
 }
 
+/**
+ * Agents whose own instructions define a strict relay/tool contract, and which must therefore NOT
+ * receive the "Respond as a general-purpose assistant" half of the DM context prefix.
+ *
+ * That directive lands in the most recency-privileged position — immediately above the user's words
+ * — and is replayed once per turn, so it accumulates and outranks the agent's own AGENTS.md. Live
+ * failure 2026-08-05: `praxis-dm` answered a Praxis needs-info question conversationally with ZERO
+ * tool calls (its AGENTS.md rules were present in the trajectory 4x; the injected clause appeared
+ * 13x). These agents still get the "not a customer support conversation" context, which is the part
+ * the prefix exists for — only the behavioural override is dropped.
+ */
+const DM_CONTRACT_AGENTS = new Set(["praxis-dm"]);
+
 const ADMIN_DOMAIN = process.env.ADMIN_DOMAIN?.toLowerCase().trim();
 
 /** Check if a sender (email or identifier) is from the admin domain. */
@@ -417,6 +430,17 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
     const isChannelMessage = toJid?.includes("@conference.") ?? false;
     const conversationId = isChannelMessage ? toJid : userJid;
 
+    // Trusted inbound identity for plugin-tool idempotency (praxis-write's retry-safe gate)
+    // and thread-correlated replies. bot_notification carries the provider message id at the
+    // payload top level — without this, every DM mutation is refused as unverifiable.
+    const botNotifThreadContext = parseZoomInboundThreadContext({
+      // bot_notification has no messageId; triggerId is the unique per-message id.
+      messageId: payload.triggerId ?? payload.replyMainMessageId,
+      // Root id for thread replies, own id for top-level — a top-level value resolves to no
+      // praxis thread (different id space) and falls back harmlessly.
+      replyMainMessageId: payload.replyMainMessageId,
+    });
+
     log.debug("processing bot notification", {
       userJid,
       userName,
@@ -603,7 +627,14 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
         return;
       }
 
-      // Route to agent with channel context (non-observe)
+      // Route to agent with channel context (non-observe).
+      // Deliberately NOT passing threadContext on the channel path: with the live
+      // threading config (enabled + sessionScope thread), a thread id here flips the
+      // route peer from channel-scoped to thread-scoped, which would change session
+      // scoping for every Zoom channel agent on this gateway. The DM path below is
+      // unaffected by that (thread scoping requires !isDirect), so praxis-dm still gets
+      // the correlation + idempotency id it needs. Revisit deliberately if thread-scoped
+      // channel sessions are wanted.
       await routeToAgent({
         conversationId: toJid,
         senderId: userJid,
@@ -718,6 +749,7 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
         senderEmail: userEmail,
         text: messageText,
         isDirect: true,
+        threadContext: botNotifThreadContext,
       });
     }
   }
@@ -1820,13 +1852,29 @@ export function createZoomMessageHandler(deps: ZoomMessageHandlerDeps) {
     threadContext?: ZoomInboundThreadContext;
     threadStarterBody?: string;
   }) {
-    // For DMs, add context prefix so the agent knows this is NOT a customer support conversation
+    // For DMs, add context prefix so the agent knows this is NOT a customer support conversation.
+    // Contract agents (see DM_CONTRACT_AGENTS) get the context WITHOUT the behavioural override,
+    // which otherwise outranks their own instructions on recency and repetition.
     if (params.isDirect) {
-      params.text = [
+      const dmRoute = resolveZoomAgentRoute({
+        runtime: core,
+        cfg: core.config.loadConfig(),
+        senderId: params.senderId,
+        conversationId: params.conversationId,
+        channelJid: params.channelJid,
+        isDirect: true,
+        log,
+      });
+      const lines = [
         "[ADMIN DM] This is a direct message from an authorized team member, NOT a customer support conversation.",
-        "Do NOT use memory_search for customer training data. Respond as a general-purpose assistant.",
-        `Message: ${params.text}`,
-      ].join("\n");
+      ];
+      if (!DM_CONTRACT_AGENTS.has(dmRoute.agentId ?? "")) {
+        lines.push(
+          "Do NOT use memory_search for customer training data. Respond as a general-purpose assistant.",
+        );
+      }
+      lines.push(`Message: ${params.text}`);
+      params.text = lines.join("\n");
     }
     await routeMessageToAgent({ deps, ...params });
   }

@@ -65,7 +65,14 @@ describe("praxisFetch", () => {
 
 describe("getIssue", () => {
   it("returns the issue state body", async () => {
-    const body = { id: 5, state: "blocked", state_reason: "no_response", version: 12 };
+    const body = {
+      id: 5,
+      repo: "cw/app",
+      source_issue: 50,
+      state: "blocked",
+      state_reason: "no_response",
+      version: 12,
+    };
     fetchMock.mockResolvedValue(mockResponse({ ok: true, status: 200, body }));
     expect(await getIssue(5)).toEqual(body);
     expect(fetchMock.mock.calls[0][0]).toBe(`${BASE}/api/v1/issues/5`);
@@ -141,11 +148,15 @@ describe("submitVerdict", () => {
       mockResponse({ ok: true, status: 200, body: { applied: true, state: "done" } }),
     );
     const res = await submitVerdict(7, {
-      kind: "uat1_pass",
+      kind: "uat_pass",
       reason: "feature verified",
       requested_by: "alice",
       channel: "zoom",
       channel_user_id: "alice",
+      message_id: "m-7",
+      idempotency_key: "call-7",
+      expected_state: "user_uat",
+      expected_version: 5,
     });
     expect(res).toEqual({ ok: true, status: 200, data: { applied: true, state: "done" } });
     const [url, init] = fetchMock.mock.calls[0];
@@ -153,11 +164,15 @@ describe("submitVerdict", () => {
     expect(init.method).toBe("POST");
     const sent = JSON.parse(init.body as string);
     expect(sent).toEqual({
-      kind: "uat1_pass",
+      kind: "uat_pass",
       reason: "feature verified",
       requested_by: "alice",
       channel: "zoom",
       channel_user_id: "alice",
+      message_id: "m-7",
+      idempotency_key: "call-7",
+      expected_state: "user_uat",
+      expected_version: 5,
     });
   });
 
@@ -166,15 +181,19 @@ describe("submitVerdict", () => {
       mockResponse({ ok: false, status: 403, body: { error: "identity_not_linked" } }),
     );
     const res = await submitVerdict(7, {
-      kind: "uat2_fail",
+      kind: "uat_fail",
       reason: "broken",
       requested_by: "alice",
       channel: "zoom",
       channel_user_id: "alice",
+      message_id: "m-8",
+      idempotency_key: "call-8",
+      expected_state: "user_uat",
+      expected_version: 5,
     });
     expect(res.ok).toBe(false);
     expect(res.status).toBe(403);
-    expect((res.data as Record<string, unknown>).error).toBe("identity_not_linked");
+    expect(res.data.error).toBe("identity_not_linked");
   });
 });
 
@@ -189,9 +208,7 @@ describe("startGithubLink", () => {
     );
     const res = await startGithubLink({ channel: "zoom", channel_user_id: "alice" });
     expect(res.ok).toBe(true);
-    expect((res.data as Record<string, unknown>).url).toBe(
-      "https://github.com/login/oauth/authorize?state=abc",
-    );
+    expect(res.data.url).toBe("https://github.com/login/oauth/authorize?state=abc");
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${BASE}/api/v1/identity/link`);
     expect(init.method).toBe("POST");
@@ -205,7 +222,7 @@ describe("startGithubLink", () => {
     );
     const res = await startGithubLink({ channel: "zoom", channel_user_id: "alice" });
     expect(res.ok).toBe(false);
-    expect((res.data as Record<string, unknown>).error).toBe("linking_not_configured");
+    expect(res.data.error).toBe("linking_not_configured");
   });
 });
 
@@ -220,7 +237,7 @@ describe("runSelfHeal", () => {
     );
     const res = await runSelfHeal({ repo: "cw/foo", mode: "create-issues", since_minutes: 90 });
     expect(res.ok).toBe(true);
-    expect((res.data as Record<string, unknown>).issues_created).toBe(1);
+    expect(res.data.issues_created).toBe(1);
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${BASE}/api/v1/self-heal/run`);
     expect(init.method).toBe("POST");
@@ -247,7 +264,7 @@ describe("ingestIssue", () => {
       idempotency_key: "ingest:cw/foo:1015",
     });
     expect(res.ok).toBe(true);
-    expect((res.data as Record<string, unknown>).source_issue).toBe(1015);
+    expect(res.data.source_issue).toBe(1015);
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${BASE}/api/v1/issues/ingest`);
     expect(init.method).toBe("POST");
@@ -276,7 +293,7 @@ describe("ingestIssue", () => {
     });
     expect(res.ok).toBe(false);
     expect(res.status).toBe(404);
-    expect((res.data as Record<string, unknown>).error).toBe("repo_not_onboarded");
+    expect(res.data.error).toBe("repo_not_onboarded");
   });
 });
 
@@ -299,7 +316,7 @@ describe("fileIssue", () => {
       idempotency_key: "file-issue:cloudwarriors-ai/praxis:Fix retry",
     });
     expect(res.ok).toBe(true);
-    expect((res.data as Record<string, unknown>).number).toBe(42);
+    expect(res.data.number).toBe(42);
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${BASE}/api/v1/issues/file`);
     expect(init.method).toBe("POST");

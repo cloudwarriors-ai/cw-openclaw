@@ -1,13 +1,8 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
-
 import { sendZoomMessage } from "./api.js";
 import { createZoomConversationStoreFs } from "./conversation-store-fs.js";
 import type { ZoomConversationStoreEntry } from "./conversation-store.js";
-import {
-  classifyZoomSendError,
-  formatZoomSendErrorHint,
-  formatUnknownError,
-} from "./errors.js";
+import { classifyZoomSendError, formatZoomSendErrorHint, formatUnknownError } from "./errors.js";
 import { getZoomRuntime } from "./runtime.js";
 import { rememberZoomSentMessageId, rememberZoomSentMessageText } from "./sent-message-ids.js";
 import { resolveZoomCredentials } from "./token.js";
@@ -297,6 +292,45 @@ function cleanMarkdownUrls(text: string): string {
   return text.replace(/\*\*(https?:\/\/[^\s*]+)\*\*/g, "$1");
 }
 
+/**
+ * Convert common Markdown to clean plain text for Zoom Team Chat. Zoom bot cards render with
+ * is_markdown_support=false, so raw markdown shows as literal junk (e.g. "**bold**", "- bullet",
+ * "## header") and the message reads like a blob. We CONVERT rather than blindly strip, to keep
+ * readability: list markers become "• ", emphasis/headers lose only their markers (text kept), and
+ * links become "text (url)" so the URL stays usable. Applied only when the channel opts in via
+ * ZoomChannelConfig.plainText (see shouldPlainText).
+ */
+function toPlainTextForZoom(input: string): string {
+  let t = input;
+  // Fenced code blocks -> keep inner text, drop the ``` fences.
+  t = t.replace(/```[a-zA-Z0-9]*\n?([\s\S]*?)```/g, "$1");
+  // Headers: "## Title" -> "Title".
+  t = t.replace(/^\s{0,3}#{1,6}\s+/gm, "");
+  // Bullet list markers at line start: "- ", "* ", "+ " -> "• ".
+  t = t.replace(/^(\s*)[-*+]\s+/gm, "$1• ");
+  // Links [text](url) -> "text (url)".
+  t = t.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, "$1 ($2)");
+  // Bold/italic: **x** / __x__ / *x* / _x_ -> x (double markers first).
+  t = t.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/__([^_]+)__/g, "$1");
+  t = t.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1$2").replace(/(^|[^_])_([^_\n]+)_/g, "$1$2");
+  // Strikethrough ~~x~~ -> x.
+  t = t.replace(/~~([^~]+)~~/g, "$1");
+  // Inline code `x` -> x.
+  t = t.replace(/`([^`]+)`/g, "$1");
+  // Collapse 3+ blank lines to a single blank line (tidier in chat).
+  t = t.replace(/\n{3,}/g, "\n\n");
+  return t;
+}
+
+/**
+ * Whether outbound text to `to` should be converted to plain text, per the per-channel
+ * ZoomChannelConfig.plainText opt-in. Returns false (no conversion) for any channel without the
+ * flag, so existing channels/bots are unaffected.
+ */
+function shouldPlainText(zoomCfg: ZoomConfig | undefined, to: string): boolean {
+  return zoomCfg?.channels?.[to]?.plainText === true;
+}
+
 /** Parse mentions and generate at_items */
 function parseMentions(text: string): { cleanText: string; atItems: ZoomAtItem[] } {
   const atItems: ZoomAtItem[] = [];
@@ -352,8 +386,12 @@ export async function sendZoomTextMessage(
   params: SendZoomMessageParams,
 ): Promise<SendZoomMessageResult> {
   const { cfg, isChannel, replyToMessageId, speakerName } = params;
-  const text = cleanMarkdownUrls(params.text);
   const zoomCfg = cfg.channels?.zoom as ZoomConfig | undefined;
+  // Plain-text channels (opt-in via ZoomChannelConfig.plainText) get a full markdown->plaintext
+  // pass; all others keep the original behavior (only URL-bold cleanup).
+  const text = shouldPlainText(zoomCfg, params.to)
+    ? toPlainTextForZoom(cleanMarkdownUrls(params.text))
+    : cleanMarkdownUrls(params.text);
   const creds = resolveZoomCredentials(zoomCfg);
 
   if (!creds) {
@@ -367,10 +405,7 @@ export async function sendZoomTextMessage(
   const conversationStore = createZoomConversationStoreFs();
   let to = params.to;
   if (!isChannel) {
-    const resolved = resolveDmRecipientFromKnownConversations(
-      to,
-      await conversationStore.list(),
-    );
+    const resolved = resolveDmRecipientFromKnownConversations(to, await conversationStore.list());
     if (resolved) {
       to = resolved;
     } else {
@@ -502,10 +537,7 @@ export async function sendZoomActionMessage(params: {
   const conversationStore = createZoomConversationStoreFs();
   let to = params.to;
   if (!isChannel) {
-    const resolved = resolveDmRecipientFromKnownConversations(
-      to,
-      await conversationStore.list(),
-    );
+    const resolved = resolveDmRecipientFromKnownConversations(to, await conversationStore.list());
     if (resolved) {
       to = resolved;
     } else {
@@ -554,10 +586,10 @@ export async function sendZoomActionMessage(params: {
           })),
         };
       }
-      
+
       const { cleanText, atItems } = parseMentions(item.text);
-      return { 
-        type: "message" as const, 
+      return {
+        type: "message" as const,
         text: cleanText,
         at_items: atItems.length > 0 ? atItems : undefined,
       };
