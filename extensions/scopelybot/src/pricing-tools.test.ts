@@ -1,3 +1,7 @@
+// This domain fixture supplies explicit server eligibility; roster authority is tested separately.
+vi.mock("./ops-roster-client.js", () => ({
+  isCurrentApprover: async (actor: string) => ["t"].includes(actor),
+}));
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { validateToolArguments } from "../../../packages/llm-core/src/validation.js";
 
@@ -258,7 +262,6 @@ describe("pricing-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
-      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });
@@ -323,7 +326,6 @@ describe("pricing-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
-      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });

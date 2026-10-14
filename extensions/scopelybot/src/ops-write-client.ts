@@ -6,6 +6,8 @@ import { currentWriteRequester } from "./ops-client.js";
 import { canonicalZoomId, errorResult, jsonResult, scopelyOpsInvoke } from "./scopely-api.js";
 
 type LocalWrite =
+  | "ops.approvers.grant"
+  | "ops.approvers.revoke"
   | "catalog.project_types.update"
   | "catalog.deployment_types.update"
   | "catalog.scoping_cards.create"

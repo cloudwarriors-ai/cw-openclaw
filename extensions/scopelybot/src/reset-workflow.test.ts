@@ -1,3 +1,7 @@
+// This domain fixture supplies explicit server eligibility; roster authority is tested separately.
+vi.mock("./ops-roster-client.js", () => ({
+  isCurrentApprover: async (actor: string) => ["synthetic-admin"].includes(actor),
+}));
 // Real plugin/registry/audit/Zoom confirmation with a mocked HTTP boundary.
 // Native reference, money and transaction behavior is tested on PostgreSQL.
 import * as fs from "node:fs";
@@ -154,7 +158,6 @@ it("discovers the native user, previews, refuses outsider confirmation, then con
     text,
     actor: "outsider",
     conversationId: CHANNEL,
-    approverIds: ["synthetic-admin"],
     logger: vi.fn(),
   };
   expect(await tryExecuteConfirm(params)).toContain("not authorized");

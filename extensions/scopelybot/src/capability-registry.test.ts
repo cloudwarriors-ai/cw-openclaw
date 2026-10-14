@@ -189,7 +189,7 @@ describe("registry completeness (AC-7.2)", () => {
     expect(optional.every(Boolean)).toBe(true);
     // The startup banner (deploy runbooks grep "Registered .* tools") counts
     // the registry, not a hand-kept number.
-    expect(banner).toContain("[scopelybot] Registered 121 tools (16 live/local on the new app;");
+    expect(banner).toContain("[scopelybot] Registered 121 tools (15 live/local on the new app;");
     expect(new Set(rows).size).toBe(rows.length); // no tool in two families
     expect(registered.filter((t) => !capabilityFor(t))).toEqual([]);
     expect(manifest.filter((t) => !capabilityFor(t))).toEqual([]);
@@ -217,14 +217,14 @@ describe("registry completeness (AC-7.2)", () => {
     ]) {
       expect(capabilityFor(tool)?.effect, tool).toBe("write");
     }
-    for (const tool of ["scopely_gh_list_issues", "scopely_list_approvers", "scopely_trace_logs"]) {
+    for (const tool of ["scopely_gh_list_issues", "scopely_trace_logs"]) {
       expect(capabilityFor(tool)?.effect, tool).toBe("non-api");
     }
   });
 
   // M13 slice 1: the app tools that run are exactly the slice-1 reads, each a
   // pure read bound to one read capability of the kernel snapshot.
-  it("only the slice-1 operator-layer reads and the local approver list run; no write is live", () => {
+  it("only operator-layer reads run on the production/default profile; roster is local only", () => {
     const runnable = registryTools().filter((t) => {
       const status = capabilityFor(t)?.status;
       return status === "live" || status === "local";
@@ -245,10 +245,9 @@ describe("registry completeness (AC-7.2)", () => {
       "scopely_list_users",
       "scopely_get_user",
       "scopely_list_pricing_items",
-      "scopely_list_approvers",
     ]);
     const snapshot = new Map(SNAPSHOT.capabilities.map((c) => [c.name, c]));
-    for (const tool of runnable.filter((t) => t !== "scopely_list_approvers")) {
+    for (const tool of runnable) {
       const binding = opsBindingFor(tool);
       expect(capabilityFor(tool), tool).toMatchObject({ effect: "pure-read", status: "live" });
       expect(OPS_READ_CAPABILITIES, tool).toContain(binding?.capability);
@@ -259,7 +258,7 @@ describe("registry completeness (AC-7.2)", () => {
         expect.arrayContaining([...binding!.args]),
       );
     }
-    expect(capabilityFor("scopely_list_approvers")?.status).toBe("local");
+    expect(capabilityFor("scopely_list_approvers")?.status).toBe("not_available");
     expect(opsBindingFor("scopely_list_approvers")).toBeUndefined();
     for (const name of ["constructor", "__proto__", "toString"]) {
       expect(opsBindingFor(name), name).toBeUndefined();

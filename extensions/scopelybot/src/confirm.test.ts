@@ -9,6 +9,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const eligibilityMock = vi.hoisted(() => vi.fn());
+vi.mock("./ops-roster-client.js", () => ({ isCurrentApprover: eligibilityMock }));
 const takePendingMock = vi.fn();
 vi.mock("./pending-confirm.js", () => ({
   takePending: (...args: unknown[]) => takePendingMock(...args),
@@ -17,7 +19,7 @@ vi.mock("./pending-confirm.js", () => ({
 import { createAuditLogger } from "./audit.js";
 import { readAuditRows } from "./audit.test-helpers.js";
 import { setBackendProfileForTest } from "./backend-profile.js";
-import { isApprovedWriteActor, tryExecuteConfirm } from "./confirm.js";
+import { tryExecuteConfirm } from "./confirm.js";
 
 // Most tests exercise the CONFIRM execution path, which only exists while the
 // live backend profile is read-write (dev-only); the read-only block resets it.
@@ -28,14 +30,43 @@ const approver = "Mb4vcQ4YQUaQKJjoY4vntQ";
 
 describe("ScopelyBot confirmation actor gate", () => {
   beforeEach(() => {
+    eligibilityMock
+      .mockReset()
+      .mockImplementation(async (actor: string) => actor.toLowerCase() === approver.toLowerCase());
     takePendingMock.mockReset();
     logger.mockReset();
   });
 
-  it("normalizes exact opaque sender ids", () => {
-    expect(isApprovedWriteActor(approver, [approver.toLowerCase()])).toBe(true);
-    expect(isApprovedWriteActor("other", [approver])).toBe(false);
-    expect(isApprovedWriteActor(approver, [])).toBe(false);
+  it("server refusal cannot consume a code even for the formerly configured actor", async () => {
+    eligibilityMock.mockResolvedValue(false);
+    const result = await tryExecuteConfirm({
+      text: `CONFIRM ${"a".repeat(32)}`,
+      actor: approver,
+      conversationId: "vipbot_prod",
+      logger,
+    });
+    expect(result).toContain("not authorized");
+    expect(takePendingMock).not.toHaveBeenCalled();
+  });
+
+  it("profile changes while awaiting eligibility cannot consume a code", async () => {
+    eligibilityMock.mockImplementation(async () => {
+      setBackendProfileForTest({ mode: "read-only" });
+      return true;
+    });
+    try {
+      expect(
+        await tryExecuteConfirm({
+          text: `CONFIRM ${"a".repeat(32)}`,
+          actor: approver,
+          conversationId: "vipbot_prod",
+          logger,
+        }),
+      ).toContain("read-only");
+      expect(takePendingMock).not.toHaveBeenCalled();
+    } finally {
+      setBackendProfileForTest({ mode: "read-write" });
+    }
   });
 
   it("reports callback exceptions as unknown without logging arbitrary exception text", async () => {
@@ -45,7 +76,6 @@ describe("ScopelyBot confirmation actor gate", () => {
       text: "CONFIRM 12341234123412341234123412341234",
       actor: approver,
       conversationId: "vipbot_prod",
-      approverIds: [approver],
       logger,
     });
     expect(result).toMatch(/outcome unknown/i);
@@ -84,7 +114,6 @@ describe("ScopelyBot confirmation actor gate", () => {
           text: "CONFIRM 12341234123412341234123412341234",
           actor: approver,
           conversationId: "vipbot_prod",
-          approverIds: [approver],
           logger: createAuditLogger(dir),
         });
         const event = readAuditRows(dir).at(-1)!;
@@ -101,7 +130,6 @@ describe("ScopelyBot confirmation actor gate", () => {
       text: "CONFIRM 12341234123412341234123412341234",
       actor: "unauthorized-member-id",
       conversationId: "vipbot_prod",
-      approverIds: [approver],
       logger,
     });
     expect(result).toContain("not authorized");
@@ -117,7 +145,6 @@ describe("ScopelyBot confirmation actor gate", () => {
       text: "CONFIRM 12341234123412341234123412341234",
       actor: approver,
       conversationId: "vipbot_prod",
-      approverIds: [approver],
       logger,
     });
     expect(takePendingMock).toHaveBeenCalledWith("12341234123412341234123412341234", {
@@ -143,7 +170,6 @@ describe("ScopelyBot confirmation actor gate", () => {
       conversationId: "554f6079-4d2e-4727-87db-1b1c482fff3d",
       channelId: "zoom",
       sessionKey: "agent:scopelybot:zoom:channel:554f6079-4d2e-4727-87db-1b1c482fff3d",
-      approverIds: [approver],
       logger,
     });
     expect(takePendingMock).toHaveBeenCalledWith("82488248824882488248824882488248", {
@@ -161,7 +187,6 @@ describe("ScopelyBot confirmation actor gate", () => {
       conversationId: "some-thread-id",
       channelId: "zoom",
       sessionKey: "agent:pulsebot:zoom:channel:some-thread-id",
-      approverIds: [approver],
       logger,
     });
     expect(takePendingMock).toHaveBeenCalledWith("43214321432143214321432143214321", {
@@ -178,6 +203,9 @@ describe("ScopelyBot confirmation actor gate", () => {
 // (the test above pins that).
 describe("backend error detail on 4xx", () => {
   beforeEach(() => {
+    eligibilityMock
+      .mockReset()
+      .mockImplementation(async (actor: string) => actor.toLowerCase() === approver.toLowerCase());
     takePendingMock.mockReset();
     logger.mockReset();
   });
@@ -201,7 +229,6 @@ describe("backend error detail on 4xx", () => {
       text: "CONFIRM 12341234123412341234123412341234",
       actor: approver,
       conversationId: "vipbot_prod",
-      approverIds: [approver],
       logger,
     });
     expect(result).toContain("HTTP 400");
@@ -220,7 +247,6 @@ describe("backend error detail on 4xx", () => {
       text: "CONFIRM 12341234123412341234123412341234",
       actor: approver,
       conversationId: "vipbot_prod",
-      approverIds: [approver],
       logger,
     });
     expect(result).toContain("HTTP 404");
@@ -233,6 +259,9 @@ describe("read-only refusal before the pending store (INV-2, INV-8)", () => {
   let workspace: string;
 
   beforeEach(() => {
+    eligibilityMock
+      .mockReset()
+      .mockImplementation(async (actor: string) => actor.toLowerCase() === approver.toLowerCase());
     takePendingMock.mockReset();
     takePendingMock.mockReturnValue({ summary: "unlock user 7", run });
     run.mockReset();
@@ -255,7 +284,6 @@ describe("read-only refusal before the pending store (INV-2, INV-8)", () => {
       text: "CONFIRM 12341234123412341234123412341234",
       actor: approver,
       conversationId: "vipbot_prod",
-      approverIds: [approver],
       logger,
     });
     expect(result).toBe("Changes are paused: the bot is read-only, so nothing was run.");
@@ -272,16 +300,17 @@ describe("read-only refusal before the pending store (INV-2, INV-8)", () => {
     });
   });
 
-  it("an unauthorized actor still gets the authorization refusal first", async () => {
+  it("read-only refusal precedes remote eligibility for every actor", async () => {
+    eligibilityMock.mockClear();
     setBackendProfileForTest({ mode: "read-only" });
     const result = await tryExecuteConfirm({
       text: "CONFIRM 12341234123412341234123412341234",
       actor: "someone-else",
       conversationId: "vipbot_prod",
-      approverIds: [approver],
       logger,
     });
-    expect(result).toContain("not authorized");
+    expect(result).toContain("read-only");
+    expect(eligibilityMock).not.toHaveBeenCalled();
     expect(takePendingMock).not.toHaveBeenCalled();
   });
 });

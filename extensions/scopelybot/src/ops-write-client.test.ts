@@ -1,3 +1,7 @@
+// This domain fixture supplies explicit server eligibility; roster authority is tested separately.
+vi.mock("./ops-roster-client.js", () => ({
+  isCurrentApprover: async (actor: string) => ["synthetic-admin"].includes(actor),
+}));
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -49,7 +53,6 @@ function confirm(value = code(), actor = "synthetic-admin", channel = "synthetic
     text: `CONFIRM ${value}`,
     actor,
     conversationId: channel,
-    approverIds: ["synthetic-admin"],
     logger: vi.fn(),
   });
 }

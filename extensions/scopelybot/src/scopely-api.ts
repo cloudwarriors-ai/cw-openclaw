@@ -109,7 +109,11 @@ export const OPS_READ_CAPABILITIES = [
   "identity.users.list",
   "identity.users.get",
 ] as const;
+export const OPS_LOCAL_READ_CAPABILITIES = ["ops.approvers.check", "ops.approvers.list"] as const;
+
 export const OPS_LOCAL_WRITE_CAPABILITIES = [
+  "ops.approvers.grant",
+  "ops.approvers.revoke",
   "catalog.scoping_cards.create",
   "catalog.scoping_cards.update",
   "catalog.scoping_cards.delete",
@@ -129,7 +133,8 @@ export const OPS_LOCAL_WRITE_CAPABILITIES = [
 ] as const;
 export type OpsCapability =
   | (typeof OPS_READ_CAPABILITIES)[number]
-  | (typeof OPS_LOCAL_WRITE_CAPABILITIES)[number];
+  | (typeof OPS_LOCAL_WRITE_CAPABILITIES)[number]
+  | (typeof OPS_LOCAL_READ_CAPABILITIES)[number];
 export type OpsInvocation = {
   capability: OpsCapability;
   args: Record<string, unknown>;
@@ -324,9 +329,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 function checkOpsInvocation(op: OpsInvocation, http: HttpFields, profile: BackendProfile): string {
   const read = (OPS_READ_CAPABILITIES as readonly string[]).includes(op.capability);
   const localWrite = (OPS_LOCAL_WRITE_CAPABILITIES as readonly string[]).includes(op.capability);
+  const localRead = (OPS_LOCAL_READ_CAPABILITIES as readonly string[]).includes(op.capability);
   if (
     !read &&
-    (!localWrite ||
+    (!(localWrite || localRead) ||
       profile.env !== "local" ||
       profile.mode !== "read-write" ||
       profile.baseUrl !== "http://127.0.0.1:8100")
@@ -487,7 +493,10 @@ async function executeGuardedRequest(
     profile,
     method,
     http,
-    op !== undefined && (OPS_READ_CAPABILITIES as readonly string[]).includes(op.capability),
+    op !== undefined &&
+      ([...OPS_READ_CAPABILITIES, ...OPS_LOCAL_READ_CAPABILITIES] as readonly string[]).includes(
+        op.capability,
+      ),
   );
   const token = op ? opsToken(profile, http) : undefined;
 
@@ -561,7 +570,10 @@ async function executeGuardedRequest(
       // until the writer's recovery sweep records it as indeterminate.
       if (
         !SAFE_METHODS.has(method) &&
-        (!op || !(OPS_READ_CAPABILITIES as readonly string[]).includes(op.capability))
+        (!op ||
+          !(
+            [...OPS_READ_CAPABILITIES, ...OPS_LOCAL_READ_CAPABILITIES] as readonly string[]
+          ).includes(op.capability))
       ) {
         writesLatched = true;
       }

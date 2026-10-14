@@ -384,8 +384,6 @@ export function opsBindingFor(tool: string): OpsBinding | undefined {
 
 // Tools whose status differs from their family default (besides OPS_READS).
 const STATUS_OVERRIDES: Record<string, CapabilityStatus> = {
-  // F12: reads the bot's own approver file; never touches the app.
-  scopely_list_approvers: "local",
   // F12: the legacy runner (Playwright against env URLs, outside the guard) was
   // deleted in PK-7a; both tools stay registered (INV-7) and code-refused.
   scopely_passthrough_status: "not_ported",
@@ -393,13 +391,14 @@ const STATUS_OVERRIDES: Record<string, CapabilityStatus> = {
 };
 
 // Tools whose effect differs from their family's: these write to GitHub or to
-// the bot's approver file rather than read, so the "no write is live" rule
+// the server roster rather than read, so the "no write is live" rule
 // covers them too (a family-level effect would hide them).
 const EFFECT_OVERRIDES: Record<string, EffectClass> = {
   scopely_gh_create_issue: "write",
   scopely_gh_add_comment: "write",
   scopely_gh_close_issue: "write",
   scopely_create_support_ticket: "write",
+  scopely_list_approvers: "pure-read",
   scopely_grant_approver: "write",
   scopely_revoke_approver: "write",
 };
@@ -433,6 +432,9 @@ export function capabilityFor(tool: string): Capability | undefined {
     status: ops
       ? "live"
       : [
+            "scopely_list_approvers",
+            "scopely_grant_approver",
+            "scopely_revoke_approver",
             "scopely_update_project_type",
             "scopely_update_deployment_type",
             "scopely_create_scoping_card",

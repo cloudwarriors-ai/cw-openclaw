@@ -582,3 +582,60 @@ describe("local write argument byte boundary", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe("server roster exact local transport boundary", () => {
+  const roster = [
+    "ops.approvers.check",
+    "ops.approvers.list",
+    "ops.approvers.grant",
+    "ops.approvers.revoke",
+  ] as const;
+  function local(mode = "read-write") {
+    writeProfile({
+      env: "local",
+      mode,
+      baseUrl: "http://127.0.0.1:8100",
+      allowedHosts: ["127.0.0.1:8100"],
+      authMode: "service-token",
+    });
+    resetScopelyGuardForTest();
+  }
+  it.each(roster)(
+    "refuses %s on dev/default, local readonly, anonymous and missing sender",
+    async (capability) => {
+      await refused(scopelyOpsInvoke(op({ capability, args: {} })), "write_blocked_read_only");
+      local("read-only");
+      await refused(scopelyOpsInvoke(op({ capability, args: {} })), "write_blocked_read_only");
+      local();
+      await refused(
+        scopelyOpsInvoke(op({ capability, args: {}, requesterZoomId: undefined })),
+        "header_blocked",
+      );
+      writeProfile({
+        env: "local",
+        mode: "read-write",
+        baseUrl: "http://127.0.0.1:8100",
+        allowedHosts: ["127.0.0.1:8100"],
+        authMode: "anonymous",
+      });
+      await refused(scopelyOpsInvoke(op({ capability, args: {} })), "auth_unavailable");
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+  it.each(["ops.approvers.check", "ops.approvers.list"] as const)(
+    "%s keeps 4KiB read args and exact endpoint",
+    async (capability) => {
+      local();
+      await refused(
+        scopelyOpsInvoke(op({ capability, args: { padding: "x".repeat(4096) } })),
+        "body_blocked",
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+      await scopelyOpsInvoke(op({ capability, args: {} }));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, options] = fetchMock.mock.calls[0];
+      expect(new URL(String(url)).pathname).toBe(OPS_INVOKE_PATH);
+      expect(JSON.parse(options.body)).toMatchObject({ capability, args: {} });
+    },
+  );
+});

@@ -7,6 +7,7 @@
 
 import type { AuditLogger } from "./audit.js";
 import { auditBackendEvent, readBackendProfile } from "./backend-profile.js";
+import { isCurrentApprover } from "./ops-roster-client.js";
 import { takePending } from "./pending-confirm.js";
 import { redactText } from "./redaction.js";
 import { isScopelyBotZoomMessage } from "./zoom-format.js";
@@ -14,12 +15,6 @@ import { isScopelyBotZoomMessage } from "./zoom-format.js";
 // Claim malformed/old commands too so they never fall through to model dispatch.
 export function isConfirmCommand(text: string): boolean {
   return /^CONFIRM(?:\s|$)/i.test(text.trim());
-}
-
-export function isApprovedWriteActor(actor: string, approverIds: string[]): boolean {
-  const normalized = actor.trim().toLowerCase();
-  const allowed = new Set(approverIds.map((value) => value.trim().toLowerCase()).filter(Boolean));
-  return Boolean(normalized) && allowed.size > 0 && allowed.has(normalized);
 }
 
 function uncertainBundleItem(value: unknown): boolean {
@@ -78,7 +73,6 @@ export async function tryExecuteConfirm(params: {
   conversationId: string;
   channelId?: string;
   sessionKey?: string;
-  approverIds: string[];
   logger: AuditLogger;
 }): Promise<string | null> {
   if (!isConfirmCommand(params.text)) {
@@ -88,9 +82,14 @@ export async function tryExecuteConfirm(params: {
   if (!m) {
     return "Copy the complete CONFIRM line from the latest preview, or request a fresh preview.";
   }
+  // Refuse locally before any authority request, then recheck after awaiting it.
+  if (readBackendProfile().mode !== "read-write") {
+    auditBackendEvent("write_blocked_read_only", { via: "confirm" });
+    return "Changes are paused: the bot is read-only, so nothing was run.";
+  }
   // Check identity before touching the pending store. An unauthorized user in
   // the correct channel cannot execute OR consume a valid pending action.
-  if (!isApprovedWriteActor(params.actor, params.approverIds)) {
+  if (!(await isCurrentApprover(params.actor))) {
     return "Write confirmation is not authorized for this Zoom identity.";
   }
   // READ-ONLY REFUSAL (INV-2/INV-8): re-check the live profile before touching

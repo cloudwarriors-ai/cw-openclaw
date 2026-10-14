@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import plugin from "./index.js";
 import { verifyChain } from "./scripts/verify-audit-chain.mjs";
 import { auditFile, readAuditRows } from "./src/audit.test-helpers.js";
+import { setBackendProfileForTest } from "./src/backend-profile.js";
 
 // A fresh workspace per test (the plugin writes its audit chain there).
 let workspace: string;
@@ -33,7 +34,7 @@ type Handler = (
 // the S2 inbound guard). The real hook runner executes them in registration
 // order, first {handled:true} wins — mirror that chain here so these tests
 // exercise the same path production runs.
-function registerAndGetBeforeDispatch(): Handler {
+function registerAndGetBeforeDispatch(configuredIds: string[] = []): Handler {
   const handlers = new Map<string, Handler[]>();
   const api = {
     registerTool: vi.fn(),
@@ -42,7 +43,7 @@ function registerAndGetBeforeDispatch(): Handler {
     }),
     registerHook: vi.fn(),
   } as never;
-  plugin.register(api, { writeApproverIds: [] });
+  plugin.register(api, { writeApproverIds: configuredIds });
   const chain = handlers.get("before_dispatch");
   if (!chain || chain.length === 0) {
     throw new Error("before_dispatch handler not registered");
@@ -93,10 +94,10 @@ describe("scopelybot confirm claim scoping", () => {
         senderId: "someone",
       },
     );
-    // Claimed and suppressed — empty approver list yields the deterministic
-    // authorization refusal, never a coordinator dispatch.
+    // Claimed and suppressed — the default read-only profile refuses locally,
+    // never dispatching the coordinator or consuming a code.
     expect(result?.handled).toBe(true);
-    expect(result?.text).toContain("not authorized");
+    expect(result?.text).toContain("read-only");
   });
 
   it.each(["CONFIRM", "CONFIRM 1234", `CONFIRM ${"a".repeat(32)} suffix`])(
@@ -251,4 +252,30 @@ describe("audit-v2 across plugin registrations (AC-7.13) and the frozen v1 file"
     expect(fs.existsSync(path.join(workspace, "scopelybot", "audit.jsonl"))).toBe(false);
     expect(fs.existsSync(auditFile(workspace))).toBe(true);
   });
+});
+
+it("configured approver IDs cannot authorize when the server roster is unavailable", async () => {
+  setBackendProfileForTest({
+    env: "local",
+    mode: "read-write",
+    authMode: "anonymous",
+    allowedHosts: ["127.0.0.1:8100"],
+    baseUrl: "http://127.0.0.1:8100",
+  });
+  try {
+    const handler = registerAndGetBeforeDispatch(["synthetic-admin"]);
+    const result = await handler(
+      { content: `CONFIRM ${"a".repeat(32)}` },
+      {
+        channelId: "zoom",
+        conversationId: "synthetic-channel",
+        sessionKey: "agent:scopelybot:zoom:channel:synthetic-channel",
+        senderId: "synthetic-admin",
+      },
+    );
+    expect(result?.handled).toBe(true);
+    expect(result?.text).toContain("not authorized");
+  } finally {
+    setBackendProfileForTest(null);
+  }
 });

@@ -1,6 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { registerAdminTools } from "./src/admin-tools.js";
-import { createApproverStore } from "./src/approver-store.js";
 import { registerApproverTools } from "./src/approver-tools.js";
 import { createAuditLogger } from "./src/audit.js";
 import { readBackendProfile, resolveWorkspaceDir } from "./src/backend-profile.js";
@@ -15,7 +14,7 @@ import {
   sendComfortMessage,
 } from "./src/comfort.js";
 import type { ScopelyBotConfig } from "./src/config.js";
-import { configuredWriteApprovers, resolveScopelyBotConfig } from "./src/config.js";
+import { resolveScopelyBotConfig } from "./src/config.js";
 import { isConfirmCommand, tryExecuteConfirm } from "./src/confirm.js";
 import { registerCorrelationTools } from "./src/correlation-tools.js";
 import { dailyDigestEnabled, runDigestTick } from "./src/daily-digest.js";
@@ -65,7 +64,8 @@ const plugin = {
       writeApproverIds: {
         type: "array",
         items: { type: "string" },
-        description: "Exact Zoom sender ids allowed to execute staged Scopely writes",
+        description:
+          "Deprecated and ignored for authorization; approvers come from the current server roster",
       },
     },
   },
@@ -80,14 +80,6 @@ const plugin = {
       `[scopelybot] backend profile ${profile.profile}/${profile.env} mode=${profile.mode} auth=${profile.authMode} hosts=${profile.allowedHosts.join(",") || "none (fail-closed)"}`,
     );
     const pluginConfig = resolveScopelyBotConfig(api.config, config);
-    // Config-seeded approvers are permanent; the store layers chat-granted approvers
-    // (scopely_grant_approver, confirm-gated) and the observed-identity ledger on top,
-    // persisted in the workspace so restarts keep both.
-    const approverStore = createApproverStore({
-      workspaceDir,
-      configuredIds: configuredWriteApprovers(pluginConfig),
-    });
-
     // Register every scopelybot tool as `optional: true` so per-agent allowlists
     // actually scope them: non-optional plugin tools bypass allowlists entirely and
     // become visible to EVERY agent. With this wrapper, only agents whose
@@ -121,7 +113,7 @@ const plugin = {
     registerSupportTicketTools(optionalApi, logger, pluginConfig);
     registerSessionLifecycleTools(optionalApi, logger);
     registerSowTools(optionalApi, logger);
-    registerApproverTools(optionalApi, logger, approverStore);
+    registerApproverTools(optionalApi, logger);
 
     // Zoom card bodies do not render Markdown. Keep this rewrite at the Scopely
     // plugin boundary so other agents and channels retain their existing output.
@@ -158,17 +150,10 @@ const plugin = {
       if (ctx.channelId !== "zoom" || !ctx.conversationId) {
         return;
       }
-      // Identity ledger: zoom webhooks carry (operator_id, operator email) per sender.
-      // Recording them lets scopely_grant_approver resolve an email to the Zoom id the
-      // confirm gate matches on. Scoped to scopelybot's own sessions so other bots'
-      // channels don't populate this bot's ledger.
+      // Invalidate the prior sender epoch synchronously; display names/emails
+      // never establish approver identity or authority.
       if (isScopelyBotZoomMessage({ channelId: ctx.channelId, sessionKey: ctx.sessionKey })) {
-        // Invalidate the previous run before ledger I/O can fail. This executes
-        // synchronously in the observation hook, before a new host run starts.
         noteInboundSender(ctx.sessionKey, event.senderId);
-        const senderEmail =
-          typeof event.metadata?.senderName === "string" ? event.metadata.senderName : undefined;
-        approverStore.recordSeenIdentity(event.senderId, senderEmail);
       }
       const text = typeof event.content === "string" ? event.content : "";
       if (isConfirmCommand(text)) {
@@ -213,7 +198,6 @@ const plugin = {
         sessionKey: ctx.sessionKey,
         // Read at confirm time (not register time) so chat-granted approvers take
         // effect immediately, without a container restart.
-        approverIds: approverStore.approverIds(),
         logger,
       });
       // `handled: true` suppresses the coordinator so the CONFIRM cannot re-stage; the

@@ -1,3 +1,7 @@
+// This domain fixture supplies explicit server eligibility; roster authority is tested separately.
+vi.mock("./ops-roster-client.js", () => ({
+  isCurrentApprover: async (actor: string) => ["tester", "t", "attacker"].includes(actor),
+}));
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the prod HTTP layer so no real network call is ever made and we can
@@ -126,7 +130,6 @@ describe("user-maintenance-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "tester",
-      approverIds: ["tester"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });
@@ -158,7 +161,6 @@ describe("user-maintenance-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "tester",
-      approverIds: ["tester"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });
@@ -178,7 +180,6 @@ describe("user-maintenance-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${approveCode}`,
       actor: "t",
-      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });
@@ -196,7 +197,6 @@ describe("user-maintenance-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${rejectCode}`,
       actor: "t",
-      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });
@@ -216,7 +216,6 @@ describe("user-maintenance-tools", () => {
     const wrong = await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "attacker",
-      approverIds: ["attacker"],
       conversationId: "someone-elses-channel@conference.xmpp.zoom.us",
       logger: noopLogger as never,
     });
@@ -227,7 +226,6 @@ describe("user-maintenance-tools", () => {
     const right = await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
-      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });
@@ -254,7 +252,6 @@ describe("user-maintenance-tools", () => {
     const reply = await tryExecuteConfirm({
       text: "CONFIRM 00000000000000000000000000000000",
       actor: "t",
-      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });

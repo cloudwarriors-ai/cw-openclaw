@@ -1,3 +1,7 @@
+// This domain fixture supplies explicit server eligibility; roster authority is tested separately.
+vi.mock("./ops-roster-client.js", () => ({
+  isCurrentApprover: async (actor: string) => ["Mb4vcQ4YQUaQKJjoY4vntQ"].includes(actor),
+}));
 // Bundled-confirm coalescing tests (gated.ts). Motivated by the live
 // 2026-07-20 exchange: "Make Ring Central like 8x8" staged 6 mutations in one
 // agent turn, producing SIX separate confirm prompts/codes — John Rudolph asked
@@ -37,7 +41,6 @@ async function confirmAs(code: string) {
     text: `CONFIRM ${code}`,
     actor: APPROVER,
     conversationId: CHANNEL,
-    approverIds: [APPROVER],
     logger: noopLogger as never,
   });
 }

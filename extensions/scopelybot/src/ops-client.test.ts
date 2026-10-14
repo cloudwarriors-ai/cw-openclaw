@@ -839,7 +839,7 @@ describe("requester claim vs the latest inbound sender of the session", () => {
 // The message_received hook (index.ts) feeds the ledger and the latest-sender
 // table for scopelybot's own Zoom sessions only.
 describe("message_received scope", () => {
-  it("invalidates the prior sender even if persisting the identity ledger fails", async () => {
+  it("invalidates the prior sender without touching a legacy ledger or its unusable temp path", async () => {
     writeLedger({ [ALICE.email]: ALICE.id });
     const { tools: built, hooks } = register();
     fs.mkdirSync(path.join(workspace, "scopelybot-approvers.json.tmp"));
@@ -849,7 +849,11 @@ describe("message_received scope", () => {
         { senderId: BOB.id, content: "hello", metadata: { senderName: BOB.email } },
         { channelId: "zoom", conversationId: "room", sessionKey: HUB },
       ),
-    ).rejects.toThrow();
+    ).resolves.toBeUndefined();
+    expect(ledger()).toEqual({ [ALICE.email]: ALICE.id });
+    expect(fs.statSync(path.join(workspace, "scopelybot-approvers.json.tmp")).isDirectory()).toBe(
+      true,
+    );
     const result = JSON.parse(
       (await built.get("scopely_list_vendors")!.execute("old-run", {})).content[0].text,
     );
@@ -861,11 +865,11 @@ describe("message_received scope", () => {
     JSON.parse(fs.readFileSync(path.join(workspace, "scopelybot-approvers.json"), "utf8"))
       .identities as Record<string, string>;
 
-  it("a scopelybot session records the approver-ledger email and the latest sender", async () => {
+  it("a scopelybot session ignores display-name email authority while recording its latest sender", async () => {
     writeLedger({});
     const { tools: built, hooks } = register();
     inbound(hooks, ALICE.id, { email: ALICE.email });
-    expect(ledger()).toEqual({ [ALICE.email]: ALICE.id });
+    expect(ledger()).toEqual({});
     await built.get("scopely_list_vendors")!.execute("call-1", {});
     expect(kernel.calls[0].headers[ZID]).toBe(ALICE.zoomId);
   });

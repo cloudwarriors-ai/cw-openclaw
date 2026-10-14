@@ -1,3 +1,7 @@
+// This domain fixture supplies explicit server eligibility; roster authority is tested separately.
+vi.mock("./ops-roster-client.js", () => ({
+  isCurrentApprover: async (actor: string) => ["synthetic-approver"].includes(actor),
+}));
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const send = vi.fn();
@@ -15,7 +19,7 @@ const CHANNEL = "synthetic-channel";
 const ACTOR = "synthetic-approver";
 const logger = vi.fn();
 const confirm = (text: string, actor = ACTOR, conversationId = CHANNEL) =>
-  tryExecuteConfirm({ text, actor, conversationId, approverIds: [ACTOR], logger });
+  tryExecuteConfirm({ text, actor, conversationId, logger });
 const promptCode = () => String(send.mock.calls.at(-1)?.[1]).match(/CONFIRM ([a-f0-9]{32})\b/)?.[1];
 const run = () => vi.fn().mockResolvedValue({ ok: true, status: 200, data: {} });
 
