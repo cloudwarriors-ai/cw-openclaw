@@ -318,8 +318,17 @@ Project-type update uses `project_type`; deployment-type update additionally use
 Send only requested changes. Unsupported legacy fields are not silently removed.
 
 Raw preparation rejects malformed calls and known invalid types before host
-coercion. Unknown fields, including nested replacement metadata, remain intact for
-the backend's strict refusal. Pricing amounts are exact decimal strings; card
+coercion. Other native tools preserve unknown fields, including nested replacement metadata,
+for backend refusal. Project/deployment single-field updates reject extra fields locally. Pricing amounts are exact decimal strings; card
 numeric fields retain the model's numeric subset (the API additionally accepts
 decimal strings). Card field/visibility replacement still requires the complete
 supported authoring set; ordinary capped reads are not a replacement source.
+
+Project-type and deployment-type model updates now require `field` and an explicit
+`value`, with exactly one writable field per preview. Select the actual requested
+field; do not copy other current values or fill empty/zero defaults. For multi-field
+requests, ask which field to change first instead of automatically staging a batch.
+`enabled` takes a boolean, `sort_order` an integer, other fields strings; explicit
+empty strings clear only fields that allow them. Backend API multi-field authoring
+is unchanged. Exact human review still decides whether the selected change matches
+intent; a one-field shape does not infer natural-language authorization.

@@ -63,7 +63,12 @@ const WRITE_ARGS: Record<string, Record<string, unknown>> = {
   scopely_update_vendor: { vendor_key: "dialpad", status: "inactive" },
   scopely_delete_vendor: { vendor_key: "dialpad" },
   scopely_create_project_type: { vendor_key: "zoom", key: "ucaas", label: "UCaaS" },
-  scopely_update_project_type: { vendor_key: "zoom", project_type_id: 4, enabled: true },
+  scopely_update_project_type: {
+    vendor_key: "zoom",
+    project_type: "ucaas",
+    field: "enabled",
+    value: true,
+  },
   scopely_delete_project_type: { vendor_key: "zoom", project_type_id: 4 },
   scopely_create_vendor_term: {
     vendor_key: "zoom",

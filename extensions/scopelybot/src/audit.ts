@@ -234,6 +234,7 @@ export function wrapToolWithAudit(
     name: string;
     description: string;
     parameters: unknown;
+    prepareArguments?: (args: unknown) => unknown;
     execute: (
       id: string,
       params: Record<string, unknown>,

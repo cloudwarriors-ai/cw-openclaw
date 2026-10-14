@@ -25,6 +25,13 @@ import { productionCoreEnabled, PRODUCTION_CORE_TOOLS } from "./ops-write-policy
 import { captureRequesterEpoch } from "./requester-epoch.js";
 import { jsonResult, type OpsCapability } from "./scopely-api.js";
 
+/** Check original native values without the host's permissive coercion. */
+export function assertNativeSchema(schema: unknown, value: unknown, label = "Native arguments") {
+  if (!TypeGuard.IsSchema(schema) || !Value.Check(schema, value)) {
+    throw new Error(`${label} must match the native schema without coercion.`);
+  }
+}
+
 export type FamilyId =
   | "F1"
   | "F2"
@@ -601,10 +608,8 @@ function gateTool(tool: AgentTool, origin?: ToolOrigin): AgentTool {
         }
         // Validate against the original TypeBox schema before the host removes
         // its metadata and coerces selectors (e.g. true -> user_id 1). Unknown
-        // fields remain intact because these schemas allow additional properties.
-        if (!TypeGuard.IsSchema(tool.parameters) || !Value.Check(tool.parameters, args)) {
-          throw new Error(`${tool.name} arguments must match the native schema without coercion.`);
-        }
+        // fields follow each tool schema: preserved or explicitly refused, never dropped.
+        assertNativeSchema(tool.parameters, args, `${tool.name} arguments`);
         return tool.prepareArguments ? tool.prepareArguments(args) : args;
       },
     };

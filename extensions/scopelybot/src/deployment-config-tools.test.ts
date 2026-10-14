@@ -67,9 +67,10 @@ const WRITE_ARGS: Record<string, Record<string, unknown>> = {
   },
   scopely_update_deployment_type: {
     vendor_key: "zoom",
-    project_type_id: 4,
-    id: 8,
-    label: "AutoPilot",
+    project_type: "ucaas",
+    deployment_type: "autopilot",
+    field: "label",
+    value: "AutoPilot",
   },
   scopely_delete_deployment_type: { vendor_key: "zoom", project_type_id: 4, id: 8 },
   scopely_create_deployment_type_template: { key: "autopilot", label: "Autopilot" },

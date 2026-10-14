@@ -56,11 +56,15 @@ const CASES = [
     "catalog.scoping_cards.delete",
     { ...BASE, card_key: "uat_card" },
   ],
-  ["scopely_update_project_type", "catalog.project_types.update", { ...BASE, label: "Rudy UAT A" }],
+  [
+    "scopely_update_project_type",
+    "catalog.project_types.update",
+    { ...BASE, field: "label", value: "Rudy UAT A" },
+  ],
   [
     "scopely_update_deployment_type",
     "catalog.deployment_types.update",
-    { ...BASE, deployment_type: "copilot", description: "Rudy UAT validated" },
+    { ...BASE, deployment_type: "copilot", field: "description", value: "Rudy UAT validated" },
   ],
 ] as const;
 let workspace: string;
@@ -129,7 +133,14 @@ it.each(CASES)(
     const validated = prepare(tool, args);
     expect(validated).toEqual(args);
     await tool.execute("native", validated);
-    expect(stage).toHaveBeenCalledExactlyOnceWith(capability, args);
+    expect(stage).toHaveBeenCalledExactlyOnceWith(
+      capability,
+      name === "scopely_update_project_type"
+        ? { ...BASE, label: "Rudy UAT A" }
+        : name === "scopely_update_deployment_type"
+          ? { ...BASE, deployment_type: "copilot", description: "Rudy UAT validated" }
+          : args,
+    );
   },
 );
 it.each(CASES)(
@@ -170,7 +181,11 @@ it.each(CASES)(
     expect(stage).not.toHaveBeenCalled();
   },
 );
-it.each(CASES)(
+it.each(
+  CASES.filter(
+    ([name]) => !["scopely_update_project_type", "scopely_update_deployment_type"].includes(name),
+  ),
+)(
   "%s preserves unknown/obsolete fields for audited backend refusal",
   async (name, capability, base) => {
     const tool = tools().get(name)!;
@@ -207,10 +222,15 @@ it("native read keys supply all selectors for the three failed UAT operations", 
   const selectors = { vendor_key: read.vendor_key, project_type: read.project_type };
   for (const [name, args] of [
     ["scopely_delete_scoping_card", { ...selectors, card_key: read.cards[0].key }],
-    ["scopely_update_project_type", { ...selectors, label: "Rudy UAT A" }],
+    ["scopely_update_project_type", { ...selectors, field: "label", value: "Rudy UAT A" }],
     [
       "scopely_update_deployment_type",
-      { ...selectors, deployment_type: read.deployments[0].key, description: "Rudy UAT validated" },
+      {
+        ...selectors,
+        deployment_type: read.deployments[0].key,
+        field: "description",
+        value: "Rudy UAT validated",
+      },
     ],
   ] as const) {
     expect(prepare(built.get(name)!, args)).toEqual(args);
@@ -310,5 +330,119 @@ it.each(["scopely_create_pricing_item", "scopely_update_pricing_item"])(
     }
     expect(() => prepare(tool, { ...args, is_active: false })).toThrow();
     expect(stage).not.toHaveBeenCalled();
+  },
+);
+
+const SINGLE_FIELDS = [
+  [
+    "scopely_update_project_type",
+    "catalog.project_types.update",
+    BASE,
+    {
+      label: ["Rudy UAT A", "x".repeat(100)],
+      enabled: [false, true],
+      sort_order: [0, 2147483647],
+      product_info_url: ["", "https://example.invalid"],
+    },
+  ],
+  [
+    "scopely_update_deployment_type",
+    "catalog.deployment_types.update",
+    { ...BASE, deployment_type: "copilot" },
+    {
+      label: ["Copilot", "x".repeat(100)],
+      description: ["", "Rudy UAT validated", "x".repeat(500)],
+      long_description: ["", "x".repeat(500)],
+      icon: ["", "x".repeat(100)],
+      sort_order: [0, 2147483647],
+    },
+  ],
+] as const;
+it.each(SINGLE_FIELDS)(
+  "%s rejects the live padded optional-field shape before staging",
+  async (name, _capability, selectors) => {
+    const tool = tools().get(name)!;
+    const args =
+      name === "scopely_update_deployment_type"
+        ? {
+            ...selectors,
+            label: "Copilot",
+            description: "Rudy UAT validated",
+            long_description: "",
+            icon: "",
+            sort_order: 0,
+          }
+        : { ...selectors, label: "Rudy UAT A", enabled: true, sort_order: 0, product_info_url: "" };
+    expect(() => prepare(tool, args)).toThrow();
+    await tool.execute("old-flat", args);
+    expect(stage).not.toHaveBeenCalled();
+  },
+);
+it.each(SINGLE_FIELDS)(
+  "%s exposes one required field/value and preserves exactly one change",
+  async (name, capability, selectors, fields) => {
+    const tool = tools().get(name)!;
+    const schema = structuredClone(tool.parameters) as {
+      properties: Record<string, Schema & { enum: string[] }>;
+      required: string[];
+      additionalProperties: boolean;
+    };
+    expect(Object.keys(schema.properties).toSorted()).toEqual(
+      [...Object.keys(selectors), "field", "value"].toSorted(),
+    );
+    expect(schema.required.slice().toSorted()).toEqual(Object.keys(schema.properties).toSorted());
+    expect(schema.additionalProperties).toBe(false);
+    expect(schema.properties.field.enum.slice().toSorted()).toEqual(Object.keys(fields).toSorted());
+    expect(schema.properties.value.type).toBeUndefined();
+    for (const [field, values] of Object.entries(fields)) {
+      for (const value of values) {
+        stage.mockClear();
+        const args = { ...selectors, field, value };
+        const validated = prepare(tool, args);
+        expect(validated).toEqual(args);
+        await tool.execute("single", validated);
+        expect(stage).toHaveBeenCalledExactlyOnceWith(capability, { ...selectors, [field]: value });
+        expect(args).toEqual({ ...selectors, field, value });
+      }
+    }
+  },
+);
+it.each(SINGLE_FIELDS)(
+  "%s refuses mixed calls, missing values and every field type boundary",
+  async (name, _capability, selectors, fields) => {
+    const tool = tools().get(name)!;
+    const invalid: Record<string, unknown>[] = [
+      { ...selectors, field: "label" },
+      { ...selectors, field: "label", value: undefined },
+      { ...selectors, field: ["label"], value: "A" },
+      ...["unknown", ...Object.getOwnPropertyNames(Object.prototype), "prototype"].map((field) =>
+        Object.assign({}, selectors, { field, value: "A" }),
+      ),
+      { ...selectors, field: "label", value: "A", label: "A" },
+      { ...selectors, field: "label", value: "A", extra: null },
+      { ...selectors, field: "label", value: "A", changes: { enabled: true } },
+    ];
+    for (const field of Object.keys(fields)) {
+      const values: unknown[] = [null, undefined, [], {}];
+      if (field === "enabled") {
+        values.push(0, 1, "true", "false");
+      } else if (field === "sort_order") {
+        values.push("0", true, false, -1, 1.5, 2147483648, Number.NaN, Infinity);
+      } else {
+        values.push(0, true, false);
+        if (field === "label") {
+          values.push("");
+        }
+        const limit =
+          field === "product_info_url" ? 255 : field.includes("description") ? 500 : 100;
+        values.push("x".repeat(limit + 1));
+      }
+      invalid.push(...values.map((value) => Object.assign({}, selectors, { field, value })));
+    }
+    for (const args of invalid) {
+      expect(() => prepare(tool, args), JSON.stringify(args)).toThrow();
+      await tool.execute("invalid", args);
+      expect(stage).not.toHaveBeenCalled();
+    }
   },
 );

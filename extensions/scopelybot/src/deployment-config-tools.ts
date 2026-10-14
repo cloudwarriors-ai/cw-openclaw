@@ -2,6 +2,7 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
+import { assertNativeSchema } from "./capability-registry.js";
 import { describeChanges, pickBody, stageWrite } from "./gated.js";
 import { opsRead } from "./ops-client.js";
 import { opsStageWrite } from "./ops-write-client.js";
@@ -30,6 +31,60 @@ const TEMPLATE_FIELDS = [
   "icon",
   "sort_order",
 ] as const;
+
+const deploymentTypeFields = {
+  label: Type.String({ minLength: 1, maxLength: 100 }),
+  description: Type.String({ maxLength: 500 }),
+  long_description: Type.String({ maxLength: 500 }),
+  icon: Type.String({ maxLength: 100 }),
+  sort_order: Type.Integer({ minimum: 0, maximum: 2147483647 }),
+};
+const deploymentTypeUpdateSchema = Type.Object(
+  {
+    vendor_key: Type.String({
+      pattern: "^[-a-zA-Z0-9_]+$",
+      minLength: 1,
+      maxLength: 50,
+      description: "Exact native key from catalog reads",
+    }),
+    project_type: Type.String({
+      pattern: "^[-a-zA-Z0-9_]+$",
+      minLength: 1,
+      maxLength: 50,
+      description: "Exact native key from catalog reads",
+    }),
+    deployment_type: Type.String({
+      pattern: "^[-a-zA-Z0-9_]+$",
+      minLength: 1,
+      maxLength: 50,
+      description: "Exact native key from catalog reads",
+    }),
+    field: Type.String({
+      enum: Object.keys(deploymentTypeFields),
+      description: "The single field the human explicitly asked to change",
+    }),
+    value: Type.Unknown({
+      description:
+        "The exact replacement value: sort_order requires an integer; other fields require strings. No defaults.",
+    }),
+  },
+  { additionalProperties: false },
+);
+function prepareDeploymentTypeUpdate(args: unknown): Record<string, unknown> {
+  assertNativeSchema(deploymentTypeUpdateSchema, args);
+  const params = args as Record<string, unknown>;
+  if (!Object.hasOwn(deploymentTypeFields, params.field as string)) {
+    throw new Error("The selected field is unsupported.");
+  }
+  if (!Object.hasOwn(params, "value") || params.value === undefined) {
+    throw new Error("An explicit value is required for the selected field.");
+  }
+  assertNativeSchema(
+    deploymentTypeFields[params.field as keyof typeof deploymentTypeFields],
+    params.value,
+  );
+  return params;
+}
 
 export function registerDeploymentConfigTools(api: OpenClawPluginApi, logger: AuditLogger) {
   const dtBase = (vendorKey: string, ptPk: number) =>
@@ -100,39 +155,23 @@ export function registerDeploymentConfigTools(api: OpenClawPluginApi, logger: Au
       {
         name: "scopely_update_deployment_type",
         description:
-          "Prepare a native deployment-type update. Supported fields: label, description, long_description, icon, sort_order. " +
-          "Key mutations and is_active are unsupported. Send only requested changes. An authorized human must CONFIRM the exact preview.",
-        parameters: Type.Object(
-          {
-            vendor_key: Type.String({
-              pattern: "^[-a-zA-Z0-9_]+$",
-              minLength: 1,
-              maxLength: 50,
-              description: "Exact native vendor_key key from catalog reads; never invent an ID",
-            }),
-            project_type: Type.String({
-              pattern: "^[-a-zA-Z0-9_]+$",
-              minLength: 1,
-              maxLength: 50,
-              description: "Exact native project_type key from catalog reads; never invent an ID",
-            }),
-            deployment_type: Type.String({
-              pattern: "^[-a-zA-Z0-9_]+$",
-              minLength: 1,
-              maxLength: 50,
-              description:
-                "Exact native deployment_type key from catalog reads; never invent an ID",
-            }),
-            label: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
-            description: Type.Optional(Type.String({ maxLength: 500 })),
-            long_description: Type.Optional(Type.String({ maxLength: 500 })),
-            icon: Type.Optional(Type.String({ maxLength: 100 })),
-            sort_order: Type.Optional(Type.Integer({ minimum: 0, maximum: 2147483647 })),
-          },
-          { additionalProperties: true },
-        ),
+          "Prepare exactly ONE native field update per human preview. Choose field and value explicitly; " +
+          "do not copy other current values or invent empty/zero defaults. For a multi-field request, ask which " +
+          "field to change first; do not stage a batch automatically. Human CONFIRM is required.",
+        parameters: deploymentTypeUpdateSchema,
+        prepareArguments: prepareDeploymentTypeUpdate,
         async execute(_id: string, params: Record<string, unknown>) {
-          return opsStageWrite("catalog.deployment_types.update", params);
+          try {
+            const args = prepareDeploymentTypeUpdate(params);
+            return opsStageWrite("catalog.deployment_types.update", {
+              vendor_key: args.vendor_key,
+              project_type: args.project_type,
+              deployment_type: args.deployment_type,
+              [args.field as string]: args.value,
+            });
+          } catch (err) {
+            return errorResult(err);
+          }
         },
       },
       logger,
