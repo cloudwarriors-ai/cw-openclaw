@@ -22,6 +22,17 @@ export function verifyZoomWebhook(params: {
     return false;
   }
 
+  // Local admission policy: at most five minutes old, with 30 seconds of
+  // future clock skew. HMAC authenticates the timestamp but does not age it.
+  if (!/^[1-9]\d{0,15}$/.test(timestamp)) {
+    return false;
+  }
+  const seconds = Number(timestamp);
+  const now = Math.floor(Date.now() / 1000);
+  if (!Number.isSafeInteger(seconds) || seconds < now - 300 || seconds > now + 30) {
+    return false;
+  }
+
   // Build message: v0:<timestamp>:<payload>
   const message = `v0:${timestamp}:${payload}`;
 
@@ -102,8 +113,8 @@ export function createZoomWebhookRequestHandler(deps: {
   ): Promise<void> {
     try {
       const rawBody = req.rawBody ?? JSON.stringify(req.body);
-      const signature = req.headers["x-zm-signature"] as string | undefined;
-      const timestamp = req.headers["x-zm-request-timestamp"] as string | undefined;
+      const signature = req.headers["x-zm-signature"];
+      const timestamp = req.headers["x-zm-request-timestamp"];
 
       // Fail closed: no secret configured means no request can be authenticated.
       if (!webhookSecretToken) {
@@ -128,7 +139,12 @@ export function createZoomWebhookRequestHandler(deps: {
         return;
       }
 
-      if (!signature || !timestamp) {
+      if (
+        typeof signature !== "string" ||
+        typeof timestamp !== "string" ||
+        !signature ||
+        !timestamp
+      ) {
         log.warn("missing webhook signature headers");
         res.status(401).json({ error: "missing signature" });
         return;

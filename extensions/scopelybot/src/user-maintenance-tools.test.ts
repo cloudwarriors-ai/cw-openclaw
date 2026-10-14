@@ -65,7 +65,7 @@ function parse(res: { content: { text: string }[] }) {
 function codeFromDelivery(): string | undefined {
   // sendScopelyText(channel, text, replyTo) — the prompt text is arg index 1.
   const text = sendScopelyTextMock.mock.calls.at(-1)?.[1];
-  return String(text ?? "").match(/CONFIRM (\d{4})/)?.[1];
+  return String(text ?? "").match(/CONFIRM ([a-f0-9]{32})/)?.[1];
 }
 
 describe("user-maintenance-tools", () => {
@@ -105,14 +105,14 @@ describe("user-maintenance-tools", () => {
     // The model-facing result is code-free — it cannot fabricate/relay/duplicate it.
     expect(staged.staged).toBe(true);
     expect(staged.awaiting_confirmation).toBe(true);
-    expect(JSON.stringify(staged)).not.toMatch(/CONFIRM \d{4}/);
-    expect(JSON.stringify(staged)).not.toMatch(/\b\d{4}\b/);
+    expect(JSON.stringify(staged)).not.toMatch(/CONFIRM [a-f0-9]{32}/);
+    expect(JSON.stringify(staged)).not.toMatch(/\b[a-f0-9]{32}\b/);
 
     // The real prompt — with the code — was posted to the channel, threaded.
     expect(sendScopelyTextMock).toHaveBeenCalledTimes(1);
     const [channel, text, replyTo] = sendScopelyTextMock.mock.calls[0];
     expect(channel).toBe(CHANNEL);
-    expect(text).toMatch(/CONFIRM \d{4}/);
+    expect(text).toMatch(/CONFIRM [a-f0-9]{32}/);
     expect(replyTo).toBe("MSG-ANCHOR");
 
     // Staging must not touch prod until confirmed.
@@ -261,7 +261,7 @@ describe("user-maintenance-tools", () => {
     buildTools();
     fetchMock.mockResolvedValue({ ok: true, status: 200, data: {} });
     const reply = await tryExecuteConfirm({
-      text: "CONFIRM 0000",
+      text: "CONFIRM 00000000000000000000000000000000",
       actor: "t",
       approverIds: ["t"],
       conversationId: CHANNEL,

@@ -2,7 +2,7 @@
 // An action only runs after a human types `CONFIRM <code>` in the channel — the
 // LLM cannot fabricate that inbound message, so it cannot self-approve.
 
-import { randomInt } from "node:crypto";
+import { randomBytes } from "node:crypto";
 
 export type PendingAction = {
   code: string;
@@ -27,19 +27,23 @@ function prune(): void {
   }
 }
 
-// 4-digit code, unpredictable (CSPRNG), unique within the live store. A guessable
-// code lets the LLM fabricate a CONFIRM; randomInt closes that.
+// Per-action128-bit token: consumed/expired actions and process restarts must
+// not recycle the small four-digit namespace into a different approval. Live
+// collisions are excluded; cross-lifetime non-reuse relies on CSPRNG entropy.
 export function makeCode(): string {
   prune();
-  let code = String(randomInt(1000, 10000));
+  let code = randomBytes(16).toString("hex");
   while (store.has(code)) {
-    code = String(randomInt(1000, 10000));
+    code = randomBytes(16).toString("hex");
   }
   return code;
 }
 
 export function putPending(a: Omit<PendingAction, "expiresAt">): void {
   prune();
+  if (store.has(a.code)) {
+    throw new Error("A confirmation token already has a pending action");
+  }
   store.set(a.code, { ...a, expiresAt: Date.now() + TTL_MS });
 }
 

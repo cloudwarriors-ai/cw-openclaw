@@ -41,7 +41,7 @@ function stage() {
   );
 }
 function code() {
-  return String(send.mock.calls.at(-1)?.[1]).match(/CONFIRM (\d{4})/)![1];
+  return String(send.mock.calls.at(-1)?.[1]).match(/CONFIRM ([a-f0-9]{32})/)![1];
 }
 function confirm(value = code(), actor = "synthetic-admin", channel = "synthetic-channel") {
   return tryExecuteConfirm({

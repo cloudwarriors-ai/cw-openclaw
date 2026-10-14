@@ -52,7 +52,7 @@ const CHANNEL = "vipbot@conference.xmpp.zoom.us";
 // codeOf(await stage(...)): the tool result is code-free by design; the code is
 // read from the channel delivery spy (sendScopelyText prompt, arg index 1).
 const codeOf = (_res: { content: { text: string }[] }) =>
-  String(sendScopelyTextMock.mock.calls.at(-1)?.[1] ?? "").match(/CONFIRM (\d{4})/)?.[1];
+  String(sendScopelyTextMock.mock.calls.at(-1)?.[1] ?? "").match(/CONFIRM ([a-f0-9]{32})/)?.[1];
 
 const WRITE_ARGS: Record<string, Record<string, unknown>> = {
   scopely_create_deployment_type: {

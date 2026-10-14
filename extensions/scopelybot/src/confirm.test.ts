@@ -38,7 +38,7 @@ describe("ScopelyBot confirmation actor gate", () => {
 
   it("does not consume a valid code when the same-channel actor is unauthorized", async () => {
     const result = await tryExecuteConfirm({
-      text: "CONFIRM 1234",
+      text: "CONFIRM 12341234123412341234123412341234",
       actor: "unauthorized-member-id",
       conversationId: "vipbot_prod",
       approverIds: [approver],
@@ -54,13 +54,13 @@ describe("ScopelyBot confirmation actor gate", () => {
       run: vi.fn().mockResolvedValue({ ok: false, status: 502, data: { token: "secret" } }),
     });
     const result = await tryExecuteConfirm({
-      text: "CONFIRM 1234",
+      text: "CONFIRM 12341234123412341234123412341234",
       actor: approver,
       conversationId: "vipbot_prod",
       approverIds: [approver],
       logger,
     });
-    expect(takePendingMock).toHaveBeenCalledWith("1234", {
+    expect(takePendingMock).toHaveBeenCalledWith("12341234123412341234123412341234", {
       conversationId: "vipbot_prod",
       fromOwnZoomSurface: false,
     });
@@ -78,7 +78,7 @@ describe("ScopelyBot confirmation actor gate", () => {
       run: vi.fn().mockResolvedValue({ ok: true, status: 200, data: {} }),
     });
     const result = await tryExecuteConfirm({
-      text: "CONFIRM 8248",
+      text: "CONFIRM 82488248824882488248824882488248",
       actor: approver,
       conversationId: "554f6079-4d2e-4727-87db-1b1c482fff3d",
       channelId: "zoom",
@@ -86,7 +86,7 @@ describe("ScopelyBot confirmation actor gate", () => {
       approverIds: [approver],
       logger,
     });
-    expect(takePendingMock).toHaveBeenCalledWith("8248", {
+    expect(takePendingMock).toHaveBeenCalledWith("82488248824882488248824882488248", {
       conversationId: "554f6079-4d2e-4727-87db-1b1c482fff3d",
       fromOwnZoomSurface: true,
     });
@@ -96,7 +96,7 @@ describe("ScopelyBot confirmation actor gate", () => {
   it("does not treat another agent's zoom session as scopelybot's surface", async () => {
     takePendingMock.mockReturnValue(undefined);
     const result = await tryExecuteConfirm({
-      text: "CONFIRM 4321",
+      text: "CONFIRM 43214321432143214321432143214321",
       actor: approver,
       conversationId: "some-thread-id",
       channelId: "zoom",
@@ -104,7 +104,7 @@ describe("ScopelyBot confirmation actor gate", () => {
       approverIds: [approver],
       logger,
     });
-    expect(takePendingMock).toHaveBeenCalledWith("4321", {
+    expect(takePendingMock).toHaveBeenCalledWith("43214321432143214321432143214321", {
       conversationId: "some-thread-id",
       fromOwnZoomSurface: false,
     });
@@ -138,7 +138,7 @@ describe("backend error detail on 4xx", () => {
       }),
     });
     const result = await tryExecuteConfirm({
-      text: "CONFIRM 1234",
+      text: "CONFIRM 12341234123412341234123412341234",
       actor: approver,
       conversationId: "vipbot_prod",
       approverIds: [approver],
@@ -157,7 +157,7 @@ describe("backend error detail on 4xx", () => {
         .mockResolvedValue({ ok: false, status: 404, data: "<html><body>Not Found</body></html>" }),
     });
     const result = await tryExecuteConfirm({
-      text: "CONFIRM 1234",
+      text: "CONFIRM 12341234123412341234123412341234",
       actor: approver,
       conversationId: "vipbot_prod",
       approverIds: [approver],
@@ -192,7 +192,7 @@ describe("read-only refusal before the pending store (INV-2, INV-8)", () => {
   ])("profile %s: an approver's CONFIRM neither consumes nor runs the action", async (_l, set) => {
     set();
     const result = await tryExecuteConfirm({
-      text: "CONFIRM 1234",
+      text: "CONFIRM 12341234123412341234123412341234",
       actor: approver,
       conversationId: "vipbot_prod",
       approverIds: [approver],
@@ -215,7 +215,7 @@ describe("read-only refusal before the pending store (INV-2, INV-8)", () => {
   it("an unauthorized actor still gets the authorization refusal first", async () => {
     setBackendProfileForTest({ mode: "read-only" });
     const result = await tryExecuteConfirm({
-      text: "CONFIRM 1234",
+      text: "CONFIRM 12341234123412341234123412341234",
       actor: "someone-else",
       conversationId: "vipbot_prod",
       approverIds: [approver],

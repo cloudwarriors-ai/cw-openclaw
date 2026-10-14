@@ -30,7 +30,7 @@ const noopLogger = () => {};
 
 // The tool result is code-free by design; read the code from the delivery spy.
 const lastPromptCode = () =>
-  String(sendScopelyTextMock.mock.calls.at(-1)?.[1] ?? "").match(/CONFIRM (\d{4})/)?.[1];
+  String(sendScopelyTextMock.mock.calls.at(-1)?.[1] ?? "").match(/CONFIRM ([a-f0-9]{32})/)?.[1];
 
 async function confirmAs(code: string) {
   return tryExecuteConfirm({
@@ -62,7 +62,7 @@ describe("stageWrite bundling", () => {
     expect(prompts[0]).toContain("⚠️ Confirm: update card A on PROD.");
     expect(prompts[1]).toContain("⚠️ Confirm: delete card B on PROD.");
     // Two distinct codes — unchanged legacy contract.
-    const codes = prompts.map((p) => p.match(/CONFIRM (\d{4})/)?.[1]);
+    const codes = prompts.map((p) => p.match(/CONFIRM ([a-f0-9]{32})/)?.[1]);
     expect(codes[0]).toBeDefined();
     expect(codes[0]).not.toEqual(codes[1]);
   });
@@ -79,7 +79,7 @@ describe("stageWrite bundling", () => {
     for (const res of results) {
       const body = JSON.parse((res as { content: { text: string }[] }).content[0].text);
       expect(body.staged).toBe(true);
-      expect(JSON.stringify(body)).not.toMatch(/\d{4}/);
+      expect(JSON.stringify(body)).not.toMatch(/[a-f0-9]{32}/);
     }
     expect(sendScopelyTextMock, "no prompt before the window flushes").not.toHaveBeenCalled();
     await flushStagedBundlesForTest();
@@ -90,7 +90,7 @@ describe("stageWrite bundling", () => {
     expect(prompt).toContain("2. update scoping card 584 (call routing)");
     expect(prompt).toContain("3. delete scoping card 585");
     expect(prompt).toMatch(/apply ALL 3/);
-    expect(prompt.match(/CONFIRM \d{4}/g)?.length, "exactly one code").toBe(1);
+    expect(prompt.match(/CONFIRM [a-f0-9]{32}/g)?.length, "exactly one code").toBe(1);
   });
 
   it("one CONFIRM executes every bundled run, in order, with the actor passed through", async () => {

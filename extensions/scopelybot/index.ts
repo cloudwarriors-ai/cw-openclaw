@@ -16,7 +16,7 @@ import {
 } from "./src/comfort.js";
 import type { ScopelyBotConfig } from "./src/config.js";
 import { configuredWriteApprovers, resolveScopelyBotConfig } from "./src/config.js";
-import { tryExecuteConfirm } from "./src/confirm.js";
+import { isConfirmCommand, tryExecuteConfirm } from "./src/confirm.js";
 import { registerCorrelationTools } from "./src/correlation-tools.js";
 import { dailyDigestEnabled, runDigestTick } from "./src/daily-digest.js";
 import { registerDeploymentConfigTools } from "./src/deployment-config-tools.js";
@@ -40,7 +40,6 @@ import { isScopelyBotZoomMessage, rewriteScopelyBotZoomMessage } from "./src/zoo
 
 // A human confirm reply. Mirrors the matcher in tryExecuteConfirm() so the
 // before_dispatch gate and the comfort-skip use one shape.
-const CONFIRM_RE = /^CONFIRM\s+\d{4}\b/i;
 
 let digestHandle: NodeJS.Timeout | null = null;
 
@@ -156,7 +155,9 @@ const plugin = {
     // nothing. So here we only (a) skip comfort for a CONFIRM reply and (b) stash
     // the inbound message id so the confirm gate can thread its prompt.
     api.on("message_received", async (event, ctx) => {
-      if (ctx.channelId !== "zoom" || !ctx.conversationId) return;
+      if (ctx.channelId !== "zoom" || !ctx.conversationId) {
+        return;
+      }
       // Identity ledger: zoom webhooks carry (operator_id, operator email) per sender.
       // Recording them lets scopely_grant_approver resolve an email to the Zoom id the
       // confirm gate matches on. Scoped to scopelybot's own sessions so other bots'
@@ -170,7 +171,9 @@ const plugin = {
         noteInboundSender(ctx.sessionKey, event.senderId);
       }
       const text = typeof event.content === "string" ? event.content : "";
-      if (CONFIRM_RE.test(text.trim())) return;
+      if (isConfirmCommand(text)) {
+        return;
+      }
       // Thread at the ROOT: for a thread-reply inbound, metadata.messageId is the
       // child and metadata.threadId is the root — anchoring at the child makes the
       // comfort message and the CONFIRM prompt invisible in the thread (2026-07-22).
@@ -199,7 +202,9 @@ const plugin = {
         return;
       }
       const text = typeof event.content === "string" ? event.content : "";
-      if (!CONFIRM_RE.test(text.trim())) return;
+      if (!isConfirmCommand(text)) {
+        return;
+      }
       const result = await tryExecuteConfirm({
         text,
         actor: ctx.senderId ?? "",
@@ -267,7 +272,9 @@ const plugin = {
     // only arms the timer: each tick posts nothing unless the live backend
     // profile sets digestEnabled (off by default; audited digest_skipped).
     if (dailyDigestEnabled()) {
-      if (digestHandle) clearInterval(digestHandle); // re-register safety
+      if (digestHandle) {
+        clearInterval(digestHandle);
+      } // re-register safety
       digestHandle = setInterval(() => {
         void runDigestTick(workspaceDir).catch((err) => {
           console.error("[scopelybot-digest] tick failed:", err);

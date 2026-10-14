@@ -27,9 +27,7 @@
 // order) owns those; we structurally skip them as defense in depth.
 
 import type { AuditLogger } from "./audit.js";
-
-// Mirrors the matcher in index.ts / confirm.ts so the skip is byte-consistent.
-const CONFIRM_REPLY_RE = /^CONFIRM\s+\d{4}\b/i;
+import { isConfirmCommand } from "./confirm.js";
 
 // Opt-in via env, same rollout pattern as the supervisor flags: unset/0 =
 // guard disabled, handler is a no-op (byte-identical legacy behavior).
@@ -118,7 +116,9 @@ function isRateLimited(senderId: string, now: number): boolean {
   senderHits.set(senderId, hits);
   if (senderHits.size > 500) {
     const oldest = senderHits.keys().next().value;
-    if (oldest !== undefined) senderHits.delete(oldest);
+    if (oldest !== undefined) {
+      senderHits.delete(oldest);
+    }
   }
   return hits.length > rateLimitMax();
 }
@@ -138,10 +138,14 @@ export function guardInboundMessage(
   deps: { logger: AuditLogger; now?: () => number },
 ): InboundGuardResult {
   const text = params.text ?? "";
-  if (!text.trim()) return undefined;
+  if (!text.trim()) {
+    return undefined;
+  }
   // A CONFIRM reply belongs to the confirm gate — never claim, log, or
   // rate-limit it here.
-  if (CONFIRM_REPLY_RE.test(text.trim())) return undefined;
+  if (isConfirmCommand(text)) {
+    return undefined;
+  }
 
   const now = deps.now ? deps.now() : Date.now();
   const log = (signal: string, action: "blocked" | "flagged") =>
@@ -161,7 +165,9 @@ export function guardInboundMessage(
     return { handled: true, text: RATE_LIMIT_TEXT };
   }
 
-  if (!inboundGuardEnabled()) return undefined;
+  if (!inboundGuardEnabled()) {
+    return undefined;
+  }
 
   // Hard block: confirm-code fabrication.
   if (CONFIRM_FABRICATION_RES.some((re) => re.test(text))) {
@@ -171,10 +177,14 @@ export function guardInboundMessage(
 
   // Signals: log every match, let the message through.
   for (const { id, re } of INJECTION_SIGNAL_RES) {
-    if (re.test(text)) log(`injection:${id}`, "flagged");
+    if (re.test(text)) {
+      log(`injection:${id}`, "flagged");
+    }
   }
   for (const { id, re } of INBOUND_SECRET_RES) {
-    if (re.test(text)) log(`secret_paste:${id}`, "flagged");
+    if (re.test(text)) {
+      log(`secret_paste:${id}`, "flagged");
+    }
   }
   return undefined;
 }

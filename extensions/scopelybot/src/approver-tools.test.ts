@@ -62,8 +62,10 @@ function parse(res: { content: { text: string }[] }) {
 
 function codeFromDelivery(): string {
   const text = sendScopelyTextMock.mock.calls.at(-1)?.[1];
-  const code = String(text ?? "").match(/CONFIRM (\d{4})/)?.[1];
-  if (!code) throw new Error("no confirm code delivered");
+  const code = String(text ?? "").match(/CONFIRM ([a-f0-9]{32})/)?.[1];
+  if (!code) {
+    throw new Error("no confirm code delivered");
+  }
   return code;
 }
 

@@ -47,6 +47,8 @@ describe("gating", () => {
 
   it("never claims or logs a CONFIRM reply — the confirm gate owns those", () => {
     expect(guard("CONFIRM 4821")).toBeUndefined();
+    expect(guard(`CONFIRM ${"a".repeat(32)}`)).toBeUndefined();
+    expect(guard(`CONFIRM ${"a".repeat(32)} suffix`)).toBeUndefined();
     expect(guard("confirm 1234 please")).toBeUndefined();
     expect(auditMock).not.toHaveBeenCalled();
   });
@@ -148,14 +150,19 @@ describe("rate limit (P4, own flag)", () => {
   });
 
   it("the window slides — old messages age out", () => {
-    for (let i = 0; i < 3; i++) guard(`q${i}`, { now: 1_000_000 + i });
+    for (let i = 0; i < 3; i++) {
+      guard(`q${i}`, { now: 1_000_000 + i });
+    }
     // Past the 60s window the count resets.
     expect(guard("later question", { now: 1_000_000 + 61_000 })).toBeUndefined();
   });
 
   it("NEVER rate-limits a CONFIRM reply — the gate must always execute", () => {
-    for (let i = 0; i < 10; i++) guard(`flood ${i}`, { now: 1_000_000 + i });
+    for (let i = 0; i < 10; i++) {
+      guard(`flood ${i}`, { now: 1_000_000 + i });
+    }
     expect(guard("CONFIRM 4821", { now: 1_000_020 })).toBeUndefined();
+    expect(guard(`CONFIRM ${"a".repeat(32)}`, { now: 1_000_020 })).toBeUndefined();
     expect(auditMock).not.toHaveBeenCalledWith(
       expect.objectContaining({ params: expect.objectContaining({ signal: "confirm" }) }),
     );
@@ -163,7 +170,9 @@ describe("rate limit (P4, own flag)", () => {
 
   it("runs even when the content guard flag is off (independent flags)", () => {
     delete process.env.SCOPELYBOT_INBOUND_GUARD;
-    for (let i = 0; i < 3; i++) guard(`q${i}`, { now: 1_000_000 + i });
+    for (let i = 0; i < 3; i++) {
+      guard(`q${i}`, { now: 1_000_000 + i });
+    }
     expect(guard("q4", { now: 1_000_005 })).toMatchObject({ handled: true });
   });
 

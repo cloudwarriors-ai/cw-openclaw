@@ -9,7 +9,11 @@ vi.mock("./scopely-api.js", () => ({
   }),
   buildQuery: (params: Record<string, unknown>, keys: string[]) => {
     const qs = new URLSearchParams();
-    for (const k of keys) if (params[k] !== undefined) qs.set(k, String(params[k]));
+    for (const k of keys) {
+      if (params[k] !== undefined) {
+        qs.set(k, String(params[k]));
+      }
+    }
     const s = qs.toString();
     return s ? `?${s}` : "";
   },
@@ -58,7 +62,7 @@ const CHANNEL = "vipbot@conference.xmpp.zoom.us";
 // codeOf(await stage(...)): the tool result is code-free by design; the code is
 // read from the channel delivery spy (sendScopelyText prompt, arg index 1).
 const codeOf = (_res: { content: { text: string }[] }) =>
-  String(sendScopelyTextMock.mock.calls.at(-1)?.[1] ?? "").match(/CONFIRM (\d{4})/)?.[1];
+  String(sendScopelyTextMock.mock.calls.at(-1)?.[1] ?? "").match(/CONFIRM ([a-f0-9]{32})/)?.[1];
 
 const READ_TOOLS = [
   "scopely_list_orgs",
@@ -297,6 +301,6 @@ describe("org-tools", () => {
 
   it("registers exactly the expected read + write tools", () => {
     const t = buildTools();
-    expect(Object.keys(t).sort()).toEqual([...READ_TOOLS, ...WRITE_TOOLS].sort());
+    expect(Object.keys(t).toSorted()).toEqual([...READ_TOOLS, ...WRITE_TOOLS].toSorted());
   });
 });

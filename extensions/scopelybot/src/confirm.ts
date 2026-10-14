@@ -11,6 +11,11 @@ import { takePending } from "./pending-confirm.js";
 import { redactText } from "./redaction.js";
 import { isScopelyBotZoomMessage } from "./zoom-format.js";
 
+// Claim malformed/old commands too so they never fall through to model dispatch.
+export function isConfirmCommand(text: string): boolean {
+  return /^CONFIRM(?:\s|$)/i.test(text.trim());
+}
+
 export function isApprovedWriteActor(actor: string, approverIds: string[]): boolean {
   const normalized = actor.trim().toLowerCase();
   const allowed = new Set(approverIds.map((value) => value.trim().toLowerCase()).filter(Boolean));
@@ -28,7 +33,9 @@ export function isApprovedWriteActor(actor: string, approverIds: string[]): bool
 // (stack traces, proxies' HTML) and stay hidden — pinned by the existing
 // "hides backend failure bodies" 502 test.
 export function formatBackendErrorDetail(data: unknown): string {
-  if (!data) return "";
+  if (!data) {
+    return "";
+  }
   let text = "";
   if (typeof data === "string") {
     text = data;
@@ -46,7 +53,9 @@ export function formatBackendErrorDetail(data: unknown): string {
   } else if (Array.isArray(data)) {
     text = data.map((v) => (typeof v === "string" ? v : JSON.stringify(v))).join(" ");
   }
-  if (/^\s*</.test(text)) return ""; // HTML error page — no useful detail
+  if (/^\s*</.test(text)) {
+    return "";
+  } // HTML error page — no useful detail
   return redactText(text, 400).trim();
 }
 
@@ -62,8 +71,13 @@ export async function tryExecuteConfirm(params: {
   approverIds: string[];
   logger: AuditLogger;
 }): Promise<string | null> {
-  const m = params.text.trim().match(/^CONFIRM\s+(\d{4})\b/i);
-  if (!m) return null;
+  if (!isConfirmCommand(params.text)) {
+    return null;
+  }
+  const m = params.text.trim().match(/^CONFIRM\s+([a-f0-9]{32})$/i);
+  if (!m) {
+    return "Copy the complete CONFIRM line from the latest preview, or request a fresh preview.";
+  }
   // Check identity before touching the pending store. An unauthorized user in
   // the correct channel cannot execute OR consume a valid pending action.
   if (!isApprovedWriteActor(params.actor, params.approverIds)) {
@@ -80,7 +94,7 @@ export async function tryExecuteConfirm(params: {
   // thread replies dispatch with the thread id as conversationId, so the session
   // key — which proves the message came through ScopelyBot's own Zoom binding —
   // is the accepted channel-binding evidence for threaded CONFIRMs.
-  const action = takePending(m[1], {
+  const action = takePending(m[1].toLowerCase(), {
     conversationId: params.conversationId,
     fromOwnZoomSurface: isScopelyBotZoomMessage({
       channelId: params.channelId ?? "",
@@ -88,7 +102,7 @@ export async function tryExecuteConfirm(params: {
     }),
   });
   if (!action) {
-    return `No pending action for code ${m[1]} — it may have expired (5 min), already been used, or was requested in a different channel.`;
+    return "No pending action for that confirmation — it may have expired (5 min), already been used, or was requested in a different channel.";
   }
   const start = Date.now();
   try {
@@ -114,7 +128,9 @@ export async function tryExecuteConfirm(params: {
         .slice(0, 10)
         .map((r) => {
           const item = r as { summary: string; ok: boolean; status: number; detail?: string };
-          if (item.ok) return `✅ ${item.summary}`;
+          if (item.ok) {
+            return `✅ ${item.summary}`;
+          }
           const itemDetail = item.detail ? ` — ${item.detail}` : "";
           return `❌ ${item.summary} (HTTP ${item.status})${itemDetail}`;
         })

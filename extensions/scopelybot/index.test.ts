@@ -44,11 +44,15 @@ function registerAndGetBeforeDispatch(): Handler {
   } as never;
   plugin.register(api, { writeApproverIds: [] });
   const chain = handlers.get("before_dispatch");
-  if (!chain || chain.length === 0) throw new Error("before_dispatch handler not registered");
+  if (!chain || chain.length === 0) {
+    throw new Error("before_dispatch handler not registered");
+  }
   return async (event, ctx) => {
     for (const handler of chain) {
       const result = await handler(event, ctx);
-      if (result?.handled) return result;
+      if (result?.handled) {
+        return result;
+      }
     }
     return undefined;
   };
@@ -58,7 +62,7 @@ describe("scopelybot confirm claim scoping", () => {
   it("declines a CONFIRM from another agent's zoom session (does not steal it)", async () => {
     const handler = registerAndGetBeforeDispatch();
     const result = await handler(
-      { content: "CONFIRM 8248" },
+      { content: "CONFIRM 82488248824882488248824882488248" },
       {
         channelId: "zoom",
         conversationId: "thread-1",
@@ -72,7 +76,7 @@ describe("scopelybot confirm claim scoping", () => {
   it("declines when no session key is present", async () => {
     const handler = registerAndGetBeforeDispatch();
     const result = await handler(
-      { content: "CONFIRM 8248" },
+      { content: "CONFIRM 82488248824882488248824882488248" },
       { channelId: "zoom", conversationId: "thread-1", senderId: "someone" },
     );
     expect(result).toBeUndefined();
@@ -81,7 +85,7 @@ describe("scopelybot confirm claim scoping", () => {
   it("claims a CONFIRM from its own zoom session (threaded)", async () => {
     const handler = registerAndGetBeforeDispatch();
     const result = await handler(
-      { content: "CONFIRM 8248" },
+      { content: "CONFIRM 82488248824882488248824882488248" },
       {
         channelId: "zoom",
         conversationId: "554f6079-4d2e-4727-87db-1b1c482fff3d",
@@ -94,6 +98,28 @@ describe("scopelybot confirm claim scoping", () => {
     expect(result?.handled).toBe(true);
     expect(result?.text).toContain("not authorized");
   });
+
+  it.each(["CONFIRM", "CONFIRM 1234", `CONFIRM ${"a".repeat(32)} suffix`])(
+    "claims malformed commands without dispatching or echoing them: %s",
+    async (content) => {
+      const handler = registerAndGetBeforeDispatch();
+      const result = await handler(
+        { content },
+        {
+          channelId: "zoom",
+          conversationId: "thread-1",
+          sessionKey: "agent:scopelybot:zoom:channel:thread-1",
+          senderId: "someone",
+        },
+      );
+      expect(result).toEqual({
+        handled: true,
+        text: expect.stringContaining("Copy the complete CONFIRM line"),
+      });
+      expect(result?.text).not.toContain("a".repeat(32));
+      expect(result?.text).not.toContain("1234");
+    },
+  );
 
   it("ignores non-CONFIRM messages in its own session", async () => {
     const handler = registerAndGetBeforeDispatch();
@@ -174,7 +200,7 @@ describe("audit-v2 across plugin registrations (AC-7.13) and the frozen v1 file"
   };
   const confirm = (dispatch: Handler) =>
     dispatch(
-      { content: "CONFIRM 7391" },
+      { content: "CONFIRM 73917391739173917391739173917391" },
       {
         channelId: "zoom",
         conversationId: "thread-1",
@@ -217,7 +243,7 @@ describe("audit-v2 across plugin registrations (AC-7.13) and the frozen v1 file"
       }),
     );
     const visible = rows.map(({ hash: _h, prev_hash: _p, audit_id: _a, ts: _t, ...rest }) => rest);
-    expect(JSON.stringify(visible)).not.toContain("7391");
+    expect(JSON.stringify(visible)).not.toContain("73917391739173917391739173917391");
   });
 
   it("a clean workspace never gets a v1 file", () => {

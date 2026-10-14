@@ -189,3 +189,33 @@ Deployment maps follow existing engine rules, not a promise of uniform effects.
 Unsupported retirement, tier money edits, obsolete fields and oversized previews
 refuse. Pricing deletion remains disabled. Production stays read-only; local HTTP
 with mocked Zoom delivery is not connected channel or human Claude UAT.
+
+### Confirmation replay protection
+
+ScopelyBot now posts a fresh 128-bit hexadecimal token for each preview. Copy the
+complete `CONFIRM <token>` line from that preview. The same authorized human
+confirmation flow applies; four-digit codes no longer execute actions. Missing,
+short, or suffixed tokens receive a deterministic refusal and never enter the
+model dispatch path. The keyword and hexadecimal token are case-insensitive.
+Tokens stay out of tool results and business audit payloads.
+
+Pending previews expire after five minutes, are consumed before execution, and are
+lost on restart. Request a fresh preview after a restart or rollback; never restore
+old pending state. A new action receives independent cryptographic randomness, so
+replaying an old confirmation cannot practically match a later action, including
+after restart. Backend pending-action claims continue to prevent repeated effects;
+no automatic mutation retry is added. This is not a durable webhook deduplication
+service: duplicate events may still produce repeated reads or unconfirmed previews.
+
+Zoom webhook admission now requires a valid signature and a canonical Unix-seconds
+header within five minutes of the server clock, allowing at most 30 seconds ahead.
+These inclusive whole-second bounds are local policy. Keep gateway time synchronized;
+outside the bounds, signed events are refused before dispatch. This admission policy
+affects all bots on that Zoom listener. Other bots retain their existing confirmation
+formats; ScopelyBot's token protection does not certify their approval paths.
+
+Roll out only a reviewed, matched gateway/plugin build after isolated tests. Human
+Zoom delivery, sender mapping, approval and reply audience must be verified on the
+development channel before enabling writes. Production profiles remain read only.
+The seven mapped write capabilities still have partial field coverage; this change
+does not implement the remaining eleven historically used write-tool names.
