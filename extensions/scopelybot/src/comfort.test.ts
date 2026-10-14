@@ -82,9 +82,9 @@ describe("resolveInboundThreadAnchor — thread-root anchoring (2026-07-22 incid
   // the thread ROOT. For a thread-reply inbound, messageId is the child message;
   // threadId (canonical MessageThreadId from the zoom adapter) is the root.
   it("prefers threadId (root) when the inbound is a thread reply", () => {
-    expect(
-      resolveInboundThreadAnchor({ messageId: "child-msg-id", threadId: "root-msg-id" }),
-    ).toBe("root-msg-id");
+    expect(resolveInboundThreadAnchor({ messageId: "child-msg-id", threadId: "root-msg-id" })).toBe(
+      "root-msg-id",
+    );
   });
 
   it("falls back to messageId for a top-level inbound (no threadId)", () => {
@@ -98,5 +98,30 @@ describe("resolveInboundThreadAnchor — thread-root anchoring (2026-07-22 incid
   it("ignores non-string / blank values", () => {
     expect(resolveInboundThreadAnchor({ messageId: 42, threadId: "   " })).toBeUndefined();
     expect(resolveInboundThreadAnchor({ messageId: "m-1", threadId: 99 })).toBe("m-1");
+  });
+});
+
+describe("strict confirmation delivery", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+  it("refuses missing configuration instead of claiming delivery", async () => {
+    const { sendScopelyText } = await import("./comfort.js");
+    vi.stubEnv("ZOOM_BOT_JID", "");
+    await expect(sendScopelyText("local-channel", "preview", undefined, true)).rejects.toThrow();
+  });
+  it.each([400, 429, 500])("refuses rejected Zoom delivery %s without retry", async (status) => {
+    const { sendScopelyText } = await import("./comfort.js");
+    vi.stubEnv("ZOOM_BOT_JID", "synthetic-bot");
+    vi.stubEnv("ZOOM_ACCOUNT_ID", "synthetic-account");
+    const request = vi.fn(async (url: string) =>
+      url.includes("oauth/token")
+        ? { ok: true, json: async () => ({ access_token: "synthetic", expires_in: 3600 }) }
+        : { ok: false, status },
+    );
+    vi.stubGlobal("fetch", request);
+    await expect(sendScopelyText("local-channel", "preview", undefined, true)).rejects.toThrow();
+    expect(request.mock.calls.filter(([url]) => url.includes("chat/messages"))).toHaveLength(1);
   });
 });

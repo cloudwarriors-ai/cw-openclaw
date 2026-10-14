@@ -427,3 +427,9 @@ export async function opsRead(_toolCallId: string, params: Record<string, unknow
   }
   return invoke(binding.capability, args, call);
 }
+
+/** Same trusted sender/drift check as reads, reused for local write staging. */
+export function currentWriteRequester(): string | undefined {
+  const call = currentCall();
+  return call ? requesterZoomId(call) : undefined;
+}

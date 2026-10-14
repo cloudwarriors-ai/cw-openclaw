@@ -402,7 +402,12 @@ export function capabilityFor(tool: string): Capability | undefined {
     family,
     effect: EFFECT_OVERRIDES[tool] ?? effect,
     enablement: ops ? "read-live-on-prod" : enablement,
-    status: ops ? "live" : (STATUS_OVERRIDES[tool] ?? status),
+    status: ops
+      ? "live"
+      : ["scopely_update_project_type", "scopely_update_deployment_type"].includes(tool) &&
+          readBackendProfile().env === "local"
+        ? "local"
+        : (STATUS_OVERRIDES[tool] ?? status),
   };
 }
 

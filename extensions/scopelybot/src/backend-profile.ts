@@ -29,7 +29,7 @@ export type AuthMode = "anonymous" | "service-token";
 
 export type BackendProfile = {
   profile: "zw2";
-  env: "prod" | "dev";
+  env: "prod" | "dev" | "local";
   /** Origin of the app (prod: https://api.vip.pscx.ai); "" when nothing is reachable. */
   baseUrl: string;
   /** URL.host values (host[:port], lowercase) the guard may contact. */
@@ -64,6 +64,7 @@ const ISSUE_LINK_PREFIX = "https://github.com/cloudwarriors-ai/";
 const ENV_APP_HOSTS: Record<BackendProfile["env"], readonly string[]> = {
   prod: ["api.vip.pscx.ai"],
   dev: ["100.114.142.100:8022"],
+  local: ["127.0.0.1:8100"],
 };
 // The ONLY Host overrides (dev only): the virtual hosts the zw2-sprint stack
 // routes to the app. Any other value could reach another service behind the
@@ -140,8 +141,8 @@ export function parseBackendProfile(raw: string): ParseResult {
     return { error: 'authMode must be "anonymous" or "service-token"' };
   }
   const env = value.env;
-  if (env !== "prod" && env !== "dev") {
-    return { error: 'env must be "prod" or "dev"' };
+  if (env !== "prod" && env !== "dev" && env !== "local") {
+    return { error: 'env must be "prod", "dev", or "local"' };
   }
   const mode = value.mode ?? "read-only";
   if (!MODES.has(mode as BackendMode)) {
@@ -150,7 +151,7 @@ export function parseBackendProfile(raw: string): ParseResult {
   // The new app in production stays read-only (INV-2). With read-write the guard
   // passes any method, so no file edit may grant it on prod: lifting the cap
   // for a family is a reviewed code change (PK-14), never a profile key.
-  if (mode === "read-write" && env !== "dev") {
+  if (mode === "read-write" && env === "prod") {
     return {
       error:
         'mode "read-write" is dev-only: prod is read-only until a reviewed code change lifts this cap',
@@ -177,7 +178,8 @@ export function parseBackendProfile(raw: string): ParseResult {
   } catch {
     return { error: "baseUrl is not a URL" };
   }
-  const protocolOk = base.protocol === "https:" || (env === "dev" && base.protocol === "http:");
+  const protocolOk =
+    base.protocol === "https:" || ((env === "dev" || env === "local") && base.protocol === "http:");
   const originOnly = base.pathname === "/" && !base.search && !base.hash;
   if (!protocolOk || base.username || base.password || !originOnly) {
     return {

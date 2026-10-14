@@ -110,7 +110,13 @@ describe("vendor-config-tools", () => {
     const t = buildTools();
     for (const [name, args] of Object.entries(WRITE_ARGS)) {
       const res = parse(await t[name].execute("x", args));
-      expect(res.staged, `${name} must stage`).toBe(true);
+      if (name === "scopely_update_project_type") {
+        // This migrated tool requires a local operator profile/current sender;
+        // old BFF staging must never be a fallback.
+        expect(res.ok).toBe(false);
+      } else {
+        expect(res.staged, `${name} must stage`).toBe(true);
+      }
     }
     expect(fetchMock, "no write tool may call scopelyFetch before CONFIRM").not.toHaveBeenCalled();
   });

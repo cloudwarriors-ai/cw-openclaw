@@ -4,6 +4,7 @@ import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
 import { describeChanges, pickBody, stageWrite } from "./gated.js";
 import { opsRead } from "./ops-client.js";
+import { opsStageWrite } from "./ops-write-client.js";
 import { errorResult, jsonResult, scopelyFetch } from "./scopely-api.js";
 
 // Vendor-config tools (Scopely VIP admin): vendors, their project types, and
@@ -240,8 +241,8 @@ export function registerVendorConfigTools(api: OpenClawPluginApi, logger: AuditL
       {
         name: "scopely_update_project_type",
         description:
-          "Update a project type on a Scopely VIP vendor (admin action). You ARE authorized — CALL this " +
-          "tool. Pass only fields to change. It only STAGES the change; nothing applies until `CONFIRM <code>`.",
+          "Prepare a synthetic local project-type update. Supported fields: label, enabled, sort_order, product_info_url. " +
+          "Keys, scope_category and catalog_seeded are unsupported. An authorized human must CONFIRM the exact preview.",
         parameters: Type.Object({
           vendor_key: Type.String({ description: "Vendor key" }),
           project_type_id: Type.Number({
@@ -256,24 +257,7 @@ export function registerVendorConfigTools(api: OpenClawPluginApi, logger: AuditL
           catalog_seeded: Type.Optional(Type.Boolean()),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const vendorKey = params.vendor_key as string;
-            const ptId = params.project_type_id as number;
-            const body = pickBody(params, PROJECT_TYPE_FIELDS);
-            if (Object.keys(body).length === 0) {
-              return jsonResult({ ok: false, error: "No fields to update." });
-            }
-            return stageWrite(
-              `update project type id ${ptId} on ${vendorKey}: ${describeChanges(body)}`,
-              () =>
-                scopelyFetch(`${ptBase(vendorKey)}${ptId}/`, {
-                  method: "PATCH",
-                  body: JSON.stringify(body),
-                }),
-            );
-          } catch (err) {
-            return errorResult(err);
-          }
+          return opsStageWrite("catalog.project_types.update", params);
         },
       },
       logger,

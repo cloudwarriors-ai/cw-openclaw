@@ -148,3 +148,13 @@ Local rehearsals C1–C3 exercised real synthetic tokens, the plugin against the
 This round mirrors committed backend `87b8b516`, including paged pricing (limit 1–100), the 264 KB invoke read cap, blank Accept handling and unresolved identity redaction. The snapshot and 56 Zoom-id vectors are byte copies of that backend. This final combination requires its own local delta rehearsal.
 
 Deployment gates remain: trusted real Zoom event payloads, proxy header forwarding, reply-audience policy, concurrent-sender behavior on the production image, service-principal setup, and finalized threat-model review. The bot guard now refuses every non-whoami capability before I/O when the current sender is absent or has drifted, including with a personal token in the service slot. A header-less whoami can still diagnose the credential; service-token kind enforcement at the backend remains a separate trust-boundary consideration. No business write capability is enabled. Production VIP/ZW remains read-only.
+
+## Slice2 local confirmation canaries
+
+Two migrated writes are available only with a validated local profile: `scopely_update_project_type` and `scopely_update_deployment_type`. Use env `local`, baseUrl `http://127.0.0.1:8100`, allowedHosts `["127.0.0.1:8100"]`, authMode `service-token`, mode `read-write`. Production profiles remain capped at read-only. This is synthetic local testing, not a live-channel rollout.
+
+The current coordinator sender must still match the latest inbound sender. The guard prepares an application pending action, then posts the exact preview with `LOCAL SYNTHETIC DATA` and the existing CONFIRM code. Codes and pending IDs never return to the model. Local prompts do not bundle or truncate; rejected/ambiguous delivery invalidates the local code and reports failure without retry. A backend pending action may remain until expiry, with no effect applied.
+
+The human CONFIRM gate keeps its channel and approver checks, then sends the trusted confirming Zoom ID to `ops.confirm`. The backend independently rechecks current authority. Only state `succeeded` yields Done; failed/claimed states do not, even under HTTP200. A claimed outcome requires reconciliation, never an automatic repeat. The audit policy records env `local` explicitly.
+
+Project fields: label/enabled/sort_order/product_info_url. Deployment fields: label/description/long_description/icon/sort_order. Other legacy fields refuse. The other16 used writes remain unported. Claude uses the same backend through native MCP prepare/confirm/cancel/pending, with approval inside its client; actual human-client and live Zoom UAT are still required. No separate approval page.

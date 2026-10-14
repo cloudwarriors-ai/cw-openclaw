@@ -107,7 +107,16 @@ export const OPS_READ_CAPABILITIES = [
   "sessions.list",
   "sessions.get",
 ] as const;
-export type OpsCapability = (typeof OPS_READ_CAPABILITIES)[number];
+export const OPS_LOCAL_WRITE_CAPABILITIES = [
+  "catalog.project_types.update",
+  "catalog.deployment_types.update",
+  "ops.confirm",
+  "ops.cancel",
+  "ops.pending",
+] as const;
+export type OpsCapability =
+  | (typeof OPS_READ_CAPABILITIES)[number]
+  | (typeof OPS_LOCAL_WRITE_CAPABILITIES)[number];
 export type OpsInvocation = {
   capability: OpsCapability;
   args: Record<string, unknown>;
@@ -295,8 +304,16 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 // The invoke's own checks, before the mode/rate gate: a read capability, a
 // well-formed requester, small JSON-object args. Returns the serialized args.
-function checkOpsInvocation(op: OpsInvocation, http: HttpFields): string {
-  if (!(OPS_READ_CAPABILITIES as readonly string[]).includes(op.capability)) {
+function checkOpsInvocation(op: OpsInvocation, http: HttpFields, profile: BackendProfile): string {
+  const read = (OPS_READ_CAPABILITIES as readonly string[]).includes(op.capability);
+  const localWrite = (OPS_LOCAL_WRITE_CAPABILITIES as readonly string[]).includes(op.capability);
+  if (
+    !read &&
+    (!localWrite ||
+      profile.env !== "local" ||
+      profile.mode !== "read-write" ||
+      profile.baseUrl !== "http://127.0.0.1:8100")
+  ) {
     refuse(
       "write_blocked_read_only",
       "Blocked: the bot may only invoke the app's read capabilities.",
@@ -432,13 +449,18 @@ async function guardedRequest(
   if (!profile.allowedHosts.includes(url.host) || url.username || url.password) {
     refuse("host_blocked", "Blocked: the request target is not an allowed app host.", http);
   }
-  const opsArgs = op ? checkOpsInvocation(op, http) : undefined;
+  const opsArgs = op ? checkOpsInvocation(op, http, profile) : undefined;
   if (op) {
     // Recorded only once checked: the name is then one of the allow-list's.
     http.capability = op.capability;
     http.requester_header = op.requesterZoomId !== undefined;
   }
-  admit(profile, method, http, op !== undefined);
+  admit(
+    profile,
+    method,
+    http,
+    op !== undefined && (OPS_READ_CAPABILITIES as readonly string[]).includes(op.capability),
+  );
   const token = op ? opsToken(profile, http) : undefined;
 
   // Correlation (INV-5): set by the guard only, after every caller input; the
@@ -461,6 +483,13 @@ async function guardedRequest(
     headers["content-type"] = "application/json";
     headers.authorization = `Bearer ${token}`;
     headers[OPS_BOT_AUDIT_HEADER] = auditId;
+    if ((OPS_LOCAL_WRITE_CAPABILITIES as readonly string[]).includes(op.capability)) {
+      const channel = process.env.SCOPELYBOT_ZOOM_CHANNEL;
+      if (!channel || channel.length > 200 || /[\r\n]/.test(channel)) {
+        refuse("header_blocked", "The local Zoom channel is not configured.", http);
+      }
+      headers["x-ops-surface"] = channel;
+    }
     if (op.requesterZoomId !== undefined) {
       headers[OPS_REQUESTER_HEADER] = op.requesterZoomId;
     }
@@ -502,7 +531,10 @@ async function guardedRequest(
     } catch {
       // The request already happened: return its result; the intent stays open
       // until the writer's recovery sweep records it as indeterminate.
-      if (!SAFE_METHODS.has(method) && !op) {
+      if (
+        !SAFE_METHODS.has(method) &&
+        (!op || !(OPS_READ_CAPABILITIES as readonly string[]).includes(op.capability))
+      ) {
         writesLatched = true;
       }
     }

@@ -11,7 +11,7 @@ import { readBackendProfile } from "./backend-profile.js";
 import { capabilityRefusal, currentToolName } from "./capability-registry.js";
 import { getChannelThreadAnchor, sendScopelyText } from "./comfort.js";
 import { formatBackendErrorDetail } from "./confirm.js";
-import { makeCode, putPending } from "./pending-confirm.js";
+import { makeCode, putPending, takePending } from "./pending-confirm.js";
 import { redactText } from "./redaction.js";
 import { jsonResult } from "./scopely-api.js";
 
@@ -40,7 +40,9 @@ const bundles = new Map<string, { items: StagedItem[]; timer: ReturnType<typeof 
 // explicit, reversible env change, not a silent behavior shift.
 function bundleWindowMs(): number {
   const raw = Number(process.env.SCOPELYBOT_CONFIRM_BUNDLE_MS ?? "0");
-  if (!Number.isFinite(raw) || raw <= 0) return 0;
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return 0;
+  }
   return Math.min(raw, 10_000);
 }
 
@@ -48,24 +50,26 @@ function bundleWindowMs(): number {
 // multiple items render a numbered list so the approver sees the COMPLETE set
 // of intended changes behind the one code (John Rudolph's 2026-07-20 ask:
 // "one message to confirm all intentions not broke apart").
-function buildPrompt(items: StagedItem[], code: string): string {
+function buildPrompt(items: StagedItem[], code: string, target = "PROD"): string {
   if (items.length === 1) {
     return (
-      `⚠️ Confirm: ${items[0].summary} on PROD.\n` +
+      `⚠️ Confirm: ${items[0].summary} on ${target}.\n` +
       `Reply \`CONFIRM ${code}\` within 5 minutes to proceed, or ignore to cancel.`
     );
   }
   const lines = items.map((it, i) => `${i + 1}. ${it.summary}`).join("\n");
   return (
-    `⚠️ Confirm ${items.length} changes on PROD:\n${lines}\n` +
+    `⚠️ Confirm ${items.length} changes on ${target}:\n${lines}\n` +
     `Reply \`CONFIRM ${code}\` within 5 minutes to apply ALL ${items.length}, or ignore to cancel.`
   );
 }
 
 // Register the pending action for a flushed bundle and post its prompt.
 // putPending happens BEFORE the send so even an instant CONFIRM finds the code.
-async function flushItems(channel: string, items: StagedItem[]): Promise<void> {
-  if (items.length === 0) return;
+async function flushItems(channel: string, items: StagedItem[], target = "PROD"): Promise<void> {
+  if (items.length === 0) {
+    return;
+  }
   const code = makeCode();
   if (items.length === 1) {
     // Legacy pending shape — confirm.ts renders `✅ Done: <summary>.` unchanged.
@@ -107,7 +111,18 @@ async function flushItems(channel: string, items: StagedItem[]): Promise<void> {
     };
     putPending({ code, conversationId: channel, summary, run });
   }
-  await sendScopelyText(channel, buildPrompt(items, code), getChannelThreadAnchor(channel));
+  try {
+    await sendScopelyText(
+      channel,
+      buildPrompt(items, code, target),
+      getChannelThreadAnchor(channel),
+      target !== "PROD",
+    );
+  } catch (error) {
+    // Invalidate an ambiguously delivered local prompt; never retry its send.
+    takePending(code, { conversationId: channel });
+    throw error;
+  }
 }
 
 // Timer-driven flush for an open bundle. Errors must not become unhandled
@@ -115,7 +130,9 @@ async function flushItems(channel: string, items: StagedItem[]): Promise<void> {
 // fail-safe — the pending simply expires unconfirmable in 5 minutes.
 function flushBundle(channel: string): void {
   const b = bundles.get(channel);
-  if (!b) return;
+  if (!b) {
+    return;
+  }
   bundles.delete(channel);
   void flushItems(channel, b.items).catch((err) => {
     console.error(`[scopelybot] confirm-prompt post failed for ${channel}:`, err);
@@ -138,7 +155,11 @@ function flushBundle(channel: string): void {
 //
 // `run` receives the confirming actor's id at execution time; actions that record
 // who approved them (approver grants) use it, staged API calls ignore it.
-export async function stageWrite(summary: string, run: (ctx?: { actor?: string }) => FetchResult) {
+export async function stageWrite(
+  summary: string,
+  run: (ctx?: { actor?: string }) => FetchResult,
+  localBackend = false,
+) {
   // READ-ONLY REFUSAL (INV-2/INV-8): unless the live backend profile says
   // read-write, refuse BEFORE a code is minted, a pending action stored or a
   // CONFIRM prompt posted — a prompt for a write that can never run would
@@ -161,6 +182,26 @@ export async function stageWrite(summary: string, run: (ctx?: { actor?: string }
       error:
         "SCOPELYBOT_ZOOM_CHANNEL is not configured — write staging is disabled (fail-closed). " +
         "Set the env var to the bot's Zoom channel JID.",
+    });
+  }
+  if (localBackend) {
+    // The exact frozen preview must fit and survive redaction unchanged. Never
+    // approve a shortened description or combine independent backend claims.
+    if (
+      readBackendProfile().env !== "local" ||
+      summary.length > 2000 ||
+      redactText(summary, 2000) !== summary
+    ) {
+      return jsonResult({
+        ok: false,
+        error: "The exact local preview cannot be displayed safely.",
+      });
+    }
+    await flushItems(channel, [{ summary, run }], "LOCAL SYNTHETIC DATA");
+    return jsonResult({
+      staged: true,
+      awaiting_confirmation: true,
+      message: "Confirm prompt posted. Reply NO_REPLY; do not relay the code.",
     });
   }
   const safeSummary = redactText(summary, 500);
@@ -200,6 +241,8 @@ export async function flushStagedBundlesForTest(): Promise<void> {
   if (!process.env.VITEST) {
     throw new Error("flushStagedBundlesForTest is test-only");
   }
+  // Snapshot: a send may await while another turn stages a new bundle.
+  // eslint-disable-next-line unicorn/no-useless-spread
   for (const [channel, b] of [...bundles]) {
     bundles.delete(channel);
     clearTimeout(b.timer);

@@ -4,6 +4,7 @@ import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
 import { describeChanges, pickBody, stageWrite } from "./gated.js";
 import { opsRead } from "./ops-client.js";
+import { opsStageWrite } from "./ops-write-client.js";
 import { errorResult, jsonResult, scopelyFetch } from "./scopely-api.js";
 
 // Deployment-type config tools (Scopely VIP admin). Two surfaces:
@@ -99,9 +100,8 @@ export function registerDeploymentConfigTools(api: OpenClawPluginApi, logger: Au
       {
         name: "scopely_update_deployment_type",
         description:
-          "Update a deployment type on a Scopely VIP project type (admin action). You ARE authorized — " +
-          "CALL this tool. Pass only fields to change. It only STAGES the change; nothing applies until " +
-          "`CONFIRM <code>`.",
+          "Prepare a synthetic local deployment-type update. Supported fields: label, description, long_description, icon, sort_order. " +
+          "Keys and is_active are unsupported. An authorized human must CONFIRM the exact preview.",
         parameters: Type.Object({
           vendor_key: Type.String({ description: "Vendor key" }),
           project_type_id: Type.Number({ description: "Project-type id" }),
@@ -117,23 +117,7 @@ export function registerDeploymentConfigTools(api: OpenClawPluginApi, logger: Au
           is_active: Type.Optional(Type.Boolean()),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const vendorKey = params.vendor_key as string;
-            const ptPk = params.project_type_id as number;
-            const id = params.id as number;
-            const body = pickBody(params, DT_FIELDS);
-            if (Object.keys(body).length === 0) {
-              return jsonResult({ ok: false, error: "No fields to update." });
-            }
-            return stageWrite(`update deployment type id ${id}: ${describeChanges(body)}`, () =>
-              scopelyFetch(`${dtBase(vendorKey, ptPk)}${id}/`, {
-                method: "PATCH",
-                body: JSON.stringify(body),
-              }),
-            );
-          } catch (err) {
-            return errorResult(err);
-          }
+          return opsStageWrite("catalog.deployment_types.update", params);
         },
       },
       logger,

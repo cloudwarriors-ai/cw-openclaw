@@ -21,7 +21,7 @@ export const PLUGIN_VERSION = "0.1.0";
 const DETAIL_MAX = 256;
 
 export type AuditPolicy = {
-  env: "prod" | "dev" | "unknown";
+  env: "prod" | "dev" | "local" | "unknown";
   state: "valid" | "fail_closed_default";
   mode: "off" | "read-only" | "read-write";
   auth_mode: "anonymous" | "service-token";
