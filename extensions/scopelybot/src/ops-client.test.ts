@@ -1352,6 +1352,68 @@ it("forwards explicit all scopes without inventing a scope_category", async () =
   });
 });
 
+describe.each(["scopely_list_pricing_defaults", "scopely_list_pricing_items"])(
+  "%s explicit all-scope placeholder normalization",
+  (tool) => {
+    it("omits only an exact empty category when all is explicit, without mutating caller args", async () => {
+      const params = Object.freeze({ vendor_key: "zoom", scope_mode: "all", scope_category: "" });
+      const result = await run(tool, params);
+      expect(result.ok).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(fetchMock.mock.calls[0][1].body).args).toEqual({
+        vendor_key: "zoom",
+        scope_mode: "all",
+        ...(tool === "scopely_list_pricing_defaults" ? { limit: 20 } : {}),
+      });
+      expect(params.scope_category).toBe("");
+    });
+
+    it.each([{}, { scope_mode: "exact" }])(
+      "preserves blank exact scope with mode %j",
+      async (mode) => {
+        await run(tool, { vendor_key: "zoom", ...mode, scope_category: "" });
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body).args).toMatchObject({
+          ...mode,
+          scope_category: "",
+        });
+      },
+    );
+
+    it.each(["ucaas", " ", "__omit__"])(
+      "preserves conflicting all + category %j for backend validation",
+      async (category) => {
+        await run(tool, { vendor_key: "zoom", scope_mode: "all", scope_category: category });
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body).args.scope_category).toBe(category);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it("retains each binding's existing null and unknown-key behavior", async () => {
+      await run(tool, {
+        vendor_key: "zoom",
+        scope_mode: "all",
+        scope_category: null,
+        unknown: true,
+      });
+      expect(JSON.parse(fetchMock.mock.calls[0][1].body).args).toEqual({
+        vendor_key: "zoom",
+        scope_mode: "all",
+        ...(tool === "scopely_list_pricing_defaults"
+          ? { limit: 20 }
+          : { scope_category: null, unknown: true }),
+      });
+    });
+  },
+);
+
+it("does not normalize all-scope-looking keys on unrelated strict reads", async () => {
+  await run("scopely_list_users", { scope_mode: "all", scope_category: "" });
+  expect(JSON.parse(fetchMock.mock.calls[0][1].body).args).toEqual({
+    scope_mode: "all",
+    scope_category: "",
+  });
+});
+
 describe("local native workflow adapters", () => {
   const cases = [
     [

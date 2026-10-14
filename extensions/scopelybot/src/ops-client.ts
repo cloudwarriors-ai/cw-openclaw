@@ -392,14 +392,25 @@ export async function opsRead(_toolCallId: string, params: Record<string, unknow
       new Error("Refused: app reads run only through the bot's capability registry."),
     );
   }
+  let readParams = params;
+  // Explicit all-scopes intent makes an empty optional category a placeholder.
+  // Keep real/exact filters intact, and never mutate the audited caller args.
+  if (
+    binding.capability === "pricing.defaults.list" &&
+    params?.scope_mode === "all" &&
+    params.scope_category === ""
+  ) {
+    readParams = { ...params };
+    delete readParams.scope_category;
+  }
   // Dropping unknown fields or nulls would silently broaden these native reads.
   // Their backend schemas own refusal; keep all other bindings unchanged.
   if (binding.strictArgs) {
-    return invoke(binding.capability, params, call);
+    return invoke(binding.capability, readParams, call);
   }
   const args: Record<string, unknown> = {};
   for (const key of binding.args) {
-    const value = params?.[key] ?? binding.defaults?.[key];
+    const value = readParams?.[key] ?? binding.defaults?.[key];
     if (value !== undefined && value !== null) {
       args[key] = value;
     }

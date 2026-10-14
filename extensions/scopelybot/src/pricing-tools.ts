@@ -106,7 +106,8 @@ export function registerPricingTools(api: OpenClawPluginApi, logger: AuditLogger
         description:
           "List the platform default rates of a vendor's governing rate card (amounts as strings, " +
           "with the card's version and effective window). Read-only. To list ALL scopes, set " +
-          "scope_mode=all and omit scope_category. Never invent a scope filter. For an exact " +
+          "scope_mode=all and omit scope_category; an empty string with explicit all is treated as omitted. " +
+          "Never invent a scope filter. For an exact " +
           "scope, set scope_mode=exact and scope_category; blank selects only unclassified rows. " +
           "Paged: 20 rows at a time; the answer's next_offset " +
           "names the offset of the next page. These are VIP native rates. The older ZW pricing " +
@@ -123,7 +124,7 @@ export function registerPricingTools(api: OpenClawPluginApi, logger: AuditLogger
           scope_category: Type.Optional(
             Type.String({
               description:
-                "Exact scope only; empty selects unclassified rows, not all scopes. Omit with scope_mode=all.",
+                "Exact scope; empty selects unclassified rows unless scope_mode=all, which treats empty as omitted.",
             }),
           ),
           limit: Type.Optional(
@@ -231,7 +232,8 @@ export function registerPricingTools(api: OpenClawPluginApi, logger: AuditLogger
           "Rates are shared across project types; legacy project_type_id and numeric entry id refuse. " +
           "Amounts are unit_amount/amount_by_deployment strings, not calculated quote totals or customer " +
           "overrides. scope_mode=all omits scope_category; exact requires scope_category (blank means " +
-          "unclassified only). Never invent a scope filter. Native default page is 50; request 20 or " +
+          "unclassified only). An empty scope_category with explicit all is treated as omitted. " +
+          "Never invent a scope filter. Native default page is 50; request 20 or " +
           "fewer for compact replies and follow next_offset until null. Platform staff permission applies. " +
           "These are VIP native rates. The older ZW pricing table is separate and is not changed by the bot.",
         parameters: Type.Object(
@@ -241,7 +243,8 @@ export function registerPricingTools(api: OpenClawPluginApi, logger: AuditLogger
             scope_category: Type.Optional(
               Type.String({
                 maxLength: 16,
-                description: "Exact scope; empty means unclassified, not all",
+                description:
+                  "Exact scope; empty means unclassified unless scope_mode=all, which omits it.",
               }),
             ),
             category: Type.Optional(Type.String({ maxLength: 100 })),
