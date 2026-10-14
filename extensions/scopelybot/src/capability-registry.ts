@@ -1,3 +1,4 @@
+import { TypeGuard } from "@sinclair/typebox";
 // Capability registry: every registered scopely_* tool belongs to one family of
 // the plan's tool_family_rollout, which fixes its effect on the ZW app, its
 // enablement mode, its M1 status and where its gap is tracked.
@@ -15,13 +16,12 @@
 // ops-client.ts through the guarded invoke (the bot's service principal plus
 // the asking human). Every other tool still answers from its family row; later
 // slices flip rows.
-
-import { TypeGuard } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { boundedText } from "./audit-chain.js";
 import { auditBackendEvent, readBackendProfile } from "./backend-profile.js";
 import { currentCall, requesterFromToolCtx, runInCall } from "./call-context.js";
+import { productionCoreEnabled, PRODUCTION_CORE_TOOLS } from "./ops-write-policy.js";
 import { captureRequesterEpoch } from "./requester-epoch.js";
 import { jsonResult, type OpsCapability } from "./scopely-api.js";
 
@@ -431,27 +431,30 @@ export function capabilityFor(tool: string): Capability | undefined {
     enablement: ops ? "read-live-on-prod" : enablement,
     status: ops
       ? "live"
-      : [
-            "scopely_list_approvers",
-            "scopely_grant_approver",
-            "scopely_revoke_approver",
-            "scopely_update_project_type",
-            "scopely_update_deployment_type",
-            "scopely_create_scoping_card",
-            "scopely_update_scoping_card",
-            "scopely_delete_scoping_card",
-            "scopely_create_pricing_item",
-            "scopely_update_pricing_item",
-            "scopely_delete_pricing_item",
-            "scopely_update_pricing_default",
-            "scopely_unlock_user",
-            "scopely_set_user_active",
-            "scopely_reset_user_password",
-            "scopely_create_invite",
-            "scopely_archive_session",
-          ].includes(tool) && readBackendProfile().env === "local"
-        ? "local"
-        : (STATUS_OVERRIDES[tool] ?? status),
+      : productionCoreEnabled(readBackendProfile()) &&
+          (Object.hasOwn(PRODUCTION_CORE_TOOLS, tool) || tool === "scopely_list_approvers")
+        ? "live"
+        : [
+              "scopely_list_approvers",
+              "scopely_grant_approver",
+              "scopely_revoke_approver",
+              "scopely_update_project_type",
+              "scopely_update_deployment_type",
+              "scopely_create_scoping_card",
+              "scopely_update_scoping_card",
+              "scopely_delete_scoping_card",
+              "scopely_create_pricing_item",
+              "scopely_update_pricing_item",
+              "scopely_delete_pricing_item",
+              "scopely_update_pricing_default",
+              "scopely_unlock_user",
+              "scopely_set_user_active",
+              "scopely_reset_user_password",
+              "scopely_create_invite",
+              "scopely_archive_session",
+            ].includes(tool) && readBackendProfile().env === "local"
+          ? "local"
+          : (STATUS_OVERRIDES[tool] ?? status),
   };
 }
 
@@ -554,7 +557,11 @@ function gateTool(tool: AgentTool, origin?: ToolOrigin): AgentTool {
   };
   const requester = requesterFromToolCtx(origin);
   const requesterEpoch = captureRequesterEpoch(origin?.sessionKey, origin?.requesterRunStartedAt);
-  const inCall = <T>(toolCallId: unknown, fn: () => T): T => {
+  const inCall = <T>(
+    toolCallId: unknown,
+    fn: (currentStatus: CapabilityStatus | undefined) => T,
+  ): T => {
+    const currentStatus = capabilityFor(tool.name)?.status;
     // Host-supplied ids are bounded so none can push a row over the size cap.
     const id = (value: unknown) => (typeof value === "string" ? boundedText(value) : null);
     const openclaw = {
@@ -563,18 +570,23 @@ function gateTool(tool: AgentTool, origin?: ToolOrigin): AgentTool {
       tool_call_id: id(toolCallId),
     };
     return runInCall(
-      { tool: tool.name, trigger: "tool", requester, requesterEpoch, action, openclaw },
-      fn,
+      {
+        tool: tool.name,
+        trigger: "tool",
+        requester,
+        requesterEpoch,
+        action: { ...action, registry_status: currentStatus ?? "unregistered" },
+        openclaw,
+      },
+      () => fn(currentStatus),
     );
   };
-  const execute: AgentTool["execute"] =
-    status === "live" || status === "local"
-      ? (...args) => inCall(args[0], () => tool.execute(...args))
-      : async (...args) =>
-          inCall(
-            args[0],
-            () => capabilityRefusal(tool.name) as Awaited<ReturnType<AgentTool["execute"]>>,
-          );
+  const execute: AgentTool["execute"] = async (...args) =>
+    inCall(args[0], async (currentStatus) =>
+      currentStatus === "live" || currentStatus === "local"
+        ? tool.execute(...args)
+        : (capabilityRefusal(tool.name) as Awaited<ReturnType<AgentTool["execute"]>>),
+    );
   if (opsBindingFor(tool.name)?.strictArgs) {
     return {
       ...tool,

@@ -1,3 +1,19 @@
+// Only this test module injects a reserved non-network origin into the real policy.
+vi.mock("./ops-write-policy.js", async (original) => {
+  const actual = await original<typeof import("./ops-write-policy.js")>();
+  const origins = ["https://core-production.invalid:9443"];
+  return {
+    ...actual,
+    isReviewedProductionOrigin: (origin: string) =>
+      actual.isReviewedProductionOrigin(origin, origins),
+    productionCoreEnabled: (profile: Parameters<typeof actual.productionCoreEnabled>[0]) =>
+      actual.productionCoreEnabled(profile, origins),
+    nativeWriteScope: (
+      profile: Parameters<typeof actual.nativeWriteScope>[0],
+      channel: string | undefined,
+    ) => actual.nativeWriteScope(profile, channel, origins),
+  };
+});
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const invoke = vi.hoisted(() => vi.fn());
 const requester = vi.hoisted(() => vi.fn());
@@ -132,3 +148,31 @@ it("does not return a roster after its tool requester epoch becomes invalid duri
   });
   expect(JSON.parse((await opsRosterList({})).content[0].text).ok).toBe(false);
 });
+
+it.each(["eligible", "revoked", "scope-change"])(
+  "production server roster stays authoritative: %s",
+  async (caseName) => {
+    const production = {
+      env: "prod" as const,
+      mode: "read-write" as const,
+      authMode: "service-token" as const,
+      productionCoreWrites: true,
+      baseUrl: "https://core-production.invalid:9443",
+      allowedHosts: ["core-production.invalid:9443"],
+    };
+    setBackendProfileForTest(production);
+    vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", "a".repeat(32) + "@conference.xmpp.zoom.us");
+    invoke.mockImplementation(async () => {
+      if (caseName === "scope-change") {
+        setBackendProfileForTest({ ...production, mode: "read-only" });
+      }
+      return answer({ eligible: caseName !== "revoked", user_id: 7, scope_revision: 1 });
+    });
+    expect(await isCurrentApprover("synthetic-admin")).toBe(caseName === "eligible");
+    expect(invoke).toHaveBeenCalledExactlyOnceWith({
+      capability: "ops.approvers.check",
+      requesterZoomId: "synthetic-admin",
+      args: {},
+    });
+  },
+);

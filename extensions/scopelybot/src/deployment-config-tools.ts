@@ -100,7 +100,7 @@ export function registerDeploymentConfigTools(api: OpenClawPluginApi, logger: Au
       {
         name: "scopely_update_deployment_type",
         description:
-          "Prepare a synthetic local deployment-type update. Supported fields: label, description, long_description, icon, sort_order. " +
+          "Prepare a native deployment-type update. Supported fields: label, description, long_description, icon, sort_order. " +
           "Keys and is_active are unsupported. An authorized human must CONFIRM the exact preview.",
         parameters: Type.Object({
           vendor_key: Type.String({ description: "Vendor key" }),

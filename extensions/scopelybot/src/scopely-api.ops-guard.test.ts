@@ -1,3 +1,19 @@
+// Only this test module injects a reserved non-network origin into the real policy.
+vi.mock("./ops-write-policy.js", async (original) => {
+  const actual = await original<typeof import("./ops-write-policy.js")>();
+  const origins = ["https://core-production.invalid:9443"];
+  return {
+    ...actual,
+    isReviewedProductionOrigin: (origin: string) =>
+      actual.isReviewedProductionOrigin(origin, origins),
+    productionCoreEnabled: (profile: Parameters<typeof actual.productionCoreEnabled>[0]) =>
+      actual.productionCoreEnabled(profile, origins),
+    nativeWriteScope: (
+      profile: Parameters<typeof actual.nativeWriteScope>[0],
+      channel: string | undefined,
+    ) => actual.nativeWriteScope(profile, channel, origins),
+  };
+});
 // The guard's operator-layer branch (scopely-api.ts scopelyOpsInvoke, M13
 // slice 1): the ONE request shape added to the read-only guard. Pins exactly
 // what widened (a POST to the exact invoke path, a read capability, a
@@ -493,11 +509,10 @@ describe("canonical Zoom user id (shared vectors)", () => {
   // wire only: in process the value as written is malformed for both sides.
   it("rows marked as stripped (or maybe stripped) by WSGI are malformed in process", () => {
     const wire = VECTORS.filter((v) => v.wire !== undefined);
-    expect(wire.map((v) => v.wire).toSorted()).toEqual(
-      [
-        ...Array(2).fill("stripped_by_wsgi"),
-        ...Array(10).fill("may_be_stripped_by_wsgi"),
-      ].toSorted(),
+    expect(wire.map((v) => v.wire).toSorted((a, b) => String(a).localeCompare(String(b)))).toEqual(
+      [...Array(2).fill("stripped_by_wsgi"), ...Array(10).fill("may_be_stripped_by_wsgi")].toSorted(
+        (a, b) => String(a).localeCompare(String(b)),
+      ),
     );
     for (const v of wire) {
       expect(v.canonical, v.note).toBeNull();
@@ -639,3 +654,201 @@ describe("server roster exact local transport boundary", () => {
     },
   );
 });
+
+it.each(["POST", "PUT", "PATCH", "DELETE"])(
+  "production read-write never admits legacy raw %s",
+  async (method) => {
+    const { setBackendProfileForTest } = await import("./backend-profile.js");
+    setBackendProfileForTest({
+      env: "prod",
+      baseUrl: "https://core-production.invalid:9443",
+      allowedHosts: ["core-production.invalid:9443"],
+      mode: "read-write",
+      authMode: "service-token",
+      productionCoreWrites: true,
+    });
+    try {
+      await refused(scopelyFetch(OPS_INVOKE_PATH, { method }), "write_blocked_read_only");
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      setBackendProfileForTest(null);
+    }
+  },
+);
+
+describe("production Core7 guarded transport", () => {
+  const channel = "a".repeat(32) + "@conference.xmpp.zoom.us";
+  const profile = {
+    env: "prod",
+    baseUrl: "https://core-production.invalid:9443",
+    allowedHosts: ["core-production.invalid:9443"],
+    authMode: "service-token",
+    mode: "read-write",
+    productionCoreWrites: true,
+  };
+  const admitted = [
+    "pricing.items.create",
+    "pricing.items.update",
+    "catalog.scoping_cards.create",
+    "catalog.scoping_cards.update",
+    "catalog.scoping_cards.delete",
+    "catalog.project_types.update",
+    "catalog.deployment_types.update",
+    "ops.confirm",
+    "ops.cancel",
+    "ops.pending",
+    "ops.approvers.check",
+    "ops.approvers.list",
+  ];
+  beforeEach(() => {
+    writeProfile(profile);
+    vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", channel);
+  });
+  afterEach(() => vi.unstubAllEnvs());
+  it.each(admitted)(
+    "admits only exact native %s with service token/channel",
+    async (capability) => {
+      const res = await scopelyOpsInvoke(
+        op({ capability: capability as OpsInvocation["capability"] }),
+      );
+      expect(res.ok).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(new URL(url).origin).toBe(profile.baseUrl);
+      expect(new URL(url).pathname).toBe(OPS_INVOKE_PATH);
+      expect(init.headers["x-ops-surface"]).toBe(channel);
+      expect(init.headers.authorization).toBe(`Bearer ${TOKEN}`);
+      expect(init.headers["x-ops-requester-zoom-id"]).toBe("abcdef_operator_1");
+      expect(init.redirect).toBe("manual");
+    },
+  );
+  it("exhausts the existing write union and refuses every excluded name before transport", async () => {
+    const { OPS_LOCAL_WRITE_CAPABILITIES } = await import("./scopely-api.js");
+    for (const capability of [
+      ...OPS_LOCAL_WRITE_CAPABILITIES,
+      "unknown.capability",
+    ] as OpsInvocation["capability"][]) {
+      if (admitted.includes(capability)) {
+        continue;
+      }
+      await refused(scopelyOpsInvoke(op({ capability })), "write_blocked_read_only");
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it.each([
+    "",
+    "synthetic-channel",
+    "A".repeat(32) + "@conference.xmpp.zoom.us",
+    "a".repeat(31) + "@conference.xmpp.zoom.us",
+    "a".repeat(32) + "@evil.invalid",
+  ])("rejects malformed production channel %s", async (bad) => {
+    vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", bad);
+    await refused(scopelyOpsInvoke(op({ capability: "ops.confirm" })), "write_blocked_read_only");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it.each(OPS_READ_CAPABILITIES)(
+    "keeps native read %s available without write admission",
+    async (capability) => {
+      writeProfile({ ...profile, mode: "read-only", productionCoreWrites: false });
+      expect((await scopelyOpsInvoke(op({ capability }))).ok).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    },
+  );
+  it.each(["mode", "switch", "token", "sender"])(
+    "revokes admission on %s loss without sending",
+    async (failure) => {
+      if (failure === "mode") {
+        writeProfile({ ...profile, mode: "off" });
+      }
+      if (failure === "switch") {
+        writeProfile({ ...profile, productionCoreWrites: false });
+      }
+      if (failure === "token") {
+        fs.unlinkSync(tokenFile());
+      }
+      await expect(
+        scopelyOpsInvoke(
+          op({
+            capability: "pricing.items.update",
+            ...(failure === "sender" ? { requesterZoomId: undefined } : {}),
+          }),
+        ),
+      ).rejects.toBeInstanceOf(ScopelyGuardError);
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+  it.each(["timeout", "redirect"])("does not retry %s", async (failure) => {
+    if (failure === "timeout") {
+      fetchMock.mockRejectedValueOnce(new Error("timeout"));
+    }
+    if (failure === "redirect") {
+      fetchMock.mockResolvedValueOnce(
+        new Response(null, { status: 302, headers: { location: "https://elsewhere.invalid" } }),
+      );
+    }
+    // The existing audit fixtures separately exhaust intent/outcome failures.
+    {
+      await expect(scopelyOpsInvoke(op({ capability: "pricing.items.update" }))).rejects.toThrow();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    }
+  });
+});
+
+it.each(["intent", "outcome"])(
+  "production %s audit failure remains fail-closed with no replay",
+  async (phase) => {
+    const { setAuditDepsForTest } = await import("./audit-chain.js");
+    const { auditFile } = await import("./audit.test-helpers.js");
+    writeProfile({
+      env: "prod",
+      mode: "read-write",
+      authMode: "service-token",
+      productionCoreWrites: true,
+      baseUrl: "https://core-production.invalid:9443",
+      allowedHosts: ["core-production.invalid:9443"],
+    });
+    vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", "a".repeat(32) + "@conference.xmpp.zoom.us");
+    let fail = phase === "intent";
+    const proxy = new Proxy(fs, {
+      get(real, prop) {
+        if (prop !== "openSync") {
+          return Reflect.get(real, prop);
+        }
+        return (...args: Parameters<typeof fs.openSync>) => {
+          if (
+            args[0] === auditFile(workspace) &&
+            typeof args[1] === "number" &&
+            args[1] & fs.constants.O_APPEND &&
+            fail
+          ) {
+            throw Object.assign(new Error("ENOSPC"), { code: "ENOSPC" });
+          }
+          return real.openSync(...args);
+        };
+      },
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    setAuditDepsForTest({ fs: proxy });
+    try {
+      if (phase === "outcome") {
+        fetchMock.mockImplementationOnce(async () => {
+          fail = true;
+          return new Response(JSON.stringify({ ok: true }), {
+            headers: { "content-type": "application/json" },
+          });
+        });
+        expect((await scopelyOpsInvoke(op({ capability: "pricing.items.update" }))).ok).toBe(true);
+        fail = false;
+      }
+      await refused(
+        scopelyOpsInvoke(op({ capability: "pricing.items.update" })),
+        "audit_unavailable",
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(phase === "intent" ? 0 : 1);
+    } finally {
+      setAuditDepsForTest(null);
+      errors.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  },
+);

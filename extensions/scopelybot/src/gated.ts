@@ -11,6 +11,7 @@ import { readBackendProfile } from "./backend-profile.js";
 import { capabilityRefusal, currentToolName } from "./capability-registry.js";
 import { getChannelThreadAnchor, sendScopelyText } from "./comfort.js";
 import { formatBackendErrorDetail } from "./confirm.js";
+import { nativeWriteScope } from "./ops-write-policy.js";
 import { makeCode, putPending, takePending } from "./pending-confirm.js";
 import { redactText } from "./redaction.js";
 import { jsonResult } from "./scopely-api.js";
@@ -65,15 +66,22 @@ function buildPrompt(items: StagedItem[], code: string, target = "PROD"): string
 }
 
 // Register the pending action for a flushed bundle and post its prompt.
-// putPending happens BEFORE the send so even an instant CONFIRM finds the code.
-async function flushItems(channel: string, items: StagedItem[], target = "PROD"): Promise<void> {
+// Legacy codes are visible before send. Native codes become usable only after
+// strict delivery acknowledgement and the captured admission scope recheck.
+async function flushItems(
+  channel: string,
+  items: StagedItem[],
+  target = "PROD",
+  nativeScope?: string,
+): Promise<void> {
   if (items.length === 0) {
     return;
   }
   const code = makeCode();
+  let pending: Parameters<typeof putPending>[0];
   if (items.length === 1) {
     // Legacy pending shape — confirm.ts renders `✅ Done: <summary>.` unchanged.
-    putPending({ code, conversationId: channel, summary: items[0].summary, run: items[0].run });
+    pending = { code, conversationId: channel, summary: items[0].summary, run: items[0].run };
   } else {
     const summary = redactText(
       `${items.length} changes: ${items.map((it) => it.summary).join("; ")}`,
@@ -109,17 +117,29 @@ async function flushItems(channel: string, items: StagedItem[], target = "PROD")
         data: { bundle: true, applied: results.length - failed.length, results },
       };
     };
-    putPending({ code, conversationId: channel, summary, run });
+    pending = { code, conversationId: channel, summary, run };
+  }
+  if (nativeScope === undefined) {
+    putPending(pending);
   }
   try {
     await sendScopelyText(
       channel,
       buildPrompt(items, code, target),
       getChannelThreadAnchor(channel),
-      target !== "PROD",
+      nativeScope !== undefined || target !== "PROD",
     );
+    if (
+      nativeScope !== undefined &&
+      nativeWriteScope(readBackendProfile(), process.env.SCOPELYBOT_ZOOM_CHANNEL) !== nativeScope
+    ) {
+      throw new Error("Admission changed during confirmation delivery.");
+    }
+    if (nativeScope !== undefined) {
+      putPending(pending);
+    }
   } catch (error) {
-    // Invalidate an ambiguously delivered local prompt; never retry its send.
+    // Invalidate an ambiguously delivered prompt; never retry its send.
     takePending(code, { conversationId: channel });
     throw error;
   }
@@ -134,7 +154,7 @@ function flushBundle(channel: string): void {
     return;
   }
   bundles.delete(channel);
-  void flushItems(channel, b.items).catch((err) => {
+  void flushItems(channel, b.items).catch((err: unknown) => {
     console.error(`[scopelybot] confirm-prompt post failed for ${channel}:`, err);
   });
 }
@@ -158,7 +178,7 @@ function flushBundle(channel: string): void {
 export async function stageWrite(
   summary: string,
   run: (ctx?: { actor?: string }) => FetchResult,
-  localBackend = false,
+  localBackend: boolean | { scope: string } = false,
 ) {
   // READ-ONLY REFUSAL (INV-2/INV-8): unless the live backend profile says
   // read-write, refuse BEFORE a code is minted, a pending action stored or a
@@ -185,19 +205,29 @@ export async function stageWrite(
     });
   }
   if (localBackend) {
+    const profile = readBackendProfile();
+    const scope = nativeWriteScope(profile, channel);
+    const expectedScope = typeof localBackend === "object" ? localBackend.scope : scope;
     // The exact frozen preview must fit and survive redaction unchanged. Never
     // approve a shortened description or combine independent backend claims.
     if (
-      readBackendProfile().env !== "local" ||
+      !scope ||
+      scope !== expectedScope ||
+      (localBackend === true && profile.env !== "local") ||
       summary.length > 2000 ||
       redactText(summary, 2000) !== summary
     ) {
       return jsonResult({
         ok: false,
-        error: "The exact local preview cannot be displayed safely.",
+        error: "The exact native preview cannot be displayed safely.",
       });
     }
-    await flushItems(channel, [{ summary, run }], "LOCAL SYNTHETIC DATA");
+    await flushItems(
+      channel,
+      [{ summary, run }],
+      profile.env === "prod" ? "PRODUCTION" : "LOCAL SYNTHETIC DATA",
+      scope,
+    );
     return jsonResult({
       staged: true,
       awaiting_confirmation: true,

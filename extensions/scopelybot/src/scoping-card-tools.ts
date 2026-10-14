@@ -88,7 +88,7 @@ export function registerScopingCardTools(api: OpenClawPluginApi, logger: AuditLo
       {
         name: "scopely_create_scoping_card",
         description:
-          "Prepare a synthetic local scoping card; human CONFIRM is required. " +
+          "Prepare a native scoping card; human CONFIRM is required. " +
           "Supports unpriced fields and deployment visibility. New pricing bindings and " +
           "visibility_condition are not supported. Exact oversized previews refuse.",
         parameters: Type.Object({
@@ -131,7 +131,7 @@ export function registerScopingCardTools(api: OpenClawPluginApi, logger: AuditLo
       {
         name: "scopely_update_scoping_card",
         description:
-          "Prepare a synthetic local scoping-card update; human CONFIRM is required. " +
+          "Prepare a native scoping-card update; human CONFIRM is required. " +
           "Keys are immutable; richer metadata replacement and pricing remapping refuse. If you supply " +
           "`fields` or `visibility`, the backend REPLACES the card's ENTIRE field set / visibility map — " +
           "send the complete authoring set. The ordinary read omits retired fields and may cap options; " +
@@ -180,8 +180,8 @@ export function registerScopingCardTools(api: OpenClawPluginApi, logger: AuditLo
       {
         name: "scopely_delete_scoping_card",
         description:
-          "Prepare deletion of a synthetic local scoping card and its fields. " +
-          "Human CONFIRM is required. Remaining dependencies must still validate.",
+          "Prepare deletion of a native scoping card and its fields. " +
+          "Only operator-admitted targets are available; human CONFIRM is required. Remaining dependencies must still validate.",
         parameters: Type.Object({
           vendor_key: Type.String({ description: "Vendor key" }),
           project_type_id: Type.Optional(

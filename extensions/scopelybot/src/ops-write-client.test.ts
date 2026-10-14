@@ -1,3 +1,19 @@
+// Only this test module injects a reserved non-network origin into the real policy.
+vi.mock("./ops-write-policy.js", async (original) => {
+  const actual = await original<typeof import("./ops-write-policy.js")>();
+  const origins = ["https://core-production.invalid:9443"];
+  return {
+    ...actual,
+    isReviewedProductionOrigin: (origin: string) =>
+      actual.isReviewedProductionOrigin(origin, origins),
+    productionCoreEnabled: (profile: Parameters<typeof actual.productionCoreEnabled>[0]) =>
+      actual.productionCoreEnabled(profile, origins),
+    nativeWriteScope: (
+      profile: Parameters<typeof actual.nativeWriteScope>[0],
+      channel: string | undefined,
+    ) => actual.nativeWriteScope(profile, channel, origins),
+  };
+});
 // This domain fixture supplies explicit server eligibility; roster authority is tested separately.
 vi.mock("./ops-roster-client.js", () => ({
   isCurrentApprover: async (actor: string) => ["synthetic-admin"].includes(actor),
@@ -284,5 +300,167 @@ it.each(["succeeded", "failed", "cancelled", "expired", "claimed"])(
     expect(request).toHaveBeenCalledTimes(2);
     expect(await confirm()).toContain("No pending action");
     expect(request).toHaveBeenCalledTimes(2);
+  },
+);
+
+const productionProfile = {
+  env: "prod" as const,
+  baseUrl: "https://core-production.invalid:9443",
+  allowedHosts: ["core-production.invalid:9443"],
+  authMode: "service-token" as const,
+  mode: "read-write" as const,
+  productionCoreWrites: true,
+};
+const productionChannel = "a".repeat(32) + "@conference.xmpp.zoom.us";
+it("production native prepare keeps exact strict-delivery prompt and human confirm", async () => {
+  setBackendProfileForTest(productionProfile);
+  vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", productionChannel);
+  const staged = body(await stage());
+  expect(staged.staged).toBe(true);
+  expect(send.mock.calls[0][1]).toContain(preview);
+  expect(send.mock.calls[0][1]).toContain("PRODUCTION");
+  expect(send.mock.calls[0][3]).toBe(true);
+  expect(await confirm(code(), "synthetic-admin", productionChannel)).toContain("✅ Done");
+  expect(request).toHaveBeenCalledTimes(2);
+});
+
+it.each(["mode", "switch", "channel", "sender", "sender-returned"])(
+  "production preparation refuses %s drift before prompt",
+  async (change) => {
+    setBackendProfileForTest(productionProfile);
+    vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", productionChannel);
+    const response = request.getMockImplementation()!;
+    request.mockImplementationOnce(async (...args) => {
+      if (change === "mode" || change === "switch") {
+        setBackendProfileForTest({
+          ...productionProfile,
+          mode: "read-only",
+          productionCoreWrites: change !== "switch",
+        });
+      } else if (change === "channel") {
+        vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", "b".repeat(32) + "@conference.xmpp.zoom.us");
+      } else {
+        noteInboundSender(HUB, "other-person");
+        if (change === "sender-returned") {
+          noteInboundSender(HUB, "synthetic-member");
+        }
+      }
+      return response(...args);
+    });
+    expect(body(await stage()).ok).toBe(false);
+    expect(send).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledTimes(1);
+  },
+);
+it.each(["mode", "switch", "channel", "delivery"])(
+  "production %s change during delivery invalidates code and never confirms",
+  async (change) => {
+    setBackendProfileForTest(productionProfile);
+    vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", productionChannel);
+    send.mockImplementationOnce(async () => {
+      if (change === "delivery") {
+        throw new Error("delivery unknown");
+      }
+      if (change === "channel") {
+        vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", "b".repeat(32) + "@conference.xmpp.zoom.us");
+      } else {
+        setBackendProfileForTest({
+          ...productionProfile,
+          mode: "read-only",
+          productionCoreWrites: change !== "switch",
+        });
+      }
+    });
+    expect(body(await stage()).ok).toBe(false);
+    setBackendProfileForTest(productionProfile);
+    vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", productionChannel);
+    expect(await confirm(code(), "synthetic-admin", productionChannel)).toContain(
+      "No pending action",
+    );
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
+  },
+);
+it.each([
+  "pricing.defaults.update",
+  "pricing.items.delete",
+  "ops.approvers.grant",
+  "ops.approvers.revoke",
+  "identity.users.unlock",
+  "identity.users.set_active",
+  "identity.users.request_reset",
+  "identity.invites.create",
+  "sessions.archive",
+] as const)("production cannot stage excluded %s", async (capability) => {
+  setBackendProfileForTest(productionProfile);
+  vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", productionChannel);
+  expect(body(await runInCall(context, () => opsStageWrite(capability, {}))).ok).toBe(false);
+  expect(request).not.toHaveBeenCalled();
+  expect(send).not.toHaveBeenCalled();
+});
+it("production scope drift after staging cannot confirm even with a retained code", async () => {
+  setBackendProfileForTest(productionProfile);
+  vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", productionChannel);
+  await stage();
+  setBackendProfileForTest({
+    env: "local",
+    mode: "read-write",
+    authMode: "service-token",
+    baseUrl: "http://127.0.0.1:8100",
+    allowedHosts: ["127.0.0.1:8100"],
+  });
+  expect(await confirm(code(), "synthetic-admin", productionChannel)).not.toContain("✅ Done");
+  expect(request).toHaveBeenCalledTimes(1);
+});
+
+it.each(["local", "prod"] as const)(
+  "%s native confirmation waits for acknowledged delivery, then remains single-use",
+  async (env) => {
+    if (env === "prod") {
+      setBackendProfileForTest(productionProfile);
+    }
+    const channel = env === "prod" ? productionChannel : "synthetic-channel";
+    vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", channel);
+    let resolveDelivery!: () => void;
+    send.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveDelivery = resolve;
+        }),
+    );
+    const preparing = stage();
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(await confirm(code(), "synthetic-admin", channel)).toContain("No pending action");
+    expect(request).toHaveBeenCalledTimes(1);
+    resolveDelivery();
+    expect(body(await preparing).staged).toBe(true);
+    expect(await confirm(code(), "synthetic-admin", channel)).toContain("✅ Done");
+    expect(await confirm(code(), "synthetic-admin", channel)).toContain("No pending action");
+    expect(request).toHaveBeenCalledTimes(2);
+  },
+);
+it.each(["local", "prod"] as const)(
+  "%s native confirmation cannot execute before failed delivery",
+  async (env) => {
+    if (env === "prod") {
+      setBackendProfileForTest(productionProfile);
+    }
+    const channel = env === "prod" ? productionChannel : "synthetic-channel";
+    vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", channel);
+    let rejectDelivery!: (reason: Error) => void;
+    send.mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectDelivery = reject;
+        }),
+    );
+    const preparing = stage();
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(await confirm(code(), "synthetic-admin", channel)).toContain("No pending action");
+    expect(request).toHaveBeenCalledTimes(1);
+    rejectDelivery(new Error("delivery unknown"));
+    expect(body(await preparing).ok).toBe(false);
+    expect(await confirm(code(), "synthetic-admin", channel)).toContain("No pending action");
+    expect(request).toHaveBeenCalledTimes(1);
   },
 );

@@ -12,7 +12,7 @@ export function registerApproverTools(api: OpenClawPluginApi, logger: AuditLogge
       {
         name: "scopely_list_approvers",
         description:
-          "List the current local server approver roster. Requires a mapped native platform administrator with roster membership. Entries grant bot confirmation eligibility only, never application roles. Production and Claude person-token roster administration are unavailable.",
+          "List the current server approver roster in an admitted local or production mode. Requires a mapped native platform administrator with roster membership. Entries grant bot confirmation eligibility only, never application roles. Production roster grant/revoke and Claude person-token roster administration are unavailable.",
         parameters: Type.Object(
           {
             limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),

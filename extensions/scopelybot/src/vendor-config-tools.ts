@@ -241,7 +241,7 @@ export function registerVendorConfigTools(api: OpenClawPluginApi, logger: AuditL
       {
         name: "scopely_update_project_type",
         description:
-          "Prepare a synthetic local project-type update. Supported fields: label, enabled, sort_order, product_info_url. " +
+          "Prepare a native project-type update. Supported fields: label, enabled, sort_order, product_info_url. " +
           "Keys, scope_category and catalog_seeded are unsupported. An authorized human must CONFIRM the exact preview.",
         parameters: Type.Object({
           vendor_key: Type.String({ description: "Vendor key" }),

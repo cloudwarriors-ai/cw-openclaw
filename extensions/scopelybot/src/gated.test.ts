@@ -1,3 +1,19 @@
+// Only this test module injects a reserved non-network origin into the real policy.
+vi.mock("./ops-write-policy.js", async (original) => {
+  const actual = await original<typeof import("./ops-write-policy.js")>();
+  const origins = ["https://core-production.invalid:9443"];
+  return {
+    ...actual,
+    isReviewedProductionOrigin: (origin: string) =>
+      actual.isReviewedProductionOrigin(origin, origins),
+    productionCoreEnabled: (profile: Parameters<typeof actual.productionCoreEnabled>[0]) =>
+      actual.productionCoreEnabled(profile, origins),
+    nativeWriteScope: (
+      profile: Parameters<typeof actual.nativeWriteScope>[0],
+      channel: string | undefined,
+    ) => actual.nativeWriteScope(profile, channel, origins),
+  };
+});
 // This domain fixture supplies explicit server eligibility; roster authority is tested separately.
 vi.mock("./ops-roster-client.js", () => ({
   isCurrentApprover: async (actor: string) => ["Mb4vcQ4YQUaQKJjoY4vntQ"].includes(actor),
@@ -225,6 +241,45 @@ describe("test hook (F6)", () => {
       await expect(flushStagedBundlesForTest()).rejects.toThrow(/test-only/);
     } finally {
       process.env.VITEST = saved;
+    }
+  });
+});
+
+describe("production native preview", () => {
+  beforeEach(() => {
+    setBackendProfileForTest({
+      env: "prod",
+      baseUrl: "https://core-production.invalid:9443",
+      allowedHosts: ["core-production.invalid:9443"],
+      authMode: "service-token",
+      mode: "read-write",
+      productionCoreWrites: true,
+    });
+    vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", "a".repeat(32) + "@conference.xmpp.zoom.us");
+    vi.stubEnv("SCOPELYBOT_CONFIRM_BUNDLE_MS", "10000");
+    sendScopelyTextMock.mockReset();
+  });
+  afterEach(() => {
+    setBackendProfileForTest(null);
+    vi.unstubAllEnvs();
+  });
+  it.each(["exact", "oversize", "redacted"])("%s preview keeps native bounds", async (kind) => {
+    const { nativeWriteScope } = await import("./ops-write-policy.js");
+    const { readBackendProfile } = await import("./backend-profile.js");
+    const scope = nativeWriteScope(readBackendProfile(), process.env.SCOPELYBOT_ZOOM_CHANNEL)!;
+    const summary =
+      kind === "exact"
+        ? "x".repeat(2000)
+        : kind === "oversize"
+          ? "x".repeat(2001)
+          : "password=very-secret-value";
+    const run = vi.fn();
+    const result = JSON.parse((await stageWrite(summary, run, { scope })).content[0].text);
+    expect(result.staged === true).toBe(kind === "exact");
+    expect(run).not.toHaveBeenCalled();
+    expect(sendScopelyTextMock).toHaveBeenCalledTimes(kind === "exact" ? 1 : 0);
+    if (kind === "exact") {
+      expect(sendScopelyTextMock.mock.calls[0][3]).toBe(true);
     }
   });
 });

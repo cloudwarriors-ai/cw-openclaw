@@ -53,6 +53,11 @@ import {
   readOpsToken,
   resolveWorkspaceDir,
 } from "./backend-profile.js";
+import {
+  nativeWriteScope,
+  productionCoreEnabled,
+  productionCapabilityAllowed,
+} from "./ops-write-policy.js";
 import { redactText, redactValue } from "./redaction.js";
 
 export interface ScopelyFetchResult {
@@ -262,7 +267,20 @@ function refuse(
 // operator-layer invoke is a POST but a read (its capability passed
 // checkOpsInvocation), so it is exempt from the read-only and write-latch rules
 // and from nothing else: the kill switch and the rate cap still apply.
-function admit(profile: BackendProfile, method: string, http: HttpFields, isOps: boolean): void {
+function admit(
+  profile: BackendProfile,
+  method: string,
+  http: HttpFields,
+  isOps: boolean,
+  nativeInvoke = false,
+): void {
+  if (profile.env === "prod" && !SAFE_METHODS.has(method) && !nativeInvoke) {
+    refuse(
+      "write_blocked_read_only",
+      "Production permits only admitted native capabilities.",
+      http,
+    );
+  }
   if (profile.mode === "off") {
     refuse("backend_off", "The bot's connection to the app is switched off by the operator.", http);
   }
@@ -331,19 +349,21 @@ function checkOpsInvocation(op: OpsInvocation, http: HttpFields, profile: Backen
   const read = (OPS_READ_CAPABILITIES as readonly string[]).includes(op.capability);
   const localWrite = (OPS_LOCAL_WRITE_CAPABILITIES as readonly string[]).includes(op.capability);
   const localRead = (OPS_LOCAL_READ_CAPABILITIES as readonly string[]).includes(op.capability);
-  if (
-    !read &&
-    (!(localWrite || localRead) ||
-      profile.env !== "local" ||
-      profile.mode !== "read-write" ||
-      profile.baseUrl !== "http://127.0.0.1:8100")
-  ) {
-    refuse(
-      "write_blocked_read_only",
-      "Blocked: the bot may only invoke the app's read capabilities.",
-      http,
-      { capability: boundedText(String(op.capability)) },
-    );
+  const local =
+    (localWrite || localRead) &&
+    profile.env === "local" &&
+    profile.mode === "read-write" &&
+    profile.baseUrl === "http://127.0.0.1:8100";
+  const production =
+    productionCoreEnabled(profile) &&
+    productionCapabilityAllowed(op.capability) &&
+    nativeWriteScope(profile, process.env.SCOPELYBOT_ZOOM_CHANNEL);
+  if (!read && !local && !production) {
+    refuse("write_blocked_read_only", "Blocked: this native capability is not admitted.", http, {
+      // Runtime callers can violate TypeScript; keep refusal formatting safe.
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-conversion
+      capability: boundedText(String(op.capability)),
+    });
   }
   // Header absence must not let a misconfigured personal token act as its
   // owner. Whoami alone may diagnose the credential without business reads.
@@ -498,6 +518,7 @@ async function executeGuardedRequest(
       ([...OPS_READ_CAPABILITIES, ...OPS_LOCAL_READ_CAPABILITIES] as readonly string[]).includes(
         op.capability,
       ),
+    op !== undefined,
   );
   const token = op ? opsToken(profile, http) : undefined;
 
@@ -521,7 +542,10 @@ async function executeGuardedRequest(
     headers["content-type"] = "application/json";
     headers.authorization = `Bearer ${token}`;
     headers[OPS_BOT_AUDIT_HEADER] = auditId;
-    if ((OPS_LOCAL_WRITE_CAPABILITIES as readonly string[]).includes(op.capability)) {
+    if (
+      (OPS_LOCAL_WRITE_CAPABILITIES as readonly string[]).includes(op.capability) ||
+      (profile.env === "prod" && productionCapabilityAllowed(op.capability))
+    ) {
       const channel = process.env.SCOPELYBOT_ZOOM_CHANNEL;
       if (!channel || channel.length > 200 || /[\r\n]/.test(channel)) {
         refuse("header_blocked", "The local Zoom channel is not configured.", http);

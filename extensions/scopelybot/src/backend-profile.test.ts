@@ -1,3 +1,19 @@
+// Only this test module injects a reserved non-network origin into the real policy.
+vi.mock("./ops-write-policy.js", async (original) => {
+  const actual = await original<typeof import("./ops-write-policy.js")>();
+  const origins = ["https://core-production.invalid:9443"];
+  return {
+    ...actual,
+    isReviewedProductionOrigin: (origin: string) =>
+      actual.isReviewedProductionOrigin(origin, origins),
+    productionCoreEnabled: (profile: Parameters<typeof actual.productionCoreEnabled>[0]) =>
+      actual.productionCoreEnabled(profile, origins),
+    nativeWriteScope: (
+      profile: Parameters<typeof actual.nativeWriteScope>[0],
+      channel: string | undefined,
+    ) => actual.nativeWriteScope(profile, channel, origins),
+  };
+});
 // Backend-profile tests (backend-profile.ts, PK-7a). The profile is the live,
 // owner-edited policy file; these pin the fail-closed contract (AC-7.5): any
 // missing, unreadable or invalid file yields zw2 / anonymous / read-only /
@@ -249,13 +265,12 @@ describe("valid profiles", () => {
     expect(JSON.stringify(parsed)).not.toContain("writableFamilies");
   });
 
-  it("accepts read-write only on a dev profile, and says why prod refuses it", () => {
+  it("accepts dev read-write and explains why public production refuses it", () => {
     expect(parseBackendProfile(JSON.stringify({ ...DEV, mode: "read-write" }))).toMatchObject({
       profile: { env: "dev", mode: "read-write" },
     });
     expect(parseBackendProfile(JSON.stringify({ ...PROD, mode: "read-write" }))).toEqual({
-      error:
-        'mode "read-write" is dev-only: prod is read-only until a reviewed code change lifts this cap',
+      error: "Production writes require explicit Core7 admission on a reviewed private origin",
     });
   });
 
@@ -445,4 +460,118 @@ describe("dev hostHeader table", () => {
       error: "hostHeader is dev-only: one of vip.localhost, noob-root",
     });
   });
+});
+
+describe("explicit production Core7 profile", () => {
+  const privateProfile = {
+    env: "prod",
+    baseUrl: "https://core-production.invalid:9443",
+    allowedHosts: ["core-production.invalid:9443"],
+    authMode: "service-token",
+    mode: "read-write",
+    productionCoreWrites: true,
+  };
+  it("accepts the isolated fixture and pins only the planned production origin", async () => {
+    expect(parseBackendProfile(JSON.stringify(privateProfile))).toHaveProperty(
+      "profile.productionCoreWrites",
+      true,
+    );
+    const actual =
+      await vi.importActual<typeof import("./ops-write-policy.js")>("./ops-write-policy.js");
+    const plannedOrigin = "https://prod.tailcc6c5f.ts.net:9443";
+    expect(actual.isReviewedProductionOrigin(plannedOrigin)).toBe(true);
+    const admitted = {
+      ...privateProfile,
+      profile: "zw2" as const,
+      env: "prod" as const,
+      mode: "read-write" as const,
+      authMode: "service-token" as const,
+      baseUrl: plannedOrigin,
+      allowedHosts: ["prod.tailcc6c5f.ts.net:9443"],
+      digestEnabled: false,
+      maxRequestsPerMinute: 20,
+      issueLinks: {},
+    };
+    expect(actual.productionCoreEnabled(admitted)).toBe(true);
+    expect(actual.productionCoreEnabled({ ...admitted, productionCoreWrites: false })).toBe(false);
+    for (const origin of [
+      "https://prod.tailcc6c5f.ts.net:8411",
+      "https://prod.tailcc6c5f.ts.net:9443/path",
+      privateProfile.baseUrl,
+      PROD.baseUrl,
+      "https://noob-root.tailcc6c5f.ts.net:9443",
+    ]) {
+      expect(actual.isReviewedProductionOrigin(origin)).toBe(false);
+    }
+  });
+  it.each([
+    { productionCoreWrites: undefined },
+    { productionCoreWrites: false },
+    { productionCoreWrites: "true" },
+    { productionCoreWrites: null },
+    { authMode: "anonymous" },
+    { env: "local" },
+    { env: "dev" },
+    { baseUrl: PROD.baseUrl, allowedHosts: PROD.allowedHosts },
+    { baseUrl: "http://core-production.invalid:9443" },
+    { baseUrl: "https://core-production.invalid:9443/admin/" },
+    { baseUrl: "https://user@core-production.invalid:9443" },
+    { baseUrl: "https://core-production.invalid:9443?x=1" },
+    { baseUrl: "https://core-production.invalid:9443#fragment" },
+    {
+      baseUrl: "https://core-production.invalid:9444",
+      allowedHosts: ["core-production.invalid:9444"],
+    },
+    {
+      baseUrl: "https://core-production.invalid.evil:9443",
+      allowedHosts: ["core-production.invalid.evil:9443"],
+    },
+    { allowedHosts: ["core-production.invalid:9443", "api.vip.pscx.ai"] },
+    { hostHeader: "vip.localhost" },
+  ])("rejects unsafe or incomplete production override %j", (override) => {
+    expect(parseBackendProfile(JSON.stringify({ ...privateProfile, ...override }))).toHaveProperty(
+      "error",
+    );
+  });
+  it.each(["off", "read-only"])("preserves %s with production writes disabled", (mode) => {
+    expect(
+      parseBackendProfile(JSON.stringify({ ...privateProfile, mode, productionCoreWrites: false })),
+    ).toHaveProperty("profile.mode", mode);
+  });
+});
+
+it("production callers cannot inject an alternative reviewed-origin table", async () => {
+  const ts = await import("typescript");
+  const directory = path.dirname(new URL(import.meta.url).pathname);
+  const arities = new Map([
+    ["isReviewedProductionOrigin", 1],
+    ["productionCoreEnabled", 1],
+    ["nativeWriteScope", 2],
+  ]);
+  for (const name of fs
+    .readdirSync(directory)
+    .filter(
+      (entry) =>
+        entry.endsWith(".ts") && !entry.includes("test") && entry !== "ops-write-policy.ts",
+    )) {
+    const source = ts.createSourceFile(
+      name,
+      fs.readFileSync(path.join(directory, name), "utf8"),
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    function visit(node: import("typescript").Node) {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        arities.has(node.expression.text)
+      ) {
+        expect(node.arguments.length, `${name}:${node.expression.text}`).toBe(
+          arities.get(node.expression.text),
+        );
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(source);
+  }
 });

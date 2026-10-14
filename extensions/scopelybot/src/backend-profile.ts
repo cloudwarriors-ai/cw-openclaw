@@ -23,6 +23,7 @@ import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { userInfo } from "node:os";
 import { join } from "node:path";
 import { type AuditPolicy, auditEventBestEffort, noteAuditPolicy } from "./audit.js";
+import { isReviewedProductionOrigin, productionCoreEnabled } from "./ops-write-policy.js";
 
 export type BackendMode = "off" | "read-only" | "read-write";
 export type AuthMode = "anonymous" | "service-token";
@@ -42,6 +43,8 @@ export type BackendProfile = {
    */
   authMode: AuthMode;
   mode: BackendMode;
+  /** Explicit default-off Core7 production admission; never grants app authority. */
+  productionCoreWrites?: boolean;
   digestEnabled: boolean;
   maxRequestsPerMinute: number;
   /** Family id -> tracking issue URL (the only source of "Tracked in" links). */
@@ -148,14 +151,10 @@ export function parseBackendProfile(raw: string): ParseResult {
   if (!MODES.has(mode as BackendMode)) {
     return { error: 'mode must be "off", "read-only" or "read-write"' };
   }
-  // The new app in production stays read-only (INV-2). With read-write the guard
-  // passes any method, so no file edit may grant it on prod: lifting the cap
-  // for a family is a reviewed code change (PK-14), never a profile key.
-  if (mode === "read-write" && env === "prod") {
-    return {
-      error:
-        'mode "read-write" is dev-only: prod is read-only until a reviewed code change lifts this cap',
-    };
+  const productionCoreWrites =
+    value.productionCoreWrites === undefined ? false : value.productionCoreWrites;
+  if (typeof productionCoreWrites !== "boolean" || (productionCoreWrites && env !== "prod")) {
+    return { error: "productionCoreWrites must be a boolean enabled only for prod" };
   }
 
   const hosts = value.allowedHosts;
@@ -165,7 +164,10 @@ export function parseBackendProfile(raw: string): ParseResult {
   const allowedHosts: string[] = [];
   for (const [index, entry] of hosts.entries()) {
     const host = typeof entry === "string" ? entry.trim().toLowerCase() : "";
-    if (!ENV_APP_HOSTS[env].includes(host)) {
+    if (
+      !ENV_APP_HOSTS[env].includes(host) &&
+      !(env === "prod" && isReviewedProductionOrigin(`https://${host}`))
+    ) {
       // The entry itself is never echoed: errors land in the audit log.
       return { error: `allowedHosts entry ${index + 1} is not an allowed ${env} app host` };
     }
@@ -212,20 +214,25 @@ export function parseBackendProfile(raw: string): ParseResult {
     return { error: `issueLinks must map family ids to ${ISSUE_LINK_PREFIX} URLs` };
   }
 
-  return {
-    profile: {
-      profile: "zw2",
-      env,
-      baseUrl: base.origin,
-      allowedHosts,
-      authMode: authMode as AuthMode,
-      mode: mode as BackendMode,
-      digestEnabled,
-      maxRequestsPerMinute: rpm as number,
-      ...(hostHeader ? { hostHeader } : {}),
-      issueLinks: links as Record<string, string>,
-    },
+  const profile: BackendProfile = {
+    profile: "zw2",
+    env,
+    baseUrl: base.origin,
+    allowedHosts,
+    authMode: authMode as AuthMode,
+    mode: mode as BackendMode,
+    ...(productionCoreWrites ? { productionCoreWrites: true } : {}),
+    digestEnabled,
+    maxRequestsPerMinute: rpm as number,
+    ...(hostHeader ? { hostHeader } : {}),
+    issueLinks: links as Record<string, string>,
   };
+  if (env === "prod" && mode === "read-write" && !productionCoreEnabled(profile)) {
+    return {
+      error: "Production writes require explicit Core7 admission on a reviewed private origin",
+    };
+  }
+  return { profile };
 }
 
 // --- audit sink for policy/guard events ---------------------------------------

@@ -3,6 +3,7 @@
 import { readBackendProfile } from "./backend-profile.js";
 import { stageWrite } from "./gated.js";
 import { currentWriteRequester } from "./ops-client.js";
+import { nativeWriteScope, productionCapabilityAllowed } from "./ops-write-policy.js";
 import { canonicalZoomId, errorResult, jsonResult, scopelyOpsInvoke } from "./scopely-api.js";
 
 type LocalWrite =
@@ -31,14 +32,26 @@ export async function opsStageWrite(capability: LocalWrite, args: Record<string,
     const profile = readBackendProfile();
     const requester = currentWriteRequester();
     const channel = process.env.SCOPELYBOT_ZOOM_CHANNEL;
-    if (profile.env !== "local" || profile.mode !== "read-write" || !requester || !channel) {
+    const scope = nativeWriteScope(profile, channel);
+    if (
+      !scope ||
+      !requester ||
+      (profile.env === "prod" && !productionCapabilityAllowed(capability))
+    ) {
       return jsonResult({
         ok: false,
-        error:
-          "Local write staging requires the current Zoom sender and a local read-write profile.",
+        error: "Native write staging requires the current Zoom sender and an admitted profile.",
       });
     }
     const response = await scopelyOpsInvoke({ capability, args, requesterZoomId: requester });
+    const currentScope = () =>
+      nativeWriteScope(readBackendProfile(), process.env.SCOPELYBOT_ZOOM_CHANNEL);
+    if (currentScope() !== scope || currentWriteRequester() !== requester) {
+      return jsonResult({
+        ok: false,
+        error: "Admission or sender changed; no confirmation was staged.",
+      });
+    }
     const body = response.data;
     const data = record(body) && body.ok === true && record(body.data) ? body.data : undefined;
     if (
@@ -64,7 +77,7 @@ export async function opsStageWrite(capability: LocalWrite, args: Record<string,
         const actor = canonicalZoomId(context?.actor);
         // This callback is called only by the trusted inbound CONFIRM gate.
         // Never substitute the requesting sender or an argument from the model.
-        if (!actor || process.env.SCOPELYBOT_ZOOM_CHANNEL !== channel) {
+        if (!actor || currentScope() !== scope) {
           return {
             ok: false,
             status: 403,
@@ -106,7 +119,7 @@ export async function opsStageWrite(capability: LocalWrite, args: Record<string,
               },
         };
       },
-      true,
+      { scope },
     );
   } catch (error) {
     return errorResult(error);

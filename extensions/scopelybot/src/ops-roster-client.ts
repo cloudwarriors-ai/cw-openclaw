@@ -1,6 +1,7 @@
 // Server roster is the authority. No positive cache or file/config fallback.
 import { readBackendProfile } from "./backend-profile.js";
 import { currentWriteRequester } from "./ops-client.js";
+import { nativeWriteScope } from "./ops-write-policy.js";
 import { redactText } from "./redaction.js";
 import { canonicalZoomId, jsonResult, scopelyOpsInvoke } from "./scopely-api.js";
 
@@ -11,14 +12,7 @@ function positive(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) > 0;
 }
 function localScope(): string | undefined {
-  const p = readBackendProfile();
-  const channel = process.env.SCOPELYBOT_ZOOM_CHANNEL;
-  return p.env === "local" &&
-    p.mode === "read-write" &&
-    p.baseUrl === "http://127.0.0.1:8100" &&
-    channel
-    ? JSON.stringify([p.env, p.mode, p.baseUrl, p.authMode, channel])
-    : undefined;
+  return nativeWriteScope(readBackendProfile(), process.env.SCOPELYBOT_ZOOM_CHANNEL);
 }
 async function read(
   capability: "ops.approvers.check" | "ops.approvers.list",
@@ -67,7 +61,7 @@ export async function opsRosterList(args: Record<string, unknown>) {
   const refused = () =>
     jsonResult({
       ok: false,
-      error: "The current local server roster is unavailable or not authorized.",
+      error: "The current server roster is unavailable or not authorized.",
     });
   try {
     const sender = currentWriteRequester();

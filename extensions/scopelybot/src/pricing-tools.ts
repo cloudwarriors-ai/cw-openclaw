@@ -273,10 +273,10 @@ export function registerPricingTools(api: OpenClawPluginApi, logger: AuditLogger
             `${action === "create" ? "Create" : "Update"} a VIP/ZW shared vendor rate by pricing_key. ` +
             "Stages an exact preview for human CONFIRM; applies across project types using this key. " +
             "Organization overrides and historical quotes remain intact. Creates a new rate-card version. " +
-            "Local synthetic vendors only. Legacy project_type_id/id, retirement and tier money edits refuse.",
+            "Operator-admitted native vendors only; local mode remains synthetic. Legacy project_type_id/id, retirement and tier money edits refuse.",
           parameters: Type.Object(
             {
-              vendor_key: Type.String({ description: "Synthetic native vendor key" }),
+              vendor_key: Type.String({ description: "Operator-admitted native vendor key" }),
               pricing_key: Type.String({
                 description: "Stable vendor-wide pricing key; immutable on update",
               }),

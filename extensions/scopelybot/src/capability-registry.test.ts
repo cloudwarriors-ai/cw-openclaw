@@ -1,3 +1,19 @@
+// Only this test module injects a reserved non-network origin into the real policy.
+vi.mock("./ops-write-policy.js", async (original) => {
+  const actual = await original<typeof import("./ops-write-policy.js")>();
+  const origins = ["https://core-production.invalid:9443"];
+  return {
+    ...actual,
+    isReviewedProductionOrigin: (origin: string) =>
+      actual.isReviewedProductionOrigin(origin, origins),
+    productionCoreEnabled: (profile: Parameters<typeof actual.productionCoreEnabled>[0]) =>
+      actual.productionCoreEnabled(profile, origins),
+    nativeWriteScope: (
+      profile: Parameters<typeof actual.nativeWriteScope>[0],
+      channel: string | undefined,
+    ) => actual.nativeWriteScope(profile, channel, origins),
+  };
+});
 // Capability-registry tests (capability-registry.ts + the index.ts wrapper,
 // PK-7a). Pins AC-7.2 (every registered tool has a row, derived dynamically
 // from register(), plus the manifest's tool contracts) and AC-7.4 (blocked
@@ -810,4 +826,63 @@ describe("bindings against the kernel snapshot", () => {
   ])("the snapshot schema of %s rejects %j", (name, args) => {
     expect(validate(snapshot.get(name)!.input_schema, args)).not.toEqual([]);
   });
+});
+
+it("production registry enables exactly Core7 writes, not their whole families", () => {
+  writeProfile({
+    env: "prod",
+    mode: "read-write",
+    authMode: "service-token",
+    productionCoreWrites: true,
+    baseUrl: "https://core-production.invalid:9443",
+    allowedHosts: ["core-production.invalid:9443"],
+  });
+  const expected = [
+    "scopely_create_pricing_item",
+    "scopely_update_pricing_item",
+    "scopely_create_scoping_card",
+    "scopely_update_scoping_card",
+    "scopely_delete_scoping_card",
+    "scopely_update_project_type",
+    "scopely_update_deployment_type",
+  ].toSorted();
+  const liveWrites = registryTools().filter((name) => {
+    const cap = capabilityFor(name)!;
+    return cap.effect === "write" && (cap.status === "live" || cap.status === "local");
+  });
+  expect(liveWrites.toSorted()).toEqual(expected);
+  expect(capabilityFor("scopely_list_approvers")?.status).toBe("live");
+  writeProfile({
+    env: "prod",
+    baseUrl: "https://core-production.invalid:9443",
+    allowedHosts: ["core-production.invalid:9443"],
+    mode: "read-only",
+  });
+  for (const tool of expected) {
+    expect(capabilityFor(tool)?.status).not.toBe("live");
+  }
+});
+
+it("a retained tool reevaluates production admission on every call", async () => {
+  const configured = {
+    env: "prod",
+    authMode: "service-token",
+    productionCoreWrites: true,
+    baseUrl: "https://core-production.invalid:9443",
+    allowedHosts: ["core-production.invalid:9443"],
+  };
+  writeProfile({ ...configured, mode: "read-only" });
+  const execute = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "native stage" }] });
+  const retained = applyCapabilityRegistry({
+    name: "scopely_update_project_type",
+    execute,
+  } as never) as unknown as Tool;
+  await retained.execute("off", {});
+  expect(execute).not.toHaveBeenCalled();
+  writeProfile({ ...configured, mode: "read-write" });
+  await retained.execute("on", {});
+  expect(execute).toHaveBeenCalledTimes(1);
+  writeProfile({ ...configured, mode: "read-only" });
+  await retained.execute("off-again", {});
+  expect(execute).toHaveBeenCalledTimes(1);
 });
