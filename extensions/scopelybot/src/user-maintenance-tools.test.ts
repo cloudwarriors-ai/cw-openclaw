@@ -78,12 +78,16 @@ describe("user-maintenance-tools", () => {
     delete process.env.SCOPELYBOT_ZOOM_CHANNEL;
   });
 
-  it("read-only tools execute immediately against the correct BFF paths", async () => {
+  it("native user details refuse missing call context without reaching the legacy backend", async () => {
+    const tools = buildTools();
+    const result = parse(await tools.scopely_get_user.execute("t", { user_id: 42 }));
+    expect(result.ok).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("remaining legacy reads use their existing BFF paths", async () => {
     const tools = buildTools();
     fetchMock.mockResolvedValue({ ok: true, status: 200, data: [] });
-
-    await tools.scopely_get_user.execute("t", { user_id: 42 });
-    expect(fetchMock).toHaveBeenCalledWith("/api/auth/users/42/detail/");
 
     await tools.scopely_list_invites.execute("t", {});
     expect(fetchMock).toHaveBeenCalledWith("/api/auth/invites/");

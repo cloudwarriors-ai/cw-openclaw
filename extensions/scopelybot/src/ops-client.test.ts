@@ -565,9 +565,9 @@ describe("output is bounded and untrusted", () => {
 
   it("health and whoami carry a plain summary of the real fields", async () => {
     const health = await run("scopely_health_check");
-    expect(health.data).toMatchObject({ status: "ok", capabilities: 12, registry_frozen: true });
+    expect(health.data).toMatchObject({ status: "ok", capabilities: 14, registry_frozen: true });
     expect(health.summary).toBe(
-      "The operator layer answered ok: 12 capabilities, registry frozen; switched off: none.",
+      "The operator layer answered ok: 14 capabilities, registry frozen; switched off: none.",
     );
     const whoami = await run("scopely_auth_status");
     expect(whoami.data).toEqual({
@@ -710,7 +710,7 @@ describe("mock kernel fidelity", () => {
   it("the fixture is the byte copy of the kernel snapshot for explicit scope selection", () => {
     const sha = createHash("sha256").update(fs.readFileSync(SNAPSHOT_FILE)).digest("hex");
     // Generated with OPS_LOCAL_WRITES=False; same bytes as the paired backend snapshot.
-    expect(sha).toBe("7202472815bd38c7656e4c18c94eff66f13f3a6468c1a70f4b97c90da9e37f3b");
+    expect(sha).toBe("3edef1664557352629d34c2ea1bd3d534da236a742d62ee4c7e70ed4d6fe17c1");
   });
 });
 

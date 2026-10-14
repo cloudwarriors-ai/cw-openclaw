@@ -392,6 +392,11 @@ export async function opsRead(_toolCallId: string, params: Record<string, unknow
       new Error("Refused: app reads run only through the bot's capability registry."),
     );
   }
+  // Dropping unknown fields or nulls would silently broaden these native reads.
+  // Their backend schemas own refusal; keep all other bindings unchanged.
+  if (binding.strictArgs) {
+    return invoke(binding.capability, params, call);
+  }
   const args: Record<string, unknown> = {};
   for (const key of binding.args) {
     const value = params?.[key] ?? binding.defaults?.[key];

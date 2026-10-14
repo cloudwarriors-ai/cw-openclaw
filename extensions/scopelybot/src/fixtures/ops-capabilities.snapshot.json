@@ -225,6 +225,84 @@
     },
     {
       "effect": "read",
+      "family": "identity",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "user_id": {
+            "maximum": 2147483647,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "type": "object"
+      },
+      "max_items": 50,
+      "name": "identity.users.get",
+      "summary": "Get one exact native user_id and page actual organization memberships, retaining the user header. Global platform-support scope, active platform admin only. Includes inactive targets. Native IDs and membership facts; native_user_role is not an effective grant. No legacy role, session counts/history, lockout state or write eligibility. Pages: limit 1-50 (default 25), offset 0-2147483647; follow next_offset until null. Whole rows may reduce page size to fit 12000 escaped JSON bytes; oversized header/row refuses.",
+      "untrusted_output": true,
+      "wire_name": "identity-users-get"
+    },
+    {
+      "effect": "read",
+      "family": "identity",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "is_active": {
+            "type": "boolean"
+          },
+          "limit": {
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ordering": {
+            "enum": [
+              "created_at",
+              "-created_at",
+              "last_login",
+              "-last_login"
+            ],
+            "type": "string"
+          },
+          "organization_id": {
+            "maximum": 2147483647,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "search": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "max_items": 50,
+      "name": "identity.users.list",
+      "summary": "Find native users by AND search terms across username/email/first/last name; optional is_active and organization_id. Global platform-support scope, active platform admin only. Includes inactive targets. Native IDs and membership facts; native_user_role is not an effective grant. No legacy role, session counts/history, lockout state or write eligibility. Pages: limit 1-50 (default 25), offset 0-2147483647; follow next_offset until null. Whole rows may reduce page size to fit 12000 escaped JSON bytes; oversized header/row refuses.",
+      "untrusted_output": true,
+      "wire_name": "identity-users-list"
+    },
+    {
+      "effect": "read",
       "family": "pricing",
       "input_schema": {
         "additionalProperties": false,

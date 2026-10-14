@@ -1134,6 +1134,7 @@ export function resolvePluginTools(params: {
   const factoryTimingStartedAt = Date.now();
   const factoryTimings: PluginToolFactoryTiming[] = [];
   const capturedDescriptorsByPluginId = new Map<string, CachedPluginToolDescriptor[]>();
+  const uncacheablePluginIds = new Set<string>();
   const manifestPluginsById = new Map(snapshot.plugins.map((plugin) => [plugin.id, plugin]));
 
   for (const entry of registry.tools) {
@@ -1215,6 +1216,21 @@ export function resolvePluginTools(params: {
       continue;
     }
     const listRaw: unknown[] = Array.isArray(resolved) ? resolved : [resolved];
+    // Descriptors cannot represent executable preparation or its request context.
+    // Mark the entire plugin before policy filtering: a partial sibling cache
+    // would otherwise erase preparation when a later resolution permits it.
+    if (
+      listRaw.some(
+        (tool) =>
+          tool !== null &&
+          typeof tool === "object" &&
+          "prepareArguments" in tool &&
+          typeof tool.prepareArguments === "function",
+      )
+    ) {
+      uncacheablePluginIds.add(entry.pluginId);
+    }
+
     const selectedManifestToolNames =
       manifestPlugin && availabilityNames.length > 0
         ? new Set(allowlistNames.map((name) => normalizeToolName(name)))
@@ -1353,6 +1369,9 @@ export function resolvePluginTools(params: {
   }
 
   for (const [pluginId, descriptors] of capturedDescriptorsByPluginId) {
+    if (uncacheablePluginIds.has(pluginId)) {
+      continue;
+    }
     const manifestPlugin = manifestPluginsById.get(pluginId);
     if (!manifestPlugin) {
       continue;

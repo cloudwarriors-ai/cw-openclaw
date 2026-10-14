@@ -171,6 +171,8 @@ The cache rule is documented in [Plugin architecture internals](/plugins/archite
 
 Some cold-path callers still reconstruct manifest registries directly from the persisted installed plugin index instead of receiving a Gateway `PluginLookUpTable`. That path now reconstructs the registry on demand; prefer passing the current lookup table or an explicit manifest registry through runtime flows when a caller already has one.
 
+Tool descriptor caching cannot represent executable `prepareArguments` callbacks. When a resolved plugin factory returns a tool with that callback, the plugin's descriptors are not cached, including sibling tools. Later resolutions run its factories with the current request context and retain preparation before host argument validation. Ordinary tools still use descriptor caching. This costs repeated factory resolution for those plugins; factories should keep discovery lightweight. Plugin updates require the normal restart or explicit reload lifecycle, which clears the runtime cache; an extension-only hot replacement is not a cache migration.
+
 ### Activation planning
 
 Activation planning is part of the control plane. Callers can ask which plugins are relevant to a concrete command, provider, channel, route, agent harness, or capability before loading broader runtime registries.

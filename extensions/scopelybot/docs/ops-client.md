@@ -7,7 +7,7 @@ Code: `src/ops-client.ts` (tool entry and answers), `src/scopely-api.ts` (`scope
 ## Flow
 
 1. The model calls a slice-1 tool. The registry wrapper runs it inside the call context (tool name, requester from the trusted tool-factory context).
-2. The tool's execute is `opsRead`. It refuses unless it runs inside that context and the tool has a binding in `OPS_READS`. The binding fixes the capability and which tool params become `args`; any other param is dropped.
+2. The tool's execute is `opsRead`. It refuses unless it runs inside that context and the tool has a binding in `OPS_READS`. The binding fixes the capability and which tool params become `args`. Native account discovery and `scopely_list_pricing_items` validate raw declared fields before host coercion and preserve unknown fields for strict backend validation; other bindings retain their existing allowlist/default behavior.
 3. `invoke` resolves the requester's canonical Zoom id (rule below) and calls `scopelyOpsInvoke` once.
 4. The guard validates, applies the kill switch and the rate cap, reads the token file, writes the `http_intent` row, then sends exactly one request. It never follows a redirect and never retries.
 5. The app answers (shapes below). The guard writes the terminal row, and `invoke` turns the answer into the tool result.
@@ -221,3 +221,42 @@ Zoom delivery, sender mapping, approval and reply audience must be verified on t
 development channel before enabling writes. Production profiles remain read only.
 The seven mapped write capabilities still have partial field coverage; this change
 does not implement the remaining eleven historically used write-tool names.
+
+### Native account and pricing discovery (P4)
+
+`scopely_list_users` and `scopely_get_user` use the native identity reads. Active
+platform administrators can inspect active or inactive targets across organizations.
+Get accepts the exact native ID and retains its user header while paging actual
+memberships. List searches up to ten AND terms across names, username and email;
+there is no client retry or automatic choice between duplicate matches. Native
+roles are stored facts, not effective authorization or write eligibility. Legacy
+role filters, session counts/history and lockout dossier fields are unsupported.
+
+Where explicit service-token or person-token capability allowlists are configured,
+operators must grant `identity.users.list` and `identity.users.get`. Installing
+descriptors or bot bindings alone does not provision access; the actual acting
+user must still be an active platform administrator. This packet changes no remote
+configuration or credentials.
+
+Account pages preserve whole rows under the backend's complete 12,000-byte escaped
+JSON budget; follow `next_offset` until null. The existing bot output cap preserves
+the user header and adjusts continuation if it must truncate an unexpected larger
+page. An oversized first row refuses with admin-inspection guidance. Search may
+contain personal information under the existing audit policy.
+
+`scopely_list_pricing_items` now reads the existing shared governing VIP rate card
+using `vendor_key` and stable `pricing_key`, with the existing staff permission.
+It does not promise project-specific rates, legacy numeric item IDs or calculated
+quote totals. The older ZW pricing table remains separate. Unknown or obsolete fields
+on these three bindings reach backend refusal unchanged when declared fields are valid.
+Malformed whole arguments and invalid declared fields (including null filters) refuse
+during preparation before a backend audit exists.
+
+Backend P4 passed 577 local tests, including real REST/MCP inactive lookup into an
+unchanged synthetic write preview. Bot transport tests use a mocked HTTP boundary;
+human Claude/Zoom UAT, deployment and whole-workflow parity are separate gates.
+Production business data remains read only.
+
+The three strict discovery bindings also reject missing, null, array, or primitive whole-call arguments before host optional-object normalization. Use an explicit `{}` for an unfiltered user list. Object fields remain intact for validation; host schema refusal occurs before backend invocation and therefore does not create a backend audit row. Plugins returning preparation callbacks bypass descriptor-only caching so later resolutions retain that boundary and current requester context.
+
+Strict discovery preparation validates raw values against the original native tool schema before host coercion: for example, boolean user IDs, numeric strings, and null filters refuse instead of selecting another account or scope. These local schema refusals do not invoke the backend or produce its audit row. Unknown fields remain unchanged and reach the backend's strict schema refusal when the declared fields are valid.

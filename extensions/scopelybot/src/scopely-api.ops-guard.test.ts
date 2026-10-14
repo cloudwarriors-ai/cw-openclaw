@@ -240,7 +240,7 @@ describe("nothing else widened", () => {
     },
   );
 
-  it("the allow-list is the slice-1 reads and nothing that writes", () => {
+  it("the allow-list contains only reviewed native reads", () => {
     expect([...OPS_READ_CAPABILITIES].toSorted()).toEqual(
       [
         "catalog.deployment_types.list",
@@ -249,6 +249,8 @@ describe("nothing else widened", () => {
         "catalog.scoping_cards.list",
         "catalog.vendors.get",
         "catalog.vendors.list",
+        "identity.users.get",
+        "identity.users.list",
         "pricing.defaults.list",
         "sessions.get",
         "sessions.list",

@@ -16,6 +16,8 @@
 // the asking human). Every other tool still answers from its family row; later
 // slices flip rows.
 
+import { TypeGuard } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { boundedText } from "./audit-chain.js";
 import { auditBackendEvent, readBackendProfile } from "./backend-profile.js";
@@ -308,6 +310,8 @@ const FAMILIES: Record<FamilyId, Family> = {
 export type OpsBinding = {
   capability: OpsCapability;
   args: readonly string[];
+  /** Preserve unknown fields for backend refusal; validate raw native args before coercion. */
+  strictArgs?: true;
   defaults?: Readonly<Record<string, unknown>>;
 };
 
@@ -348,6 +352,29 @@ const OPS_READS: Record<string, OpsBinding> = {
     args: ["status", "search", "organization_id", "page", "page_size"],
   },
   scopely_get_session: { capability: "sessions.get", args: ["session_id", "order_number"] },
+  scopely_list_users: {
+    capability: "identity.users.list",
+    args: ["search", "is_active", "organization_id", "ordering", "limit", "offset"],
+    strictArgs: true,
+  },
+  scopely_get_user: {
+    capability: "identity.users.get",
+    args: ["user_id", "limit", "offset"],
+    strictArgs: true,
+  },
+  scopely_list_pricing_items: {
+    capability: "pricing.defaults.list",
+    args: [
+      "vendor_key",
+      "scope_mode",
+      "scope_category",
+      "category",
+      "is_active",
+      "limit",
+      "offset",
+    ],
+    strictArgs: true,
+  },
 };
 
 /** The operator-layer binding of a tool, if it has one. */
@@ -543,6 +570,28 @@ function gateTool(tool: AgentTool, origin?: ToolOrigin): AgentTool {
             args[0],
             () => capabilityRefusal(tool.name) as Awaited<ReturnType<AgentTool["execute"]>>,
           );
+  if (opsBindingFor(tool.name)?.strictArgs) {
+    return {
+      ...tool,
+      execute,
+      prepareArguments(args) {
+        // Run before the host's optional-object null -> {} preparation. A missing
+        // call must never silently broaden into an unfiltered account query.
+        if (args === null || typeof args !== "object" || Array.isArray(args)) {
+          throw new Error(
+            `${tool.name} arguments must be an object; use {} explicitly for an unfiltered list.`,
+          );
+        }
+        // Validate against the original TypeBox schema before the host removes
+        // its metadata and coerces selectors (e.g. true -> user_id 1). Unknown
+        // fields remain intact because these schemas allow additional properties.
+        if (!TypeGuard.IsSchema(tool.parameters) || !Value.Check(tool.parameters, args)) {
+          throw new Error(`${tool.name} arguments must match the native schema without coercion.`);
+        }
+        return tool.prepareArguments ? tool.prepareArguments(args) : args;
+      },
+    };
+  }
   return { ...tool, execute };
 }
 

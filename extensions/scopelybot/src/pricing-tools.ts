@@ -229,22 +229,31 @@ export function registerPricingTools(api: OpenClawPluginApi, logger: AuditLogger
       {
         name: "scopely_list_pricing_items",
         description:
-          "List Scopely VIP pricing items for a vendor's project type. Read-only — runs immediately. " +
-          "Needs the vendor key and project-type id.",
-        parameters: Type.Object({
-          vendor_key: Type.String({ description: "Vendor key (e.g. zoom)" }),
-          project_type_id: Type.Number({ description: "Project-type id" }),
-        }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const res = await scopelyFetch(
-              itemBase(params.vendor_key as string, params.project_type_id as number),
-            );
-            return jsonResult({ ok: res.ok, status: res.status, data: res.data });
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+          "List a vendor's shared governing VIP native rate card, using stable vendor_key and pricing_key. " +
+          "Rates are shared across project types; legacy project_type_id and numeric entry id refuse. " +
+          "Amounts are unit_amount/amount_by_deployment strings, not calculated quote totals or customer " +
+          "overrides. scope_mode=all omits scope_category; exact requires scope_category (blank means " +
+          "unclassified only). Never invent a scope filter. Native default page is 50; request 20 or " +
+          "fewer for compact replies and follow next_offset until null. Platform staff permission applies. " +
+          "These are VIP native rates. The older ZW pricing table is separate and is not changed by the bot.",
+        parameters: Type.Object(
+          {
+            vendor_key: Type.String({ minLength: 1, maxLength: 50, pattern: "^[-a-zA-Z0-9_]+$" }),
+            scope_mode: Type.Optional(Type.String({ enum: ["all", "exact"] })),
+            scope_category: Type.Optional(
+              Type.String({
+                maxLength: 16,
+                description: "Exact scope; empty means unclassified, not all",
+              }),
+            ),
+            category: Type.Optional(Type.String({ maxLength: 100 })),
+            is_active: Type.Optional(Type.Boolean()),
+            limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
+            offset: Type.Optional(Type.Integer({ minimum: 0 })),
+          },
+          { additionalProperties: true },
+        ),
+        execute: opsRead,
       },
       logger,
     ),

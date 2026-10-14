@@ -189,7 +189,7 @@ describe("registry completeness (AC-7.2)", () => {
     expect(optional.every(Boolean)).toBe(true);
     // The startup banner (deploy runbooks grep "Registered .* tools") counts
     // the registry, not a hand-kept number.
-    expect(banner).toContain("[scopelybot] Registered 121 tools (13 live/local on the new app;");
+    expect(banner).toContain("[scopelybot] Registered 121 tools (16 live/local on the new app;");
     expect(new Set(rows).size).toBe(rows.length); // no tool in two families
     expect(registered.filter((t) => !capabilityFor(t))).toEqual([]);
     expect(manifest.filter((t) => !capabilityFor(t))).toEqual([]);
@@ -242,6 +242,9 @@ describe("registry completeness (AC-7.2)", () => {
       "scopely_list_sessions",
       "scopely_get_session",
       "scopely_list_pricing_defaults",
+      "scopely_list_users",
+      "scopely_get_user",
+      "scopely_list_pricing_items",
       "scopely_list_approvers",
     ]);
     const snapshot = new Map(SNAPSHOT.capabilities.map((c) => [c.name, c]));
@@ -297,10 +300,7 @@ describe("registry completeness (AC-7.2)", () => {
         status: "live",
       });
     }
-    for (const [tool, family] of [
-      ["scopely_list_users", "F5"],
-      ["scopely_search", "F5"],
-    ]) {
+    for (const [tool, family] of [["scopely_search", "F5"]]) {
       expect(capabilityFor(tool), tool).toMatchObject({
         family,
         enablement: "blocked-on-identity",
@@ -327,7 +327,7 @@ describe("registry gating through the index.ts wrapper (AC-7.4)", () => {
   // claim at all (a search URL is not a tracker); the manual path still shows.
   it.each([
     ["scopely_list_orgs", "F6", "the ZW2 Django admin"],
-    ["scopely_list_users", "F5", "the ZW2 staff UI (All Orders)"],
+    ["scopely_search", "F5", "the ZW2 staff UI (All Orders)"],
     ["scopely_get_pricing_default", "F5", "the ZW2 staff UI (All Orders)"],
     ["scopely_component_health", "F2", "ask the ZW2 team to check the app's health"],
   ])(
@@ -734,6 +734,30 @@ describe("bindings against the kernel snapshot", () => {
       },
     ],
     scopely_get_session: [{ session_id: 42 }, { order_number: "PS-0000123" }],
+    scopely_list_users: [
+      {},
+      {
+        search: "Renée Example",
+        is_active: false,
+        organization_id: 3,
+        ordering: "last_login",
+        limit: 50,
+        offset: 2,
+      },
+    ],
+    scopely_get_user: [{ user_id: 42 }, { user_id: 42, limit: 50, offset: 2 }],
+    scopely_list_pricing_items: [
+      { vendor_key: "zoom" },
+      {
+        vendor_key: "zoom",
+        scope_mode: "exact",
+        scope_category: "",
+        category: "Core",
+        is_active: true,
+        limit: 20,
+        offset: 2,
+      },
+    ],
   };
 
   it("the args each tool sends for valid params pass the capability's real input schema", async () => {
@@ -747,7 +771,8 @@ describe("bindings against the kernel snapshot", () => {
       for (const params of samples) {
         fetchMock.mockClear();
         resetScopelyGuardForTest();
-        await tools.get(name)!.execute("x", { ...params, stray: "dropped" });
+        const supplied = opsBindingFor(name)?.strictArgs ? params : { ...params, stray: "dropped" };
+        await tools.get(name)!.execute("x", supplied);
         expect(fetchMock, name).toHaveBeenCalledTimes(1);
         const body = JSON.parse(fetchMock.mock.calls[0][1].body);
         const schema = snapshot.get(body.capability)!.input_schema;

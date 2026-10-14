@@ -1,10 +1,12 @@
-// Verifies scopely_list_users' multi-term name-search retry: the backend OR-matches
-// the *whole* search string per field (icontains), so a two-word "Josh Rickerd" never
-// hits separate first_name/last_name columns. This tool must retry per token and union
-// the results instead of reporting a false "no user found".
+// Native VIP/ZW owns AND search semantics. Forward one complete query; never
+// broaden a miss into legacy per-token OR searches or retry a failed read.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const fetchMock = vi.fn();
+const { fetchMock, nativeRead } = vi.hoisted(() => ({
+  fetchMock: vi.fn(),
+  nativeRead: vi.fn(),
+}));
+vi.mock("./ops-client.js", () => ({ opsRead: nativeRead }));
 vi.mock("./scopely-api.js", () => ({
   scopelyFetch: (...args: unknown[]) => fetchMock(...args),
   jsonResult: (data: unknown) => ({ content: [{ type: "text", text: JSON.stringify(data) }] }),
@@ -13,7 +15,11 @@ vi.mock("./scopely-api.js", () => ({
   }),
   buildQuery: (params: Record<string, unknown>, keys: string[]) => {
     const qs = new URLSearchParams();
-    for (const k of keys) if (params[k] !== undefined) qs.set(k, String(params[k]));
+    for (const k of keys) {
+      if (params[k] !== undefined) {
+        qs.set(k, String(params[k]));
+      }
+    }
     const s = qs.toString();
     return s ? `?${s}` : "";
   },
@@ -45,61 +51,51 @@ const parse = (res: { content: { text: string }[] }) => JSON.parse(res.content[0
 describe("scopely_list_users", () => {
   beforeEach(() => {
     fetchMock.mockReset();
+    nativeRead.mockReset();
   });
 
-  it("returns the whole-phrase match as-is when the backend finds one", async () => {
-    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, data: [{ id: 1, email: "a@b.com" }] });
+  it.each([
+    { search: "Jamie Jamison" },
+    { search: "nomatch" },
+    { search: "  Jamie   Jamison  ", is_active: false, offset: 25 },
+    { organization_id: 42, limit: 10, ordering: "-last_login" },
+    {},
+  ])("forwards the complete native query exactly once: %j", async (query) => {
+    const expected = { ok: true, data: { items: [], total: 0, next_offset: null } };
+    nativeRead.mockResolvedValue({ content: [{ type: "text", text: JSON.stringify(expected) }] });
     const tools = buildTools();
-    const res = parse(await tools.scopely_list_users.execute("id", { search: "unified-team" }));
-    expect(res.ok).toBe(true);
-    expect(res.data).toEqual([{ id: 1, email: "a@b.com" }]);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(parse(await tools.scopely_list_users.execute("id", query))).toEqual(expected);
+    expect(nativeRead).toHaveBeenCalledExactlyOnceWith("id", query);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("retries per name token and unions results when the full phrase misses", async () => {
-    fetchMock
-      .mockResolvedValueOnce({ ok: true, status: 200, data: [] }) // "Josh Rickerd" — no hit
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        data: [{ id: 47, email: "jrickert@unified-team.com", first_name: "" }],
-      }) // "Josh" token
-      .mockResolvedValueOnce({ ok: true, status: 200, data: [] }); // "Rickerd" token
+  it("preserves native pagination and IDs without merging or reordering rows", async () => {
+    const expected = {
+      ok: true,
+      data: {
+        items: [{ id: 47, email: "jamie@example.invalid" }],
+        total: 2,
+        next_offset: 1,
+        truncated: true,
+      },
+    };
+    nativeRead.mockResolvedValue({ content: [{ type: "text", text: JSON.stringify(expected) }] });
     const tools = buildTools();
-    const res = parse(await tools.scopely_list_users.execute("id", { search: "Josh Rickerd" }));
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(res.ok).toBe(true);
-    expect(res.data).toEqual([{ id: 47, email: "jrickert@unified-team.com", first_name: "" }]);
-    expect(res.note).toMatch(/individual name terms/);
+    expect(
+      parse(await tools.scopely_list_users.execute("id", { search: "Jamie Jamison" })),
+    ).toEqual(expected);
+    expect(nativeRead).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("dedupes when multiple tokens match the same user", async () => {
-    fetchMock
-      .mockResolvedValueOnce({ ok: true, status: 200, data: [] })
-      .mockResolvedValueOnce({ ok: true, status: 200, data: [{ id: 9, email: "j@x.com" }] })
-      .mockResolvedValueOnce({ ok: true, status: 200, data: [{ id: 9, email: "j@x.com" }] });
+  it("preserves a native refusal without retrying or falling back", async () => {
+    const expected = { ok: false, error: "requester_not_authorized" };
+    nativeRead.mockResolvedValue({ content: [{ type: "text", text: JSON.stringify(expected) }] });
     const tools = buildTools();
-    const res = parse(await tools.scopely_list_users.execute("id", { search: "Jamie Jamison" }));
-    expect(res.data).toEqual([{ id: 9, email: "j@x.com" }]);
-  });
-
-  it("reports a genuine no-match when no token hits either", async () => {
-    fetchMock
-      .mockResolvedValueOnce({ ok: true, status: 200, data: [] })
-      .mockResolvedValueOnce({ ok: true, status: 200, data: [] })
-      .mockResolvedValueOnce({ ok: true, status: 200, data: [] });
-    const tools = buildTools();
-    const res = parse(await tools.scopely_list_users.execute("id", { search: "Nobody Here" }));
-    expect(res.ok).toBe(true);
-    expect(res.data).toEqual([]);
-    expect(res.note).toBeUndefined();
-  });
-
-  it("does not retry a single-token search", async () => {
-    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, data: [] });
-    const tools = buildTools();
-    const res = parse(await tools.scopely_list_users.execute("id", { search: "nomatch" }));
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(res.data).toEqual([]);
+    expect(
+      parse(await tools.scopely_list_users.execute("id", { search: "Jamie Jamison" })),
+    ).toEqual(expected);
+    expect(nativeRead).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

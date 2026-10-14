@@ -91,78 +91,52 @@ export function registerScopelyTools(api: OpenClawPluginApi, logger: AuditLogger
     ),
   );
 
-  // scopely_list_users — "Who are the users?" / "Who was the last person to login?"
+  // Native support roster; the backend owns search and actual actor permission.
   api.registerTool(() =>
     wrapToolWithAudit(
       {
         name: "scopely_list_users",
         description:
-          "List Scopely VIP users. Returns user profiles with roles, organizations, last_login, and session count. " +
-          "Use this to answer 'who was the last person to login' or 'who are the active users'. " +
-          "Set ordering to '-last_login' to sort by most recent login. `search` handles a full " +
-          "person name (e.g. 'Josh Rickerd') automatically — no need to split it yourself.",
-        parameters: Type.Object({
-          role: Type.Optional(
-            Type.String({
-              description: "Filter by role (platform_admin, power_user, org_admin, user)",
-            }),
-          ),
-          search: Type.Optional(Type.String({ description: "Search by name or email" })),
-          ordering: Type.Optional(
-            Type.String({
-              description:
-                "Sort order: -last_login, last_login, -created_at, created_at (default: -created_at)",
-            }),
-          ),
-        }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const qs = buildQuery(params, ["role", "search", "ordering"]);
-            const result = await scopelyFetch(`/api/auth/users/${qs}`);
-            if (!result.ok) {
-              return jsonResult({
-                ok: false,
-                error: `HTTP ${result.status}`,
-                details: result.data,
-              });
-            }
-            const rows = Array.isArray(result.data) ? result.data : [];
-            const search = typeof params.search === "string" ? params.search.trim() : "";
-            // The backend OR-matches the *whole* search string against email, first_name,
-            // last_name, and username separately (icontains) — a two-word "Josh Rickerd"
-            // never matches, since no single field holds both tokens together. When the
-            // first attempt returns nothing and the query looks like a full name, retry
-            // per token and union the results client-side (deduped by id) instead of
-            // reporting a false "no user found".
-            const tokens = search.split(/\s+/).filter((t) => t.length > 1);
-            if (rows.length === 0 && tokens.length > 1) {
-              const byId = new Map<number, unknown>();
-              for (const token of tokens) {
-                const tokenQs = buildQuery({ ...params, search: token }, [
-                  "role",
-                  "search",
-                  "ordering",
-                ]);
-                const tokenResult = await scopelyFetch(`/api/auth/users/${tokenQs}`);
-                if (tokenResult.ok && Array.isArray(tokenResult.data)) {
-                  for (const row of tokenResult.data as Array<{ id: number }>) {
-                    byId.set(row.id, row);
-                  }
-                }
-              }
-              if (byId.size > 0) {
-                return jsonResult({
-                  ok: true,
-                  data: [...byId.values()],
-                  note: `No exact match for "${search}" as one phrase; matched individual name terms instead.`,
-                });
-              }
-            }
-            return jsonResult({ ok: true, data: rows });
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+          "Find native VIP/ZW users, including inactive accounts, in global platform-support scope. " +
+          "Active platform admin required. Search ANDs up to ten terms across username, email and names; " +
+          "do not split or retry a full name automatically. Native IDs identify candidates; inspect the " +
+          "chosen ID with scopely_get_user before a write preview. native_user_role is a stored field, " +
+          "not effective authorization. Legacy role filters, session counts/history and lockout state " +
+          "are unsupported. Follow next_offset until null; whole-row byte limits may shorten pages. " +
+          "Lookup does not grant write eligibility.",
+        parameters: Type.Object(
+          {
+            search: Type.Optional(
+              Type.String({ description: "1-200 characters after trim; at most ten AND terms" }),
+            ),
+            is_active: Type.Optional(
+              Type.Boolean({ description: "Omit to include active and inactive accounts" }),
+            ),
+            organization_id: Type.Optional(
+              Type.Integer({
+                minimum: 1,
+                maximum: 2147483647,
+                description: "Exact native organization membership",
+              }),
+            ),
+            ordering: Type.Optional(
+              Type.String({
+                enum: ["created_at", "-created_at", "last_login", "-last_login"],
+                description: "Default -created_at; null last_login last; ID breaks ties",
+              }),
+            ),
+            limit: Type.Optional(
+              Type.Integer({
+                minimum: 1,
+                maximum: 50,
+                description: "Default 25; actual page may be smaller",
+              }),
+            ),
+            offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 2147483647 })),
+          },
+          { additionalProperties: true },
+        ),
+        execute: opsRead,
       },
       logger,
     ),

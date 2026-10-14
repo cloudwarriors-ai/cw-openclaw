@@ -1,5 +1,7 @@
+import { validateToolArguments } from "openclaw/plugin-sdk/llm";
 // Verifies optional plugin tool registration and absence handling.
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { normalizeToolParameters } from "../agents/agent-tools.schema.js";
 import { DEFAULT_PLUGIN_TOOLS_ALLOWLIST_ENTRY } from "../agents/tool-policy.js";
 import { resetLogger, setLoggerOverride } from "../logging/logger.js";
 import { loggingState } from "../logging/state.js";
@@ -2017,6 +2019,114 @@ describe("resolvePluginTools optional tools", () => {
 
     expectResolvedToolNames(tools, ["optional_tool"]);
     expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it("preserves strict whole arguments through normalized repeated resolution", () => {
+    const name = "strict_object_tool";
+    const execute = vi.fn(async () => ({ content: [{ type: "text" as const, text: "ok" }] }));
+    const factory = vi.fn(() => ({
+      ...makeTool(name),
+      label: name,
+      execute,
+      prepareArguments(args: unknown) {
+        if (args === null || typeof args !== "object" || Array.isArray(args)) {
+          throw new Error("object required");
+        }
+        return args;
+      },
+    }));
+    setRegistry([
+      {
+        pluginId: "strict-object-test",
+        optional: false,
+        source: "/tmp/strict-object-test.js",
+        names: [name],
+        factory,
+      },
+    ]);
+    for (let resolution = 0; resolution < 2; resolution++) {
+      const tool = normalizeToolParameters(resolvePluginTools(createResolveToolsParams())[0]);
+      for (const invalid of [null, undefined, [], "", "{}", 0, false]) {
+        expect(() => tool.prepareArguments?.(invalid), `${name}: ${String(invalid)}`).toThrow(
+          /object/,
+        );
+      }
+      // Explicit object calls remain valid; fields are not removed or normalized
+      // by the strict preparation layer, including unsupported/null fields.
+      for (const args of [{}, { unknown_field: null }, { user_id: 42 }, { vendor_key: "zoom" }]) {
+        const prepared = tool.prepareArguments?.(args);
+        expect(prepared).toBe(args);
+        expect(
+          validateToolArguments(tool, {
+            type: "toolCall",
+            id: "test",
+            name,
+            arguments: prepared as Record<string, unknown>,
+          }),
+        ).toEqual(args);
+      }
+    }
+    expect(execute).not.toHaveBeenCalled();
+    expect(factory).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not partially cache a plugin whose sibling requires current-context preparation", async () => {
+    const prepare = vi.fn((sessionId: string | undefined, args: unknown) => {
+      if (args === null || args === undefined) {
+        throw new Error("object required");
+      }
+      return { ...(args as object), sessionId };
+    });
+    const strictFactory = vi.fn((rawCtx: unknown) => {
+      const ctx = rawCtx as { sessionId?: string };
+      return {
+        ...makeTool("prepared_tool"),
+        prepareArguments: (args: unknown) => prepare(ctx.sessionId, args),
+      };
+    });
+    const ordinaryFactory = vi.fn(() => makeTool("ordinary_sibling"));
+    setRegistry([
+      {
+        pluginId: "preparation-test",
+        optional: false,
+        source: "/tmp/preparation.js",
+        names: ["ordinary_sibling"],
+        factory: ordinaryFactory,
+      },
+      {
+        pluginId: "preparation-test",
+        optional: false,
+        source: "/tmp/preparation.js",
+        names: ["prepared_tool"],
+        factory: strictFactory,
+      },
+    ]);
+    installToolManifestSnapshot({
+      config: createContext().config,
+      plugin: {
+        id: "preparation-test",
+        origin: "bundled",
+        enabledByDefault: true,
+        channels: [],
+        providers: [],
+        contracts: { tools: ["ordinary_sibling", "prepared_tool"] },
+      },
+    });
+    const first = resolvePluginTools(
+      createResolveToolsParams({ context: { ...createContext(), sessionId: "first" } }),
+    );
+    const second = resolvePluginTools(
+      createResolveToolsParams({ context: { ...createContext(), sessionId: "second" } }),
+    );
+    expectResolvedToolNames(first, ["ordinary_sibling", "prepared_tool"]);
+    expectResolvedToolNames(second, ["ordinary_sibling", "prepared_tool"]);
+    expect(prepare).not.toHaveBeenCalled();
+    const tool = normalizeToolParameters(second[1]);
+    expect(() => tool.prepareArguments?.(null)).toThrow("object required");
+    expect(tool.prepareArguments?.({})).toEqual({ sessionId: "second" });
+    expect(prepare).toHaveBeenCalledTimes(2);
+    expect(strictFactory).toHaveBeenCalledTimes(2);
+    expect(ordinaryFactory).toHaveBeenCalledTimes(2);
   });
 
   it("caches plugin tool descriptors and uses the runtime only on execution", async () => {

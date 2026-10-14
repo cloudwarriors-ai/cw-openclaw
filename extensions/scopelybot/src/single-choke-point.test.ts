@@ -76,6 +76,12 @@ const ALLOW: Record<string, Record<string, { n: number; arg?: RegExp; why: strin
       why: "the opt-in voice judge's LLM call (the model, not the app)",
     },
   },
+  "src/capability-registry.ts": {
+    "module:@sinclair/typebox/value": {
+      n: 1,
+      why: "pure original-schema Value.Check before host selector coercion; no I/O or code generation",
+    },
+  },
   "src/scopely-api.ts": { "call:fetch": { n: 1, arg: /^url\.href$/, why: "the guard itself" } },
   "src/comfort.ts": {
     "call:fetch": {
@@ -491,6 +497,28 @@ describe("single choke point: AST scan of index.ts's import closure (AC-7.12)", 
       expect.objectContaining({ file: "src/gh-tools.ts", rule: "exec" }),
     );
     expect(unallowed(findings)).toEqual([]);
+  });
+
+  it("pins the pure schema validator import to one registry site", () => {
+    const duplicate = `import { Value as ExtraValue } from "@sinclair/typebox/value";`;
+    expect(scanWith({ "src/capability-registry.ts": append(duplicate) })).toContainEqual(
+      expect.objectContaining({
+        file: "src/capability-registry.ts",
+        rule: "module:@sinclair/typebox/value",
+      }),
+    );
+    expect(scanWith({ "src/scopely-tools.ts": append(duplicate) })).toContainEqual(
+      expect.objectContaining({
+        file: "src/scopely-tools.ts",
+        rule: "module:@sinclair/typebox/value",
+      }),
+    );
+    expect(
+      scanWith({
+        "src/capability-registry.ts": (source) =>
+          source.replace('from "@sinclair/typebox/value"', 'from "@sinclair/typebox/compiler"'),
+      }),
+    ).toContainEqual(expect.objectContaining({ rule: "module:@sinclair/typebox/compiler" }));
   });
 
   // The red-team's evasion classes; each must fail the scan when injected

@@ -3,6 +3,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
 import { stageWrite } from "./gated.js";
+import { opsRead } from "./ops-client.js";
 import { opsStageWrite } from "./ops-write-client.js";
 import { scopelyFetch, jsonResult, errorResult } from "./scopely-api.js";
 
@@ -74,27 +75,37 @@ export function registerUserMaintenanceTools(api: OpenClawPluginApi, logger: Aud
     ),
   );
 
-  // 3) Get a single user dossier (read-only)
+  // 3) Inspect an exact native account and its actual memberships (read-only).
   api.registerTool(() =>
     wrapToolWithAudit(
       {
         name: "scopely_get_user",
         description:
-          "Get a single Scopely VIP user's full dossier (profile + recent sessions + session count). " +
-          "Read-only — runs immediately, no confirm needed. Use this before any user mutation to verify " +
-          "you have the right person. Look up the user id first with scopely_list_users.",
-        parameters: Type.Object({
-          user_id: Type.Number({ description: "Numeric user id" }),
-        }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const userId = params.user_id as number;
-            const res = await scopelyFetch(`/api/auth/users/${userId}/detail/`);
-            return jsonResult({ ok: res.ok, status: res.status, data: res.data });
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+          "Inspect one exact native VIP/ZW user_id, including an inactive target, plus actual organization " +
+          "memberships. Active platform admin required; global support scope. Find candidate IDs with " +
+          "scopely_list_users first. The user header stays on every page; items are membership rows, " +
+          "paged by limit/offset and next_offset. Native roles and organization status are facts, not " +
+          "write eligibility. No legacy role, session count/history or lockout dossier is supplied; " +
+          "unsupported_fields names these gaps. No account changes occur.",
+        parameters: Type.Object(
+          {
+            user_id: Type.Integer({
+              minimum: 1,
+              maximum: 2147483647,
+              description: "Exact native VIP/ZW user ID",
+            }),
+            limit: Type.Optional(
+              Type.Integer({
+                minimum: 1,
+                maximum: 50,
+                description: "Membership rows; default 25, may be byte-limited",
+              }),
+            ),
+            offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 2147483647 })),
+          },
+          { additionalProperties: true },
+        ),
+        execute: opsRead,
       },
       logger,
     ),

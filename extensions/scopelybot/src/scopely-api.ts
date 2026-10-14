@@ -106,6 +106,8 @@ export const OPS_READ_CAPABILITIES = [
   "pricing.defaults.list",
   "sessions.list",
   "sessions.get",
+  "identity.users.list",
+  "identity.users.get",
 ] as const;
 export const OPS_LOCAL_WRITE_CAPABILITIES = [
   "catalog.scoping_cards.create",
