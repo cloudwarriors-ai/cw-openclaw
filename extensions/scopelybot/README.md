@@ -1,4 +1,4 @@
-# ScopelyBot local reset workflow
+# ScopelyBot local account workflows
 
 `scopely_reset_user_password` now prepares `identity.users.request_reset` through the native VIP/ZW operator API. Supply native `user_id` and a configured `surface_key`; optional email must match the current account. It is available only with a local read-write backend and mapped, authorized human sender. Production and dev profiles remain refused.
 
@@ -6,7 +6,7 @@ Discover the native user first. The exact confirmation preview shows its native 
 
 The backend's explicit `dispatch_local_reset` command accepts the native branded message into an ephemeral synthetic sink. It never opens SMTP or exposes the link in tool/command output. A local test can redeem the in-memory link through the native authentication service, which changes the password and clears eligible login lockouts. Prior reset links are superseded using native lifetime rules.
 
-An uncertain dispatch is held after one durable attempt and cannot automatically retry. A changed recipient, brand, account, service identity or credential refuses delivery. This is local workflow validation, not proof of production email delivery; invitations and GitHub issue filing remain separate workflows.
+An uncertain dispatch is held after one durable attempt and cannot automatically retry. A changed recipient, brand, account, service identity or credential refuses delivery. This is local workflow validation, not proof of production email delivery; GitHub issue filing remains a separate workflow.
 
 ### Local server approver roster
 
@@ -36,3 +36,28 @@ tokens cannot administer the Zoom-scoped roster. A future connected rollout need
 reviewed provisioning and human UAT; these local tests do not prove live Zoom or
 Claude delivery. Existing outcome-unknown responses still require reconciliation
 and never trigger an automatic retry.
+
+### Local standard invitation
+
+`scopely_create_invite` prepares `identity.invites.create`. Supply the native
+`organization`, actual `inviter_user_id`, `surface_key`, first and last names,
+synthetic email, and the explicit native role `standard`. Old `user`/`org_admin`
+roles, existing accounts/invitations, arbitrary organization provisioning and
+resend are not translated. The backend verifies all supplied identity and target
+fields; the model cannot choose an inviter on another person's behalf.
+
+The exact human preview shows native inviter/tenant IDs, names, role, brand and
+seven-day lifetime, with an explicit hidden-recipient marker. The full email is
+bound internally. Existing server-roster authorization and Zoom confirmation
+queue one native invitation; the explicit backend `dispatch_local_invite`
+command accepts one invitee message into memory only. No SMTP, administrator
+copy, inbox delivery or automatic retry occurs. Uncertain outcomes require
+reconciliation of the existing pending action.
+
+Native redemption creates only the pinned standard tenant membership. Local
+account maintenance then requires an explicitly allowlisted target ID and
+operator platform authority; it does not grant platform membership to the
+invitee. This plugin mapping is tested with mocked Zoom/HTTP boundaries and real
+local audit logging; native issuance/redeem is tested separately on PostgreSQL.
+Production and dev profiles refuse the invitation tool. No live channel or
+production invitation delivery is claimed.

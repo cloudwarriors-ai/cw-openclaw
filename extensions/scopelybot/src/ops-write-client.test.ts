@@ -257,3 +257,32 @@ it.each([
   expect(await confirm(confirmation)).toContain("No pending action");
   expect(request).toHaveBeenCalledTimes(2);
 });
+
+it.each(["succeeded", "failed", "cancelled", "expired", "claimed"])(
+  "handles retained %s responses with the preview key omitted",
+  async (value) => {
+    await stage();
+    const retained = {
+      state: value,
+      reconcile_required: value === "claimed",
+      result: { changed: { label: "After" } },
+    };
+    expect(Object.hasOwn(retained, "preview")).toBe(false);
+    request.mockImplementationOnce(
+      async () =>
+        new Response(JSON.stringify({ ok: true, data: retained }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const result = await confirm();
+    expect(result?.includes("✅ Done")).toBe(value === "succeeded");
+    // The bot may render its already staged summary; this response supplies none.
+    if (value === "claimed") {
+      expect(result).toContain("reconcile");
+    }
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(await confirm()).toContain("No pending action");
+    expect(request).toHaveBeenCalledTimes(2);
+  },
+);

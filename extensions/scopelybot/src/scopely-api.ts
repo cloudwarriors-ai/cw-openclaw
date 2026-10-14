@@ -124,6 +124,7 @@ export const OPS_LOCAL_WRITE_CAPABILITIES = [
   "identity.users.unlock",
   "identity.users.set_active",
   "identity.users.request_reset",
+  "identity.invites.create",
   "sessions.archive",
   "catalog.project_types.update",
   "catalog.deployment_types.update",

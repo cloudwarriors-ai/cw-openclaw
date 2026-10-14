@@ -149,26 +149,41 @@ describe("user-maintenance-tools", () => {
     expect(sendScopelyTextMock).not.toHaveBeenCalled();
   });
 
-  it("scopely_create_invite stages email+role and posts to the invite endpoint on confirm", async () => {
+  it("native invitation declares explicit fields and refuses missing sender context", async () => {
     const tools = buildTools();
-    await tools.scopely_create_invite.execute("t", {
-      email: "new@example.com",
-      role: "org_admin",
+    expect(tools.scopely_create_invite).toMatchObject({
+      parameters: {
+        required: [
+          "email",
+          "first_name",
+          "last_name",
+          "role",
+          "organization",
+          "inviter_user_id",
+          "surface_key",
+        ],
+        additionalProperties: true,
+        properties: {
+          role: { const: "standard" },
+          organization: { type: "integer", minimum: 1, maximum: 2147483647 },
+          inviter_user_id: { type: "integer", minimum: 1, maximum: 2147483647 },
+        },
+      },
     });
-    const code = codeFromDelivery();
-
-    fetchMock.mockResolvedValue({ ok: true, status: 201, data: {} });
-    await tryExecuteConfirm({
-      text: `CONFIRM ${code}`,
-      actor: "tester",
-      conversationId: CHANNEL,
-      logger: noopLogger as never,
-    });
-
-    const [path, opts] = fetchMock.mock.calls[0];
-    expect(path).toBe("/api/auth/invites/create/");
-    expect(opts.method).toBe("POST");
-    expect(JSON.parse(opts.body)).toEqual({ email: "new@example.com", role: "org_admin" });
+    const result = parse(
+      await tools.scopely_create_invite.execute("t", {
+        email: "ops-test-new@example.invalid",
+        first_name: "Synthetic",
+        last_name: "Invitee",
+        role: "standard",
+        organization: 8,
+        inviter_user_id: 47,
+        surface_key: "vip",
+      }),
+    );
+    expect(result.ok).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(sendScopelyTextMock).not.toHaveBeenCalled();
   });
 
   it("access-request approve/reject stage and hit the right endpoints on confirm", async () => {

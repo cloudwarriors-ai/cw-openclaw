@@ -20,6 +20,7 @@ type LocalWrite =
   | "identity.users.unlock"
   | "identity.users.set_active"
   | "identity.users.request_reset"
+  | "identity.invites.create"
   | "sessions.archive";
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);

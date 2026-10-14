@@ -225,45 +225,26 @@ export function registerUserMaintenanceTools(api: OpenClawPluginApi, logger: Aud
       {
         name: "scopely_create_invite",
         description:
-          "Provision a new Scopely VIP user into an organization and send a setup email (admin action). " +
-          "You ARE authorized — CALL this tool, do NOT defer to the admin UI. It is safe: it only STAGES " +
-          "the invite and returns a confirmation code; nothing is sent until the requester replies " +
-          "`CONFIRM <code>`. Check scopely_list_invites first to avoid duplicate invites.",
-        parameters: Type.Object({
-          email: Type.String({ description: "Invitee email address" }),
-          role: Type.Optional(
-            Type.String({ description: "Role for the new user: user or org_admin (default user)" }),
-          ),
-          organization: Type.Optional(
-            Type.Number({
-              description: "Organization id to provision into (platform staff for any org)",
-            }),
-          ),
-        }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const email = (params.email as string)?.trim();
-            if (!email) {
-              return jsonResult({ ok: false, error: "email is required" });
-            }
-            const role = (params.role as string) || "user";
-            const body: Record<string, unknown> = { email, role };
-            if (params.organization !== undefined) {
-              body.organization = params.organization;
-            }
-            const orgPart =
-              params.organization !== undefined ? ` into org ${params.organization}` : "";
-            const summary = `invite ${email} as ${role}${orgPart}`;
-            return await stageWrite(summary, () =>
-              scopelyFetch(`/api/auth/invites/create/`, {
-                method: "POST",
-                body: JSON.stringify(body),
-              }),
-            );
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+          "Prepare one native VIP/ZW standard-user invitation for human confirmation. " +
+          "Local allowlisted synthetic recipients only; supply names, native organization, actual " +
+          "inviter_user_id, and configured surface_key. The backend checks the inviter and target. " +
+          "Confirmation creates a seven-day native invitation and queues one local fake invitee message; " +
+          "no inbox email or administrator copy is sent. Existing accounts/invitations and legacy " +
+          "user/org_admin roles are refused; this does not add memberships or resend invitations.",
+        parameters: Type.Object(
+          {
+            email: Type.String({ minLength: 1, maxLength: 254 }),
+            first_name: Type.String({ minLength: 1, maxLength: 150 }),
+            last_name: Type.String({ minLength: 1, maxLength: 150 }),
+            role: Type.Literal("standard"),
+            organization: Type.Integer({ minimum: 1, maximum: 2147483647 }),
+            inviter_user_id: Type.Integer({ minimum: 1, maximum: 2147483647 }),
+            surface_key: Type.String({ minLength: 1, maxLength: 64 }),
+          },
+          { additionalProperties: true },
+        ),
+        execute: (_id: string, params: Record<string, unknown>) =>
+          opsStageWrite("identity.invites.create", params),
       },
       logger,
     ),
