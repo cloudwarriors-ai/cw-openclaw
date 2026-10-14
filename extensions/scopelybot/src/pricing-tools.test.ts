@@ -17,8 +17,11 @@ vi.mock("./scopely-api.js", () => ({
   buildQuery: (params: Record<string, unknown>, keys: string[]) => {
     const qs = new URLSearchParams();
     for (const k of keys) {
-      if (params[k] !== undefined) {
-        qs.set(k, String(params[k]));
+      const value = params[k];
+      if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+        qs.set(k, String(value));
+      } else if (value !== undefined) {
+        throw new Error("Mock query arguments must be primitive scalars");
       }
     }
     const s = qs.toString();
@@ -291,7 +294,7 @@ describe("pricing-tools", () => {
         unit_price: "12.00",
         project_type_id: 7,
         id: 42,
-        is_active: false,
+        is_active: true,
       };
       const tool = buildTools()[`scopely_${action}_pricing_${kind}`];
       const checked = validateToolArguments(tool as never, {
@@ -304,6 +307,28 @@ describe("pricing-tools", () => {
       await tool.execute("call", checked as Record<string, unknown>);
       expect(nativeStage).toHaveBeenCalledExactlyOnceWith(capability, params);
       expect(nativeStage.mock.calls[0][1]).toEqual(params);
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["create_pricing_item", "update_pricing_item", "update_pricing_default"])(
+    "%s refuses unsupported retirement in the model schema without staging",
+    (action) => {
+      const tool = buildTools()[`scopely_${action}`];
+      expect(() =>
+        validateToolArguments(tool as never, {
+          type: "toolCall",
+          id: "call",
+          name: tool.name,
+          arguments: {
+            vendor_key: "ops-test-canary",
+            pricing_key: "seat",
+            unit_price: "12.00",
+            is_active: false,
+          },
+        }),
+      ).toThrow(/is_active/);
+      expect(nativeStage).not.toHaveBeenCalled();
       expect(fetchMock).not.toHaveBeenCalled();
     },
   );

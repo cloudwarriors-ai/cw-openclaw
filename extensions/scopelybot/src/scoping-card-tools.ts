@@ -14,33 +14,52 @@ import { opsStageWrite } from "./ops-write-client.js";
 // `visibility` dict. Tool descriptions warn the model to send the FULL desired
 // set, never a delta.
 
-// One wizard field inside a card. options[] only applies to select fields.
-const cardFieldSchema = Type.Object({
-  key: Type.String({ description: "Field key (machine id)" }),
-  label: Type.String({ description: "Field label shown to the user" }),
-  field_type: Type.String({ description: "One of: number, boolean, select, textarea" }),
-  help_text: Type.Optional(Type.String()),
-  pricing_key: Type.Optional(Type.String({ description: "Pricing item key this field drives" })),
-  depends_on: Type.Optional(Type.String({ description: "Key of a field this one depends on" })),
-  min_value: Type.Optional(Type.Number()),
-  max_value: Type.Optional(Type.Number()),
-  is_required: Type.Optional(Type.Boolean()),
-  is_offered: Type.Optional(Type.Boolean()),
-  validation_pattern: Type.Optional(Type.String()),
-  default_value: Type.Optional(Type.Number()),
-  sort_order: Type.Optional(Type.Number()),
-  options: Type.Optional(
-    Type.Array(
-      Type.Object({
-        value: Type.String(),
-        label: Type.String(),
-        pricing_key: Type.Optional(Type.String()),
-        sort_order: Type.Optional(Type.Number()),
-      }),
-      { description: "Choices for select fields" },
+// Key selectors come directly from native reads; alternate numeric IDs invite
+// fabricated zero placeholders. Unknown fields remain for backend refusal.
+const keySchema = Type.String({ pattern: "^[-a-zA-Z0-9_]+$", minLength: 1, maxLength: 50 });
+const orderSchema = Type.Integer({ minimum: 0, maximum: 2147483647 });
+const cardFieldSchema = Type.Object(
+  {
+    key: Type.String({ pattern: "^[-a-zA-Z0-9_]+$", minLength: 1, maxLength: 64 }),
+    label: Type.String({ minLength: 1, maxLength: 200 }),
+    field_type: Type.String({
+      enum: ["number", "boolean", "select", "textarea", "text", "email", "multiselect"],
+    }),
+    help_text: Type.Optional(Type.String({ maxLength: 500 })),
+    pricing_key: Type.Optional(Type.String({ maxLength: 100 })),
+    depends_on: Type.Optional(
+      Type.String({ pattern: "^[-a-zA-Z0-9_]+$", minLength: 1, maxLength: 64 }),
     ),
-  ),
-});
+    // Keep the existing numeric model subset; the API also supports decimal strings.
+    min_value: Type.Optional(Type.Number()),
+    max_value: Type.Optional(Type.Number()),
+    is_required: Type.Optional(Type.Boolean()),
+    is_offered: Type.Optional(Type.Boolean()),
+    validation_pattern: Type.Optional(Type.String({ maxLength: 255 })),
+    default_value: Type.Optional(Type.Number()),
+    sort_order: Type.Optional(orderSchema),
+    options: Type.Optional(
+      Type.Array(
+        Type.Object(
+          {
+            value: Type.String({ maxLength: 100 }),
+            label: Type.String({ minLength: 1, maxLength: 200 }),
+            pricing_key: Type.Optional(Type.String({ maxLength: 100 })),
+            sort_order: Type.Optional(orderSchema),
+          },
+          { additionalProperties: true },
+        ),
+        { maxItems: 25 },
+      ),
+    ),
+  },
+  { additionalProperties: true },
+);
+const visibilitySchema = Type.Record(
+  Type.String(),
+  Type.String({ enum: ["yes", "gated", "skip"] }),
+  { maxProperties: 20 },
+);
 
 export function registerScopingCardTools(api: OpenClawPluginApi, logger: AuditLogger) {
   api.registerTool(() =>
@@ -91,34 +110,30 @@ export function registerScopingCardTools(api: OpenClawPluginApi, logger: AuditLo
           "Prepare a native scoping card; human CONFIRM is required. " +
           "Supports unpriced fields and deployment visibility. New pricing bindings and " +
           "visibility_condition are not supported. Exact oversized previews refuse.",
-        parameters: Type.Object({
-          vendor_key: Type.String({ description: "Vendor key" }),
-          project_type_id: Type.Optional(
-            Type.Number({ description: "Project-type id; provide this or project_type, not both" }),
-          ),
-          project_type: Type.Optional(
-            Type.String({ description: "Stable project-type key from catalog reads" }),
-          ),
-          key: Type.String({ description: "Card key (machine id)" }),
-          title: Type.String({ description: "Card title" }),
-          description: Type.Optional(Type.String()),
-          icon: Type.Optional(Type.String({ description: "Lucide icon key" })),
-          gate_question: Type.Optional(Type.String({ description: "Gate question text" })),
-          sort_order: Type.Optional(Type.Number()),
-          fields: Type.Optional(
-            Type.Array(cardFieldSchema, { description: "Full field set for the card" }),
-          ),
-          visibility: Type.Optional(
-            Type.Record(Type.String(), Type.String(), {
-              description: 'Per-deployment visibility, e.g. {"autopilot":"yes","bespoke":"skip"}',
+        parameters: Type.Object(
+          {
+            vendor_key: keySchema,
+            project_type: Type.String({
+              ...keySchema,
+              description:
+                "Exact project-type key from scopely_list_project_types; never invent an ID",
             }),
-          ),
-          visibility_condition: Type.Optional(
-            Type.Record(Type.String(), Type.Unknown(), {
-              description: "{} or {field_key, operator, value}",
-            }),
-          ),
-        }),
+            key: keySchema,
+            title: Type.String({ minLength: 1, maxLength: 200 }),
+            description: Type.Optional(Type.String({ maxLength: 500 })),
+            icon: Type.Optional(Type.String({ maxLength: 100 })),
+            gate_question: Type.Optional(Type.String({ maxLength: 255 })),
+            sort_order: Type.Optional(orderSchema),
+            fields: Type.Optional(
+              Type.Array(cardFieldSchema, {
+                maxItems: 50,
+                description: "Full replacement field set; omit to preserve existing fields",
+              }),
+            ),
+            visibility: Type.Optional(visibilitySchema),
+          },
+          { additionalProperties: true },
+        ),
         execute: (_id: string, params: Record<string, unknown>) =>
           opsStageWrite("catalog.scoping_cards.create", params),
       },
@@ -131,43 +146,38 @@ export function registerScopingCardTools(api: OpenClawPluginApi, logger: AuditLo
       {
         name: "scopely_update_scoping_card",
         description:
-          "Prepare a native scoping-card update; human CONFIRM is required. " +
+          "Prepare a native scoping-card update; human CONFIRM is required. Send only requested changes. " +
           "Keys are immutable; richer metadata replacement and pricing remapping refuse. If you supply " +
           "`fields` or `visibility`, the backend REPLACES the card's ENTIRE field set / visibility map — " +
           "send the complete authoring set. The ordinary read omits retired fields and may cap options; " +
           "do not treat it as a full replacement source. Omit fields/visibility to preserve them.",
-        parameters: Type.Object({
-          vendor_key: Type.String({ description: "Vendor key" }),
-          project_type_id: Type.Optional(
-            Type.Number({ description: "Project-type id; provide this or project_type, not both" }),
-          ),
-          project_type: Type.Optional(
-            Type.String({ description: "Stable project-type key from catalog reads" }),
-          ),
-          card_id: Type.Optional(
-            Type.Number({ description: "Card id; provide this or card_key, not both" }),
-          ),
-          card_key: Type.Optional(
-            Type.String({ description: "Stable card key from catalog reads" }),
-          ),
-          key: Type.Optional(Type.String()),
-          title: Type.Optional(Type.String()),
-          description: Type.Optional(Type.String()),
-          icon: Type.Optional(Type.String()),
-          gate_question: Type.Optional(Type.String()),
-          sort_order: Type.Optional(Type.Number()),
-          fields: Type.Optional(
-            Type.Array(cardFieldSchema, {
-              description: "FULL replacement field set (omit to keep current fields)",
+        parameters: Type.Object(
+          {
+            vendor_key: keySchema,
+            project_type: Type.String({
+              ...keySchema,
+              description:
+                "Exact project-type key from scopely_list_project_types; never invent an ID",
             }),
-          ),
-          visibility: Type.Optional(
-            Type.Record(Type.String(), Type.String(), {
-              description: "FULL replacement visibility map (omit to keep current)",
+            card_key: Type.String({
+              ...keySchema,
+              description: "Exact card key from scopely_list_scoping_cards",
             }),
-          ),
-          visibility_condition: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-        }),
+            title: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+            description: Type.Optional(Type.String({ maxLength: 500 })),
+            icon: Type.Optional(Type.String({ maxLength: 100 })),
+            gate_question: Type.Optional(Type.String({ maxLength: 255 })),
+            sort_order: Type.Optional(orderSchema),
+            fields: Type.Optional(
+              Type.Array(cardFieldSchema, {
+                maxItems: 50,
+                description: "Full replacement field set; omit to preserve existing fields",
+              }),
+            ),
+            visibility: Type.Optional(visibilitySchema),
+          },
+          { additionalProperties: true },
+        ),
         execute: (_id: string, params: Record<string, unknown>) =>
           opsStageWrite("catalog.scoping_cards.update", params),
       },
@@ -182,21 +192,21 @@ export function registerScopingCardTools(api: OpenClawPluginApi, logger: AuditLo
         description:
           "Prepare deletion of a native scoping card and its fields. " +
           "Only operator-admitted targets are available; human CONFIRM is required. Remaining dependencies must still validate.",
-        parameters: Type.Object({
-          vendor_key: Type.String({ description: "Vendor key" }),
-          project_type_id: Type.Optional(
-            Type.Number({ description: "Project-type id; provide this or project_type, not both" }),
-          ),
-          project_type: Type.Optional(
-            Type.String({ description: "Stable project-type key from catalog reads" }),
-          ),
-          card_id: Type.Optional(
-            Type.Number({ description: "Card id; provide this or card_key, not both" }),
-          ),
-          card_key: Type.Optional(
-            Type.String({ description: "Stable card key from catalog reads" }),
-          ),
-        }),
+        parameters: Type.Object(
+          {
+            vendor_key: keySchema,
+            project_type: Type.String({
+              ...keySchema,
+              description:
+                "Exact project-type key from scopely_list_project_types; never invent an ID",
+            }),
+            card_key: Type.String({
+              ...keySchema,
+              description: "Exact card key from scopely_list_scoping_cards",
+            }),
+          },
+          { additionalProperties: true },
+        ),
         execute: (_id: string, params: Record<string, unknown>) =>
           opsStageWrite("catalog.scoping_cards.delete", params),
       },

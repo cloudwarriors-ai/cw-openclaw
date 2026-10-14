@@ -587,13 +587,13 @@ function gateTool(tool: AgentTool, origin?: ToolOrigin): AgentTool {
         ? tool.execute(...args)
         : (capabilityRefusal(tool.name) as Awaited<ReturnType<AgentTool["execute"]>>),
     );
-  if (opsBindingFor(tool.name)?.strictArgs) {
+  if (opsBindingFor(tool.name)?.strictArgs || Object.hasOwn(PRODUCTION_CORE_TOOLS, tool.name)) {
     return {
       ...tool,
       execute,
       prepareArguments(args) {
         // Run before the host's optional-object null -> {} preparation. A missing
-        // call must never silently broaden into an unfiltered account query.
+        // call must never broaden a query or coerce a native write selector.
         if (args === null || typeof args !== "object" || Array.isArray(args)) {
           throw new Error(
             `${tool.name} arguments must be an object; use {} explicitly for an unfiltered list.`,

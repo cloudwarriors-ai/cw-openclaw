@@ -242,20 +242,28 @@ export function registerVendorConfigTools(api: OpenClawPluginApi, logger: AuditL
         name: "scopely_update_project_type",
         description:
           "Prepare a native project-type update. Supported fields: label, enabled, sort_order, product_info_url. " +
-          "Keys, scope_category and catalog_seeded are unsupported. An authorized human must CONFIRM the exact preview.",
-        parameters: Type.Object({
-          vendor_key: Type.String({ description: "Vendor key" }),
-          project_type_id: Type.Number({
-            description: "Project-type id (from scopely_list_project_types)",
-          }),
-          key: Type.Optional(Type.String()),
-          label: Type.Optional(Type.String()),
-          enabled: Type.Optional(Type.Boolean()),
-          sort_order: Type.Optional(Type.Number()),
-          product_info_url: Type.Optional(Type.String()),
-          scope_category: Type.Optional(Type.String({ description: "ucaas, ccaas, or both" })),
-          catalog_seeded: Type.Optional(Type.Boolean()),
-        }),
+          "Key mutations, scope_category and catalog_seeded are unsupported. Send only requested changes. An authorized human must CONFIRM the exact preview.",
+        parameters: Type.Object(
+          {
+            vendor_key: Type.String({
+              pattern: "^[-a-zA-Z0-9_]+$",
+              minLength: 1,
+              maxLength: 50,
+              description: "Exact native vendor_key key from catalog reads; never invent an ID",
+            }),
+            project_type: Type.String({
+              pattern: "^[-a-zA-Z0-9_]+$",
+              minLength: 1,
+              maxLength: 50,
+              description: "Exact native project_type key from catalog reads; never invent an ID",
+            }),
+            label: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
+            enabled: Type.Optional(Type.Boolean()),
+            sort_order: Type.Optional(Type.Integer({ minimum: 0, maximum: 2147483647 })),
+            product_info_url: Type.Optional(Type.String({ maxLength: 255 })),
+          },
+          { additionalProperties: true },
+        ),
         async execute(_id: string, params: Record<string, unknown>) {
           return opsStageWrite("catalog.project_types.update", params);
         },

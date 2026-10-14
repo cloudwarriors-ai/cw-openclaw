@@ -308,3 +308,18 @@ Only native pricing item create/update, scoping card create/update/delete, proje
 Native previews use the exact backend text, one action per prompt and acknowledged deterministic Zoom delivery. Native confirmation codes become usable only after that acknowledgement and the admission-scope recheck. An unusually early human CONFIRM sees no pending action; after successful delivery the same displayed code becomes usable, while failed delivery never publishes it. The bot does not relay codes through the model, combine native claims or retry uncertain delivery/execution. A changed admission scope during preparation or delivery prevents confirmation; channel/origin/mode drift before execution also refuses. Turning the profile read-only/off stops subsequent writes, while pending records and audit history remain for expiry or reconciliation. Existing claimed/uncertain results must be reconciled rather than blindly retried.
 
 Deploy matching reviewed host/plugin/backend builds with backend production admission off; verify the private route, existing native identities/token scopes and roster before enabling at the authorized changeover. The endpoint, credentials and backend grants are operator configuration, not tool arguments. Revert the profile and backend family/production flags on failure, preserve pending/audit evidence, and do not automatically undo an unknown outcome.
+
+### Native write arguments
+
+The seven admitted write tools use native read-returned keys. Card tools require
+`vendor_key` and `project_type`; card update/delete also require `card_key`.
+Project-type update uses `project_type`; deployment-type update additionally uses
+`deployment_type`. Numeric selector alternatives are not advertised to the model.
+Send only requested changes. Unsupported legacy fields are not silently removed.
+
+Raw preparation rejects malformed calls and known invalid types before host
+coercion. Unknown fields, including nested replacement metadata, remain intact for
+the backend's strict refusal. Pricing amounts are exact decimal strings; card
+numeric fields retain the model's numeric subset (the API additionally accepts
+decimal strings). Card field/visibility replacement still requires the complete
+supported authoring set; ordinary capped reads are not a replacement source.

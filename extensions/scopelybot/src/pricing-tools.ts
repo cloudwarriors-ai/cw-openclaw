@@ -271,29 +271,51 @@ export function registerPricingTools(api: OpenClawPluginApi, logger: AuditLogger
           name: `scopely_${action}_pricing_${kind}`,
           description:
             `${action === "create" ? "Create" : "Update"} a VIP/ZW shared vendor rate by pricing_key. ` +
-            "Stages an exact preview for human CONFIRM; applies across project types using this key. " +
+            "Send only requested changes. Stages an exact preview for human CONFIRM; applies across project types using this key. " +
             "Organization overrides and historical quotes remain intact. Creates a new rate-card version. " +
             "Operator-admitted native vendors only; local mode remains synthetic. Legacy project_type_id/id, retirement and tier money edits refuse.",
           parameters: Type.Object(
             {
-              vendor_key: Type.String({ description: "Operator-admitted native vendor key" }),
+              vendor_key: Type.String({
+                pattern: "^[-a-zA-Z0-9_]{1,50}$",
+                description: "Operator-admitted native vendor key",
+              }),
               pricing_key: Type.String({
                 description: "Stable vendor-wide pricing key; immutable on update",
+                minLength: 1,
+                maxLength: 100,
+                pattern: "^\\S(?:.*\\S)?$",
               }),
               unit_price:
                 action === "create"
-                  ? Type.String({ description: "Exact decimal string, max two fractional places" })
-                  : Type.Optional(Type.String()),
-              unit_price_by_deployment: Type.Optional(Type.Record(Type.String(), Type.String())),
-              display_name: Type.Optional(Type.String()),
-              description: Type.Optional(Type.String()),
-              category: Type.Optional(Type.String()),
+                  ? Type.String({
+                      pattern: "^-?[0-9]{1,10}(\\.[0-9]{1,2})?$",
+                      maxLength: 14,
+                      description: "Exact decimal string, max two fractional places",
+                    })
+                  : Type.Optional(
+                      Type.String({ pattern: "^-?[0-9]{1,10}(\\.[0-9]{1,2})?$", maxLength: 14 }),
+                    ),
+              unit_price_by_deployment: Type.Optional(
+                Type.Record(
+                  Type.String(),
+                  Type.String({ pattern: "^-?[0-9]{1,10}(\\.[0-9]{1,2})?$", maxLength: 14 }),
+                  { maxProperties: 50 },
+                ),
+              ),
+              display_name: Type.Optional(Type.String({ maxLength: 200 })),
+              description: Type.Optional(Type.String({ maxLength: 1500 })),
+              category: Type.Optional(Type.String({ maxLength: 100 })),
               sort_order: Type.Optional(Type.Integer({ minimum: 0, maximum: 2147483647 })),
-              deployment_types: Type.Optional(Type.Array(Type.String(), { uniqueItems: true })),
+              deployment_types: Type.Optional(
+                Type.Array(Type.String({ minLength: 1, maxLength: 50 }), {
+                  uniqueItems: true,
+                  maxItems: 50,
+                }),
+              ),
               is_active: Type.Optional(
-                Type.Boolean({
-                  description:
-                    "Backend accepts only true; retirement requests receive an audited refusal",
+                Type.Literal(true, {
+                  description: "Only true is supported; retirement requests are refused",
                 }),
               ),
             },

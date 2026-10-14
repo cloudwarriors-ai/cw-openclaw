@@ -101,21 +101,36 @@ export function registerDeploymentConfigTools(api: OpenClawPluginApi, logger: Au
         name: "scopely_update_deployment_type",
         description:
           "Prepare a native deployment-type update. Supported fields: label, description, long_description, icon, sort_order. " +
-          "Keys and is_active are unsupported. An authorized human must CONFIRM the exact preview.",
-        parameters: Type.Object({
-          vendor_key: Type.String({ description: "Vendor key" }),
-          project_type_id: Type.Number({ description: "Project-type id" }),
-          id: Type.Number({
-            description: "Deployment-type id (from scopely_list_deployment_types)",
-          }),
-          key: Type.Optional(Type.String()),
-          label: Type.Optional(Type.String()),
-          description: Type.Optional(Type.String()),
-          long_description: Type.Optional(Type.String()),
-          icon: Type.Optional(Type.String()),
-          sort_order: Type.Optional(Type.Number()),
-          is_active: Type.Optional(Type.Boolean()),
-        }),
+          "Key mutations and is_active are unsupported. Send only requested changes. An authorized human must CONFIRM the exact preview.",
+        parameters: Type.Object(
+          {
+            vendor_key: Type.String({
+              pattern: "^[-a-zA-Z0-9_]+$",
+              minLength: 1,
+              maxLength: 50,
+              description: "Exact native vendor_key key from catalog reads; never invent an ID",
+            }),
+            project_type: Type.String({
+              pattern: "^[-a-zA-Z0-9_]+$",
+              minLength: 1,
+              maxLength: 50,
+              description: "Exact native project_type key from catalog reads; never invent an ID",
+            }),
+            deployment_type: Type.String({
+              pattern: "^[-a-zA-Z0-9_]+$",
+              minLength: 1,
+              maxLength: 50,
+              description:
+                "Exact native deployment_type key from catalog reads; never invent an ID",
+            }),
+            label: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
+            description: Type.Optional(Type.String({ maxLength: 500 })),
+            long_description: Type.Optional(Type.String({ maxLength: 500 })),
+            icon: Type.Optional(Type.String({ maxLength: 100 })),
+            sort_order: Type.Optional(Type.Integer({ minimum: 0, maximum: 2147483647 })),
+          },
+          { additionalProperties: true },
+        ),
         async execute(_id: string, params: Record<string, unknown>) {
           return opsStageWrite("catalog.deployment_types.update", params);
         },
