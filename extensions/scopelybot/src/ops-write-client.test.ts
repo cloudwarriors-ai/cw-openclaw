@@ -204,6 +204,7 @@ it.each([
     "pricing.defaults.update",
     { vendor_key: "ops-test-canary", pricing_key: "seat", unit_price: "15.00" },
   ],
+  ["pricing.items.delete", { vendor_key: "ops-test-canary", pricing_key: "ops_test_discard" }],
   ["identity.users.unlock", { user_id: 7 }],
   ["identity.users.set_active", { user_id: 7, is_active: false }],
   ["sessions.archive", { session_id: 7, reason: "Synthetic duplicate" }],

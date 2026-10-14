@@ -365,6 +365,19 @@ describe("registry gating through the index.ts wrapper (AC-7.4)", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("native pricing removal is local only", () => {
+    writeProfile({
+      env: "local",
+      mode: "read-write",
+      baseUrl: "http://127.0.0.1:8100",
+      allowedHosts: ["127.0.0.1:8100"],
+      authMode: "service-token",
+    });
+    expect(capabilityFor("scopely_delete_pricing_item")?.status).toBe("local");
+    useServiceToken();
+    expect(capabilityFor("scopely_delete_pricing_item")?.status).toBe("not_available");
+  });
+
   // read-write lets the guard pass a write (dev only), but no write tool is
   // live/local in M1, so the registry still answers every one of them.
   it("on a dev read-write profile every write tool is still refused by the registry", async () => {

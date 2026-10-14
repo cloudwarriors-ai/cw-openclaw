@@ -221,8 +221,6 @@ export function registerPricingTools(api: OpenClawPluginApi, logger: AuditLogger
   );
 
   // ── Pricing items (per vendor project-type) ──────────────────────────────
-  const itemBase = (vendorKey: string, ptPk: number) =>
-    `/api/admin/vendors/${vendorKey}/project-types/${ptPk}/pricing-items/`;
 
   api.registerTool(() =>
     wrapToolWithAudit(
@@ -313,25 +311,20 @@ export function registerPricingTools(api: OpenClawPluginApi, logger: AuditLogger
       {
         name: "scopely_delete_pricing_item",
         description:
-          "Delete a Scopely VIP pricing item (admin action). You ARE authorized — CALL this tool. It only " +
-          "STAGES the delete; nothing happens until `CONFIRM <code>`. Locked/seeded items cannot be deleted.",
-        parameters: Type.Object({
-          vendor_key: Type.String({ description: "Vendor key" }),
-          project_type_id: Type.Number({ description: "Project-type id" }),
-          id: Type.Number({ description: "Pricing item id" }),
-        }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const vendorKey = params.vendor_key as string;
-            const ptPk = params.project_type_id as number;
-            const id = params.id as number;
-            return stageWrite(`DELETE pricing item id ${id} on ${vendorKey}/pt ${ptPk}`, () =>
-              scopelyFetch(`${itemBase(vendorKey, ptPk)}${id}/`, { method: "DELETE" }),
-            );
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+          "Prepare removal of an unused synthetic VIP/ZW shared vendor rate by pricing_key. " +
+          "Human CONFIRM activates a successor card omitting this key; historical prices remain intact. " +
+          "Only configured ops-test- vendors and ops_test_ keys. Existing orders, intake drafts, catalog references, " +
+          "tenant cards, imported history and rich rates refuse. No legacy project-specific deletion or fallback.",
+        parameters: Type.Object(
+          {
+            vendor_key: Type.String({ pattern: "^ops-test-[a-z0-9-]+$", maxLength: 50 }),
+            pricing_key: Type.String({ pattern: "^ops_test_[a-z0-9_]+$", maxLength: 100 }),
+          },
+          { additionalProperties: true },
+        ),
+        // Preserve old IDs/unknown fields for the native strict, audited refusal.
+        execute: (_id: string, params: Record<string, unknown>) =>
+          opsStageWrite("pricing.items.delete", params),
       },
       logger,
     ),

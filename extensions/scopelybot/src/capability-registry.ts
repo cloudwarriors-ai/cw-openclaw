@@ -440,6 +440,7 @@ export function capabilityFor(tool: string): Capability | undefined {
             "scopely_delete_scoping_card",
             "scopely_create_pricing_item",
             "scopely_update_pricing_item",
+            "scopely_delete_pricing_item",
             "scopely_update_pricing_default",
             "scopely_unlock_user",
             "scopely_set_user_active",

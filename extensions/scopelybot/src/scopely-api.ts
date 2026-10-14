@@ -115,6 +115,7 @@ export const OPS_LOCAL_WRITE_CAPABILITIES = [
   "catalog.scoping_cards.delete",
   "pricing.items.create",
   "pricing.items.update",
+  "pricing.items.delete",
   "pricing.defaults.update",
   "identity.users.unlock",
   "identity.users.set_active",

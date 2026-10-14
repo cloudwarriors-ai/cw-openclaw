@@ -81,7 +81,7 @@ const WRITE_TOOLS: Record<string, Record<string, unknown>> = {
     unit_price: "2.00",
   },
   scopely_delete_pricing_default: { id: 1 },
-  scopely_delete_pricing_item: { vendor_key: "zoom", project_type_id: 1, id: 2 },
+  scopely_delete_pricing_item: { vendor_key: "ops-test-canary", pricing_key: "ops_test_discard" },
   scopely_create_currency: { code: "EUR", symbol: "€", name: "Euro" },
   scopely_update_currency: { id: 1, exchange_rate: "0.9" },
   scopely_delete_currency: { id: 1 },
@@ -135,6 +135,13 @@ describe("pricing-tools", () => {
       expect(res.staged, `${name} must stage`).toBe(true);
     }
     expect(fetchMock, "no write tool may call scopelyFetch before CONFIRM").not.toHaveBeenCalled();
+  });
+
+  it("native deletion stages exact keys and never synthesizes a legacy route", async () => {
+    const args = { vendor_key: "ops-test-canary", pricing_key: "ops_test_discard", id: 2 };
+    await buildTools().scopely_delete_pricing_item.execute("x", args);
+    expect(nativeStage).toHaveBeenCalledWith("pricing.items.delete", args);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   // Live incident 2026-07-21: asked to "Make it core", the model wrote the

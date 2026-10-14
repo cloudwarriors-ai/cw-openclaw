@@ -189,7 +189,7 @@ CONFIRM displays the exact shared vendor change and source card version. A succe
 creates a successor rate card, preserving history and organization overrides.
 Deployment maps follow existing engine rules, not a promise of uniform effects.
 Unsupported retirement, tier money edits, obsolete fields and oversized previews
-refuse. Pricing deletion remains disabled. Production stays read-only; local HTTP
+refuse. Production stays read-only; local HTTP
 with mocked Zoom delivery is not connected channel or human Claude UAT.
 
 ### Confirmation replay protection
@@ -260,3 +260,26 @@ Production business data remains read only.
 The three strict discovery bindings also reject missing, null, array, or primitive whole-call arguments before host optional-object normalization. Use an explicit `{}` for an unfiltered user list. Object fields remain intact for validation; host schema refusal occurs before backend invocation and therefore does not create a backend audit row. Plugins returning preparation callbacks bypass descriptor-only caching so later resolutions retain that boundary and current requester context.
 
 Strict discovery preparation validates raw values against the original native tool schema before host coercion: for example, boolean user IDs, numeric strings, and null filters refuse instead of selecting another account or scope. These local schema refusals do not invoke the backend or produce its audit row. Unknown fields remain unchanged and reach the backend's strict schema refusal when the declared fields are valid.
+
+### Synthetic unused pricing removal (local only)
+
+`scopely_delete_pricing_item` stages `pricing.items.delete` with exact native
+`vendor_key` and `pricing_key`. Use `scopely_list_pricing_items` with
+`scope_mode: "all"` to discover the key first. Only configured `ops-test-*`
+vendors and `ops_test_*` keys qualify. Copy the human CONFIRM line only after
+reviewing the full removed record and successor version. Declining confirmation
+leaves the card unchanged; the backend also exposes `ops.cancel` in Claude.
+
+This activates a shared platform successor omitting one unused plain key. It
+preserves historical cards/entries and snapshots; it does not reproduce legacy
+project override deletion or fallback. Any catalog reference (including retired
+or tenant fields), dynamic options, vendor envelope/intake draft, tenant rate
+card, imported history or rich target refuses. Old IDs are never silently mapped.
+
+The isolated backend uses owner table locks and a domain lock-timeout cap of
+250ms, honoring shorter limits. Busy operations refuse without retry; existing
+kernel authorization waits are outside this cap. These coarse locks are not
+approved for shared Noob/production rollout. Future writers can still create new
+unresolved references after commit; this is transaction-time cleanup only.
+Production stays read-only. Mocked Zoom transport and local native tests are
+separate from actual connected-channel and human approval evidence.
