@@ -16,6 +16,7 @@ import { ensureSelectedAgentHarnessPlugin } from "../../agents/harness/runtime-p
 import { runWithModelFallback } from "../../agents/model-fallback.js";
 import { resolveCliRuntimeExecutionProvider } from "../../agents/model-runtime-aliases.js";
 import { isCliProvider } from "../../agents/model-selection-cli.js";
+import { withRequesterRunLifetime } from "../../agents/requester-run-lifetime.js";
 import {
   buildAgentRuntimeDeliveryPlan,
   buildAgentRuntimeOutcomePlan,
@@ -409,7 +410,7 @@ export function createFollowupRunner(params: {
     }
   };
 
-  return async (queued: FollowupRun) => {
+  const executeQueued = async (queued: FollowupRun, runId: string) => {
     if (isFollowupRunAborted(queued)) {
       completeFollowupRunLifecycle(queued);
       typing.markRunComplete();
@@ -539,7 +540,6 @@ export function createFollowupRunner(params: {
           }
         }
       }
-      const runId = crypto.randomUUID();
       const shouldSurfaceToControlUi = isInternalMessageChannel(
         resolveOriginMessageProvider({
           originatingChannel: queued.originatingChannel,
@@ -1189,5 +1189,9 @@ export function createFollowupRunner(params: {
       typing.markRunComplete();
       typing.markDispatchIdle();
     }
+  };
+  return (queued: FollowupRun) => {
+    const runId = crypto.randomUUID();
+    return withRequesterRunLifetime(runId, () => executeQueued(queued, runId));
   };
 }

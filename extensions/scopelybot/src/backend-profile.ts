@@ -22,7 +22,7 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { userInfo } from "node:os";
 import { join } from "node:path";
-import { auditEventBestEffort, noteAuditPolicy } from "./audit.js";
+import { type AuditPolicy, auditEventBestEffort, noteAuditPolicy } from "./audit.js";
 
 export type BackendMode = "off" | "read-only" | "read-write";
 export type AuthMode = "anonymous" | "service-token";
@@ -273,8 +273,9 @@ export function auditBackendEvent(
   event: BackendAuditEvent,
   details: Record<string, unknown>,
   workspaceDir = resolveWorkspaceDir(),
+  snapshot?: Readonly<AuditPolicy>,
 ): void {
-  auditEventBestEffort(workspaceDir, event, { detail: details });
+  auditEventBestEffort(workspaceDir, event, { detail: details }, snapshot);
 }
 
 // --- live read ------------------------------------------------------------------
@@ -446,7 +447,7 @@ export function readBackendProfile(workspaceDir = resolveWorkspaceDir()): Backen
     profile_sha256: "raw" in read ? sha : null,
   };
   seen.set(file, { sha, profile, policy });
-  noteAuditPolicy(policy);
+  const snapshot = noteAuditPolicy(policy);
   auditBackendEvent(
     "policy_change",
     "error" in parsed
@@ -465,6 +466,7 @@ export function readBackendProfile(workspaceDir = resolveWorkspaceDir()): Backen
           allowedHosts: profile.allowedHosts,
         },
     workspaceDir,
+    snapshot,
   );
   return profile;
 }

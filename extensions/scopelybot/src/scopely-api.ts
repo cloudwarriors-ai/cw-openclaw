@@ -46,7 +46,7 @@
 // here retries a request.
 
 import { boundedText, newAuditId } from "./audit-chain.js";
-import { auditEvent, auditEventBestEffort, PLUGIN_VERSION } from "./audit.js";
+import { auditEvent, auditEventBestEffort, PLUGIN_VERSION, withAuditPolicyScope } from "./audit.js";
 import {
   type BackendProfile,
   readBackendProfile,
@@ -417,7 +417,15 @@ export function scopelyOpsInvoke(op: OpsInvocation): Promise<ScopelyFetchResult>
   return guardedRequest(OPS_INVOKE_PATH, {}, op);
 }
 
-async function guardedRequest(
+function guardedRequest(
+  path: string,
+  opts: ScopelyRequest,
+  op?: OpsInvocation,
+): Promise<ScopelyFetchResult> {
+  return withAuditPolicyScope("request", () => executeGuardedRequest(path, opts, op));
+}
+
+async function executeGuardedRequest(
   path: string,
   opts: ScopelyRequest,
   op?: OpsInvocation,

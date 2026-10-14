@@ -9,7 +9,7 @@
 // Requester rule (IDENTITY-B contract): X-Ops-Requester-Zoom-Id carries the
 // asker's canonical Zoom user id (canonicalZoomId) only when the call's
 // requester was resolved from the trusted tool-factory ctx (a human-triggered
-// coordinator run) AND that sender is still the latest inbound sender of the
+// coordinator run) AND its captured sender epoch is still current for the
 // run's session (noteInboundSender; with the host's default "steer" queue mode
 // a second person's message can be injected into a running run, whose ctx
 // sender stays the first person). The kernel maps the id through
@@ -27,10 +27,10 @@
 // (stricter than the kernel's per-capability flag); whoami and health also get
 // a plain summary of their real fields.
 
-import { boundedText } from "./audit-chain.js";
 import { type CallContext, currentCall } from "./call-context.js";
 import { opsBindingFor } from "./capability-registry.js";
 import { redactText } from "./redaction.js";
+import { rememberRequester, requesterEpochMatches } from "./requester-epoch.js";
 import {
   canonicalZoomId,
   errorResult,
@@ -41,26 +41,6 @@ import {
   ScopelyGuardError,
 } from "./scopely-api.js";
 
-// The latest inbound Zoom sender per coordinator session key (canonical id),
-// recorded by the message_received hook (index.ts) before the run it starts.
-// A run whose ctx sender is not the latest sender of its session (someone
-// else posted since, or nothing was recorded, e.g. after a restart) makes no
-// requester claim. Insertion-ordered, oldest evicted past the cap; "" = a
-// sender with no usable id.
-const latestSender = new Map<string, string>();
-const MAX_TRACKED_SESSIONS = 1000;
-
-/**
- * Test-only: forget every recorded inbound sender. Throws outside a Vitest
- * worker; the AST closure scan forbids production calls.
- */
-export function resetInboundSendersForTest(): void {
-  if (!process.env.VITEST) {
-    throw new Error("resetInboundSendersForTest is test-only");
-  }
-  latestSender.clear();
-}
-
 /** message_received (scopelybot's own Zoom sessions): who posted last in this session. */
 export function noteInboundSender(
   sessionKey: string | undefined,
@@ -69,13 +49,7 @@ export function noteInboundSender(
   if (!sessionKey) {
     return;
   }
-  // Bounded the same way as the call context's ids, so the two compare equal.
-  const key = boundedText(sessionKey);
-  latestSender.delete(key);
-  latestSender.set(key, canonicalZoomId(senderId) ?? "");
-  if (latestSender.size > MAX_TRACKED_SESSIONS) {
-    latestSender.delete(latestSender.keys().next().value as string);
-  }
+  rememberRequester(sessionKey, canonicalZoomId(senderId) ?? "");
 }
 
 // The model sees at most this much of a capability's data (the kernel bounds
@@ -168,7 +142,7 @@ function requesterZoomId(call: CallContext): string | undefined {
   const session = call.openclaw.session_key;
   // Someone else posted in this session since the run began, or nothing was
   // recorded: the run's sender may not be the person now being answered.
-  if (!id || !session || latestSender.get(session) !== id) {
+  if (!id || !session || !requesterEpochMatches(session, id, call.requesterEpoch)) {
     return undefined;
   }
   return id;

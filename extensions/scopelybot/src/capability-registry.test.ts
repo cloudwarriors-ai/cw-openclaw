@@ -40,9 +40,10 @@ import {
   registryTools,
 } from "./capability-registry.js";
 import { stageWrite } from "./gated.js";
-import { noteInboundSender, resetInboundSendersForTest } from "./ops-client.js";
+import { noteInboundSender } from "./ops-client.js";
 import { type JsonSchema, SNAPSHOT, validate } from "./ops-kernel.test-helpers.js";
 import { registerPassthroughTools } from "./passthrough-tools.js";
+import { resetInboundSendersForTest } from "./requester-epoch.js";
 import { OPS_READ_CAPABILITIES, resetScopelyGuardForTest } from "./scopely-api.js";
 
 type Tool = {
@@ -103,13 +104,14 @@ function registeredTools(ctx: unknown = DEFAULT_CTX): {
   optional: boolean[];
   names: string[];
 } {
+  const toolContext = { requesterRunStartedAt: performance.now(), ...(ctx as object) };
   const tools = new Map<string, Tool>();
   const names: string[] = [];
   const optional: boolean[] = [];
   const api = {
     registerTool: (factory: (ctx: unknown) => Tool | Tool[], opts?: { optional?: boolean }) => {
       optional.push(opts?.optional === true);
-      const built = factory(ctx);
+      const built = factory(toolContext);
       for (const tool of Array.isArray(built) ? built : [built]) {
         names.push(tool.name);
         tools.set(tool.name, tool);

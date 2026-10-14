@@ -481,3 +481,7 @@ For the load pipeline, registry model, provider runtime hooks, Gateway HTTP rout
 - [Building plugins](/plugins/building-plugins)
 - [Plugin manifest](/plugins/manifest)
 - [Plugin SDK setup](/plugins/sdk-setup)
+
+### Requester run timestamp
+
+Plugin tool context may include readonly `requesterRunStartedAt`, a host-stamped, process-local `performance.now()` timestamp captured before the first await of a foreground or queued logical turn. The host forwards the same value through model fallback, transient retries, embedded attempts and lazy tool-factory rebuilds. Direct embedded calls without a matching host scope stamp their own entry before queueing. Scopes are isolated with AsyncLocalStorage and bound to a run ID, so a different nested/subagent run cannot borrow its parent's timestamp. It is not a wall-clock timestamp, persisted identifier or caller/tool argument. An absent or nonfinite value makes no requester-lifetime claim; plugins requiring that provenance must refuse rather than manufacture a fresh timestamp. The timestamp alone does not grant application permissions. The built-in, Codex and Copilot attempt tool builders forward the existing attempt value. Inventory inspection, Codex side-question and compaction tool construction do not establish requester lifetime authority.

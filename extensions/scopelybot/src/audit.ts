@@ -1,10 +1,11 @@
 // Audit row producers (PK-7b). Every row goes to the audit-v2 chain
 // (audit-chain.ts); nothing writes the v1 audit.jsonl any more. Rows carry the
 // requester and tool context of the current call (call-context.ts), the live
-// policy snapshot (set by backend-profile.ts on each read) and redacted,
+// scoped policy snapshot (set by backend-profile.ts on each read) and redacted,
 // bounded details. createAuditLogger stays the AuditLogger facade the tool
 // modules already take, so their call sites are unchanged.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import {
   type AuditEventType,
@@ -27,17 +28,49 @@ export type AuditPolicy = {
   auth_mode: "anonymous" | "service-token";
   profile_sha256: string | null;
 };
-let policy: AuditPolicy = {
+const UNKNOWN_POLICY: Readonly<AuditPolicy> = Object.freeze({
   env: "unknown",
   state: "fail_closed_default",
   mode: "read-only",
   auth_mode: "anonymous",
   profile_sha256: null,
+});
+let latestPolicy = UNKNOWN_POLICY;
+type PolicyScope = {
+  policy?: Readonly<AuditPolicy>;
+  tool?: PolicyScope;
+  kind: "tool" | "request";
 };
+const policyScopes = new AsyncLocalStorage<PolicyScope>();
 
-/** backend-profile.ts reports the live profile on every read. */
-export function noteAuditPolicy(next: AuditPolicy): void {
-  policy = next;
+/** Independent of requester context: direct HTTP calls need isolation too. */
+export function withAuditPolicyScope<T>(kind: PolicyScope["kind"], run: () => T): T {
+  const parent = policyScopes.getStore();
+  const scope: PolicyScope = {
+    kind,
+    tool: kind === "request" ? (parent?.kind === "tool" ? parent : parent?.tool) : undefined,
+  };
+  return policyScopes.run(scope, run);
+}
+
+function currentPolicy(): Readonly<AuditPolicy> {
+  const scope = policyScopes.getStore();
+  // An unevaluated operation must never borrow another operation's policy.
+  return scope ? (scope.policy ?? UNKNOWN_POLICY) : latestPolicy;
+}
+
+/** Pin each request, and the first evaluated profile of its enclosing tool. */
+export function noteAuditPolicy(next: AuditPolicy): Readonly<AuditPolicy> {
+  const snapshot = Object.freeze({ ...next });
+  latestPolicy = snapshot;
+  const scope = policyScopes.getStore();
+  if (scope) {
+    scope.policy ??= snapshot;
+    if (scope.tool) {
+      scope.tool.policy ??= snapshot;
+    }
+  }
+  return snapshot;
 }
 
 export type AuditFields = {
@@ -80,6 +113,7 @@ export function auditEvent(
   workspaceDir: string,
   event: AuditEventType,
   fields: AuditFields = {},
+  snapshot: Readonly<AuditPolicy> = currentPolicy(),
 ): AuditRecord {
   const call = currentCall();
   return getAuditWriter(workspaceDir).append({
@@ -90,11 +124,11 @@ export function auditEvent(
     action: call?.action,
     ...fields,
     event_type: event,
-    env: policy.env,
+    env: snapshot.env,
     plugin_version: PLUGIN_VERSION,
-    // The bot's credential kind from the live profile; never the token.
-    bot_principal: { auth_mode: policy.auth_mode, principal_id: null },
-    policy: { state: policy.state, mode: policy.mode, profile_sha256: policy.profile_sha256 },
+    // The bot's credential kind from the evaluated snapshot; never the token.
+    bot_principal: { auth_mode: snapshot.auth_mode, principal_id: null },
+    policy: { state: snapshot.state, mode: snapshot.mode, profile_sha256: snapshot.profile_sha256 },
     detail: cleanDetail(fields.detail),
   });
 }
@@ -104,9 +138,10 @@ export function auditEventBestEffort(
   workspaceDir: string,
   event: AuditEventType,
   fields: AuditFields = {},
+  snapshot?: Readonly<AuditPolicy>,
 ): void {
   try {
-    auditEvent(workspaceDir, event, fields);
+    auditEvent(workspaceDir, event, fields, snapshot);
   } catch {
     // the writer already logged audit_degraded and counts the gap
   }
@@ -135,6 +170,7 @@ export interface AuditEntry {
   /** Set by wrapToolWithAudit; other producers (supervisor, voice judge, inbound guard) leave it unset. */
   event?: "tool_call";
   paramsSha256?: string | null;
+  policySnapshot?: Readonly<AuditPolicy>;
 }
 
 // Legacy entry -> v2 row (the PK-7a producers keep their AuditLogger call
@@ -187,7 +223,7 @@ function senderOf(actor: string): Principal {
 export function createAuditLogger(workspaceDir: string) {
   return function logAudit(entry: AuditEntry): void {
     const [event, fields] = legacyRow(entry);
-    auditEventBestEffort(workspaceDir, event, fields);
+    auditEventBestEffort(workspaceDir, event, fields, entry.policySnapshot);
   };
 }
 
@@ -206,49 +242,57 @@ export function wrapToolWithAudit(
   logger: AuditLogger,
 ) {
   const origExecute = toolDef.execute;
-  toolDef.execute = async (id: string, params: Record<string, unknown>) => {
-    const start = Date.now();
-    // Redact, then hash the redacted form (a hash of a low-entropy secret
-    // could be brute-forced); the requester is the call context's.
-    const redacted = sanitizeParams(params);
-    const base = {
-      tool: toolDef.name,
-      actor: currentCall()?.requester.zoom_operator_id ?? "unresolved",
-      params: redacted,
-      event: "tool_call" as const,
-      paramsSha256: paramsSha256(redacted),
-    };
-    try {
-      const result = await origExecute(id, params);
-      const durationMs = Date.now() - start;
-      let resultSummary = "";
+  toolDef.execute = (id: string, params: Record<string, unknown>) =>
+    withAuditPolicyScope("tool", async () => {
+      const start = Date.now();
+      // Redact, then hash the redacted form (a hash of a low-entropy secret
+      // could be brute-forced); the requester is the call context's.
+      const redacted = sanitizeParams(params);
+      const base = {
+        tool: toolDef.name,
+        actor: currentCall()?.requester.zoom_operator_id ?? "unresolved",
+        params: redacted,
+        event: "tool_call" as const,
+        paramsSha256: paramsSha256(redacted),
+      };
       try {
-        const parsed = JSON.parse(result.content[0]?.text ?? "{}");
-        if (parsed.ok === false) {
-          resultSummary = `error: ${parsed.error ?? "unknown"}`;
-        } else if (parsed.staged === true && parsed.awaiting_confirmation === true) {
-          resultSummary = "staged: awaiting confirmation";
-        } else if (Array.isArray(parsed.data)) {
-          resultSummary = `${parsed.data.length} items`;
-        } else {
+        const result = await origExecute(id, params);
+        const durationMs = Date.now() - start;
+        let resultSummary = "";
+        try {
+          const parsed = JSON.parse(result.content[0]?.text ?? "{}");
+          if (parsed.ok === false) {
+            resultSummary = `error: ${parsed.error ?? "unknown"}`;
+          } else if (parsed.staged === true && parsed.awaiting_confirmation === true) {
+            resultSummary = "staged: awaiting confirmation";
+          } else if (Array.isArray(parsed.data)) {
+            resultSummary = `${parsed.data.length} items`;
+          } else {
+            resultSummary = "ok";
+          }
+        } catch {
           resultSummary = "ok";
         }
-      } catch {
-        resultSummary = "ok";
+        logger({
+          ...base,
+          ts: new Date().toISOString(),
+          resultSummary,
+          durationMs,
+          policySnapshot: currentPolicy(),
+        });
+        return result;
+      } catch (err) {
+        const durationMs = Date.now() - start;
+        logger({
+          ...base,
+          ts: new Date().toISOString(),
+          policySnapshot: currentPolicy(),
+          error: err instanceof Error ? err.message : String(err),
+          durationMs,
+        });
+        throw err;
       }
-      logger({ ...base, ts: new Date().toISOString(), resultSummary, durationMs });
-      return result;
-    } catch (err) {
-      const durationMs = Date.now() - start;
-      logger({
-        ...base,
-        ts: new Date().toISOString(),
-        error: err instanceof Error ? err.message : String(err),
-        durationMs,
-      });
-      throw err;
-    }
-  };
+    });
   return toolDef;
 }
 

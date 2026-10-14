@@ -9,6 +9,15 @@ import { applyPluginToolDeliveryDefaults } from "./plugin-tool-delivery-defaults
 import type { AnyAgentTool } from "./tools/common.js";
 
 describe("openclaw plugin tool context", () => {
+  it.each([123.5, undefined, Number.NaN, Number.POSITIVE_INFINITY])(
+    "preserves trusted requester run time without manufacturing a fallback (%s)",
+    (requesterRunStartedAt) => {
+      const options = { config: {} as never, requesterRunStartedAt };
+      const result = resolveOpenClawPluginToolInputs({ options });
+      expect(result.context.requesterRunStartedAt).toBe(requesterRunStartedAt);
+    },
+  );
+
   it("forwards trusted requester sender identity", () => {
     const result = resolveOpenClawPluginToolInputs({
       options: {

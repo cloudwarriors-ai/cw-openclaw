@@ -10,7 +10,7 @@ import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { verifyChain } from "../scripts/verify-audit-chain.mjs";
 import { setAuditDepsForTest } from "./audit-chain.js";
-import { createAuditLogger, PLUGIN_VERSION, wrapToolWithAudit } from "./audit.js";
+import { createAuditLogger, noteAuditPolicy, PLUGIN_VERSION, wrapToolWithAudit } from "./audit.js";
 import { auditFile, readAuditRows, testCall } from "./audit.test-helpers.js";
 import { runInCall } from "./call-context.js";
 
@@ -234,5 +234,49 @@ describe("pins", () => {
         return found;
       });
     expect(prod).toEqual(["src/audit-chain.ts"]);
+  });
+});
+
+describe("tool audit policy isolation", () => {
+  it("starts unevaluated tool policy unknown rather than inheriting another request", async () => {
+    noteAuditPolicy({
+      env: "prod",
+      state: "valid",
+      mode: "read-only",
+      auth_mode: "service-token",
+      profile_sha256: "a".repeat(64),
+    });
+    await tool(async () => text({ ok: true })).execute("no-profile", {});
+    expect(readAuditRows(workspace).find((row) => row.event_type === "tool_call")).toMatchObject({
+      env: "unknown",
+      policy: { state: "fail_closed_default", profile_sha256: null },
+      bot_principal: { auth_mode: "anonymous" },
+    });
+  });
+
+  it("copies and freezes the first evaluated tool policy through later reads", async () => {
+    await tool(async () => {
+      const first = {
+        env: "local" as const,
+        state: "valid" as const,
+        mode: "read-write" as const,
+        auth_mode: "service-token" as const,
+        profile_sha256: "b".repeat(64),
+      };
+      noteAuditPolicy(first);
+      first.profile_sha256 = "c".repeat(64);
+      noteAuditPolicy({
+        env: "prod",
+        state: "valid",
+        mode: "read-only",
+        auth_mode: "anonymous",
+        profile_sha256: "d".repeat(64),
+      });
+      return text({ ok: true });
+    }).execute("two-profiles", {});
+    expect(readAuditRows(workspace).find((row) => row.event_type === "tool_call")).toMatchObject({
+      env: "local",
+      policy: { mode: "read-write", profile_sha256: "b".repeat(64) },
+    });
   });
 });

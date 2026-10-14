@@ -598,6 +598,47 @@ function createQueuedRun(
 }
 
 describe("createFollowupRunner reply-lane admission", () => {
+  it("pins requester lifetime per queued invocation across fallback candidates", async () => {
+    const { requesterRunStartedAt } = await import("../../agents/requester-run-lifetime.js");
+    let clock = 100;
+    const clockSpy = vi.spyOn(performance, "now").mockImplementation(() => clock);
+    const seen: Array<number | undefined> = [];
+    runEmbeddedAgentMock.mockImplementation(async (params: { runId: string }) => {
+      seen.push(requesterRunStartedAt(params.runId));
+      clock += 100;
+      if (seen.length % 2 === 1) {
+        throw new Error("retry candidate");
+      }
+      return { payloads: [{ text: "done" }], meta: {} };
+    });
+    runWithModelFallbackMock.mockImplementation(
+      async (params: { run: (provider: string, model: string) => Promise<unknown> }) => {
+        let result: unknown;
+        try {
+          result = await params.run("anthropic", "primary");
+        } catch {
+          result = await params.run("anthropic", "fallback");
+        }
+        return { result, provider: "anthropic", model: "fallback", attempts: [] };
+      },
+    );
+    const runner = createFollowupRunner({
+      typing: createMockTypingController(),
+      typingMode: "instant",
+      sessionKey: "main",
+      defaultModel: "anthropic/claude",
+    });
+    try {
+      await runner(createQueuedRun({ run: { provider: "anthropic", model: "claude" } }));
+      expect(seen).toEqual([100, 100]);
+      clock = 900;
+      await runner(createQueuedRun({ run: { provider: "anthropic", model: "claude" } }));
+      expect(seen).toEqual([100, 100, 900, 900]);
+    } finally {
+      clockSpy.mockRestore();
+    }
+  });
+
   it("passes prepared media user turns to embedded runtime dispatch", async () => {
     const preparedUserTurnMessage = {
       role: "user",

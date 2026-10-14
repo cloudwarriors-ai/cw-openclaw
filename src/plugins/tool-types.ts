@@ -46,6 +46,8 @@ export type OpenClawPluginToolContext = {
   deliveryContext?: DeliveryContext;
   /** Trusted sender id from inbound context (runtime-provided, not tool args). */
   requesterSenderId?: string;
+  /** Host-owned process-local performance.now() start; retained across attempts/lazy factories. */
+  readonly requesterRunStartedAt?: number;
   /** Trusted provider message id for the inbound turn, used for mutation idempotency. */
   currentMessageId?: string;
   sandboxed?: boolean;

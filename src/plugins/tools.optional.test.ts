@@ -2095,6 +2095,77 @@ describe("resolvePluginTools optional tools", () => {
     expect(factory).toHaveBeenCalledTimes(2);
   });
 
+  it.each(["sender change", "unknown sender", "reset", "eviction"])(
+    "cached ScopelyBot tools cannot recapture a sender after %s",
+    async (interruption) => {
+      const { applyCapabilityRegistry } =
+        await import("../../extensions/scopelybot/src/capability-registry.js");
+      const { currentWriteRequester, noteInboundSender } =
+        await import("../../extensions/scopelybot/src/ops-client.js");
+      const { resetInboundSendersForTest } =
+        await import("../../extensions/scopelybot/src/requester-epoch.js");
+      const sessionKey = "agent:scopelybot:zoom:channel:cached-epoch-test";
+      const sender = "alice_operator";
+      resetInboundSendersForTest();
+      noteInboundSender(sessionKey, sender);
+      const wrapped = applyCapabilityRegistry(() => ({
+        ...makeTool("scopely_list_vendors"),
+        label: "List vendors",
+        async execute() {
+          return {
+            content: [{ type: "text" as const, text: currentWriteRequester() ?? "unresolved" }],
+            details: undefined,
+          };
+        },
+      }));
+      const factory = vi.fn((ctx: unknown) => (wrapped as (ctx: unknown) => unknown)(ctx));
+      setRegistry([
+        {
+          pluginId: "scopelybot",
+          optional: false,
+          source: "/tmp/scopelybot.js",
+          names: ["scopely_list_vendors"],
+          factory,
+        },
+      ]);
+      const startedAt = performance.now();
+      const params = (requesterRunStartedAt = startedAt) =>
+        createResolveToolsParams({
+          context: {
+            ...createContext(),
+            agentId: "scopelybot",
+            sessionKey,
+            requesterSenderId: sender,
+            requesterRunStartedAt,
+          },
+        });
+      resolvePluginTools(params());
+      const cached = resolvePluginTools(params());
+      expect(factory).toHaveBeenCalledTimes(1);
+      if (interruption === "sender change") {
+        noteInboundSender(sessionKey, "bob_operator");
+      } else if (interruption === "unknown sender") {
+        noteInboundSender(sessionKey, undefined);
+      } else if (interruption === "reset") {
+        resetInboundSendersForTest();
+      } else {
+        for (let index = 0; index < 1001; index++) {
+          noteInboundSender(`${sessionKey}:${index}`, "bob_operator");
+        }
+      }
+      noteInboundSender(sessionKey, sender);
+      await expect(cached[0]?.execute("old-run", {}, undefined)).resolves.toMatchObject({
+        content: [{ text: "unresolved" }],
+      });
+      await expect(
+        resolvePluginTools(params())[0]?.execute("retried-old-run", {}, undefined),
+      ).resolves.toMatchObject({ content: [{ text: "unresolved" }] });
+      await expect(
+        resolvePluginTools(params(performance.now()))[0]?.execute("fresh-run", {}, undefined),
+      ).resolves.toMatchObject({ content: [{ text: sender }] });
+    },
+  );
+
   it("reuses cached plugin tool descriptors across session identity changes", async () => {
     const factory = vi.fn((rawCtx: unknown) => {
       const ctx = rawCtx as { sessionId?: string };

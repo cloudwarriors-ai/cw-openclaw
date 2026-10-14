@@ -7,8 +7,9 @@ vi.mock("./comfort.js", () => ({ sendScopelyText: send, getChannelThreadAnchor: 
 import { setBackendProfileForTest } from "./backend-profile.js";
 import { runInCall, type CallContext } from "./call-context.js";
 import { tryExecuteConfirm } from "./confirm.js";
-import { noteInboundSender, resetInboundSendersForTest } from "./ops-client.js";
+import { noteInboundSender } from "./ops-client.js";
 import { opsStageWrite } from "./ops-write-client.js";
+import { captureRequesterEpoch, resetInboundSendersForTest } from "./requester-epoch.js";
 import { resetScopelyGuardForTest } from "./scopely-api.js";
 const HUB = "agent:scopelybot:zoom:channel:synthetic-channel";
 const PENDING = "12345678-1234-4234-9234-123456789abc";
@@ -71,6 +72,7 @@ beforeEach(() => {
   resetScopelyGuardForTest();
   resetInboundSendersForTest();
   noteInboundSender(HUB, "synthetic-member");
+  context.requesterEpoch = captureRequesterEpoch(HUB, performance.now());
   state = "succeeded";
   send.mockReset();
   send.mockResolvedValue(undefined);
@@ -135,11 +137,18 @@ it.each(["failed", "claimed", "pending", "cancelled"])(
     expect(request).toHaveBeenCalledTimes(2);
   },
 );
-it.each(["sender", "channel", "readonly", "prod", "dev"])(
+it.each(["sender", "sender-returned", "missing-epoch", "channel", "readonly", "prod", "dev"])(
   "refuses %s before network",
   async (reason) => {
     if (reason === "sender") {
       noteInboundSender(HUB, "different-sender");
+    }
+    if (reason === "sender-returned") {
+      noteInboundSender(HUB, "different-sender");
+      noteInboundSender(HUB, "synthetic-member");
+    }
+    if (reason === "missing-epoch") {
+      delete context.requesterEpoch;
     }
     if (reason === "channel") {
       vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", "");

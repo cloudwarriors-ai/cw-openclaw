@@ -114,6 +114,15 @@ function firstBaseContext(baseFn: ReturnType<typeof vi.fn>): { messages: unknown
 }
 
 describe("buildEmbeddedAttemptToolRunContext", () => {
+  it.each([123.5, undefined, Number.NaN, Number.POSITIVE_INFINITY])(
+    "preserves the host requester lifetime without stamping a replacement: %s",
+    (requesterRunStartedAt) => {
+      expect(
+        buildEmbeddedAttemptToolRunContext({ requesterRunStartedAt }).requesterRunStartedAt,
+      ).toBe(requesterRunStartedAt);
+    },
+  );
+
   it("carries runtime toolsAllow into coding tool construction", () => {
     const context = buildEmbeddedAttemptToolRunContext({
       trigger: "manual",

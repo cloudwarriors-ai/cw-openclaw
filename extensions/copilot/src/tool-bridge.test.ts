@@ -466,6 +466,24 @@ describe("createCopilotToolBridge", () => {
       expect(exec).toMatchObject({ security: "fast", elevated: { allowed: true } });
     });
 
+    it.each([123.5, undefined, Number.NaN, Number.POSITIVE_INFINITY])(
+      "preserves the host requester lifetime through the actual Copilot bridge: %s",
+      async (requesterRunStartedAt) => {
+        const { createOpenClawCodingTools, getOpts } = captureCall();
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          await createCopilotToolBridge({
+            agentId: "agent-1",
+            attemptParams: { requesterRunStartedAt },
+            createOpenClawCodingTools,
+            modelId: "gpt-4o",
+            modelProvider: "github-copilot",
+            sessionId: "session-1",
+          });
+          expect(getOpts().requesterRunStartedAt).toBe(requesterRunStartedAt);
+        }
+      },
+    );
+
     it("forwards run-trace context (trigger, jobId, memoryFlushWritePath, toolsAllow) via buildEmbeddedAttemptToolRunContext", async () => {
       const { createOpenClawCodingTools, getOpts } = captureCall();
 

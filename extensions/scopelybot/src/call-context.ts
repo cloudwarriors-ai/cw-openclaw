@@ -28,6 +28,8 @@ export type CallContext = {
   tool: string;
   trigger: "tool";
   requester: Principal;
+  /** Opaque sender sequence captured at tool construction, never from params. */
+  requesterEpoch?: symbol;
   openclaw: { agent_id: string | null; session_key: string | null; tool_call_id: string | null };
   action: { tool: string; family: string | null; op_class: string; registry_status: string };
 };

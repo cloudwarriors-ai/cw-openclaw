@@ -20,6 +20,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { boundedText } from "./audit-chain.js";
 import { auditBackendEvent, readBackendProfile } from "./backend-profile.js";
 import { currentCall, requesterFromToolCtx, runInCall } from "./call-context.js";
+import { captureRequesterEpoch } from "./requester-epoch.js";
 import { jsonResult, type OpsCapability } from "./scopely-api.js";
 
 export type FamilyId =
@@ -500,7 +501,12 @@ const OP_CLASS: Record<EffectClass, string> = {
   "non-api": "non_api",
 };
 
-type ToolOrigin = { agentId?: string; sessionKey?: string; requesterSenderId?: string };
+type ToolOrigin = {
+  agentId?: string;
+  sessionKey?: string;
+  requesterSenderId?: string;
+  requesterRunStartedAt?: number;
+};
 
 // Both branches run inside the call context, so a refusal row
 // (write_blocked_read_only, not_available) carries the requester too. A tool
@@ -515,6 +521,7 @@ function gateTool(tool: AgentTool, origin?: ToolOrigin): AgentTool {
     registry_status: status ?? "unregistered",
   };
   const requester = requesterFromToolCtx(origin);
+  const requesterEpoch = captureRequesterEpoch(origin?.sessionKey, origin?.requesterRunStartedAt);
   const inCall = <T>(toolCallId: unknown, fn: () => T): T => {
     // Host-supplied ids are bounded so none can push a row over the size cap.
     const id = (value: unknown) => (typeof value === "string" ? boundedText(value) : null);
@@ -523,7 +530,10 @@ function gateTool(tool: AgentTool, origin?: ToolOrigin): AgentTool {
       session_key: id(origin?.sessionKey),
       tool_call_id: id(toolCallId),
     };
-    return runInCall({ tool: tool.name, trigger: "tool", requester, action, openclaw }, fn);
+    return runInCall(
+      { tool: tool.name, trigger: "tool", requester, requesterEpoch, action, openclaw },
+      fn,
+    );
   };
   const execute: AgentTool["execute"] =
     status === "live" || status === "local"

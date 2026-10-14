@@ -131,6 +131,30 @@ describe("Codex app-server dynamic tool build", () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
+  it.each([123.5, undefined, Number.NaN, Number.POSITIVE_INFINITY])(
+    "preserves the host requester lifetime through the actual Codex builder: %s",
+    async (requesterRunStartedAt) => {
+      const params = {
+        ...createParams(path.join(tempDir, "session.jsonl"), tempDir),
+        requesterRunStartedAt,
+      };
+      params.disableTools = false;
+
+      const factory = vi.fn(() => []);
+      setOpenClawCodingToolsFactoryForTests(factory);
+
+      await buildDynamicToolsForTest(params, tempDir);
+      await buildDynamicToolsForTest(params, tempDir);
+
+      expect(factory).toHaveBeenCalledTimes(2);
+      for (const [options] of factory.mock.calls as unknown as Array<
+        [{ requesterRunStartedAt?: number }]
+      >) {
+        expect(options.requesterRunStartedAt).toBe(requesterRunStartedAt);
+      }
+    },
+  );
+
   it("filters Codex-native dynamic tools from app-server tool exposure", () => {
     const tools = [
       "read",

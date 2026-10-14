@@ -15,6 +15,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { verifyChain } from "../scripts/verify-audit-chain.mjs";
 import { getAuditWriter, setAuditDepsForTest } from "./audit-chain.js";
+import { createAuditLogger, wrapToolWithAudit } from "./audit.js";
 import {
   auditFile,
   correlatedId,
@@ -1026,4 +1027,157 @@ describe("audit before request (INV-15) and correlation (INV-5)", () => {
     }
     expect(verifyChain(chain(), { requirePaired: true }).ok).toBe(true);
   });
+});
+
+describe("admitted audit policy under overlapping requests", () => {
+  const local = {
+    env: "local",
+    baseUrl: "http://127.0.0.1:8100",
+    allowedHosts: ["127.0.0.1:8100"],
+    mode: "read-write",
+    authMode: "service-token",
+  };
+  const prod = {
+    env: "prod",
+    baseUrl: "https://api.vip.pscx.ai",
+    allowedHosts: ["api.vip.pscx.ai"],
+    mode: "read-only",
+    authMode: "anonymous",
+  };
+  it("retains the first tool policy while each sequential request uses its own profile", async () => {
+    writeProfile(local);
+    const wrapped = wrapToolWithAudit(
+      {
+        name: "multi_profile_tool",
+        description: "test",
+        parameters: {},
+        async execute() {
+          await scopelyFetch("/api/v1/health/");
+          writeProfile(prod);
+          await scopelyFetch("/api/v1/health/");
+          return { content: [{ type: "text" as const, text: "{}" }] };
+        },
+      },
+      createAuditLogger(workspace),
+    );
+    await wrapped.execute("two-requests", {});
+    const rows = auditRows();
+    expect(rows.filter((row) => row.event_type === "http_outcome").map((row) => row.env)).toEqual([
+      "local",
+      "prod",
+    ]);
+    expect(rows.find((row) => row.event_type === "tool_call")).toMatchObject({
+      env: "local",
+      policy: { mode: "read-write" },
+    });
+    expect(rows.findLast((row) => row.event_type === "policy_change")).toMatchObject({
+      env: "prod",
+      policy: { mode: "read-only" },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+  const scenarios = [
+    "fetch_ok",
+    "fetch_error",
+    "body_ok",
+    "body_error",
+    "redirect",
+    "rate_limited",
+  ] as const;
+  for (const wrapped of [false, true]) {
+    it.each(scenarios)(
+      `pins request and tool policy (${wrapped ? "wrapped" : "no call context"}, %s)`,
+      async (scenario) => {
+        writeProfile(local);
+        let finishFetch!: (response: Response) => void;
+        let failFetch!: (error: Error) => void;
+        let bodyController!: ReadableStreamDefaultController<Uint8Array>;
+        let bodyReady!: () => void;
+        const bodyStarted = new Promise<void>((resolve) => {
+          bodyReady = resolve;
+        });
+        const pendingFetch = new Promise<Response>((resolve, reject) => {
+          finishFetch = resolve;
+          failFetch = reject;
+        });
+        const delayedBody = new ReadableStream<Uint8Array>({
+          start(controller) {
+            bodyController = controller;
+          },
+          pull() {
+            bodyReady();
+          },
+        });
+        fetchMock.mockImplementationOnce(() =>
+          scenario.startsWith("body_")
+            ? Promise.resolve(httpResponse({ status: 200, body: delayedBody }))
+            : pendingFetch,
+        );
+        fetchMock.mockImplementationOnce(async () => httpResponse({ status: 200, body: "{}" }));
+        const run = async () => {
+          const result = await scopelyFetch("/api/v1/health/");
+          return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+        };
+        const first = (
+          wrapped
+            ? wrapToolWithAudit(
+                { name: "policy_test", description: "test", parameters: {}, execute: run },
+                createAuditLogger(workspace),
+              ).execute("first", {})
+            : run()
+        ).then(
+          (value) => ({ value }),
+          (error: unknown) => ({ error }),
+        );
+        if (scenario.startsWith("body_")) {
+          await bodyStarted;
+        }
+        const firstIntent = auditRows().find((row) => row.event_type === "http_intent")!;
+        writeProfile(prod);
+        await scopelyFetch("/api/v1/health/");
+        if (scenario === "fetch_error") {
+          failFetch(new Error("fetch failed"));
+        } else if (scenario === "body_error") {
+          bodyController.error(new Error("body failed"));
+        } else if (scenario === "body_ok") {
+          bodyController.enqueue(new TextEncoder().encode("{}"));
+          bodyController.close();
+        } else {
+          finishFetch(
+            httpResponse({
+              status: scenario === "redirect" ? 302 : scenario === "rate_limited" ? 429 : 200,
+              body: "{}",
+            }),
+          );
+        }
+        const completed = await first;
+        expect("error" in completed).toBe(!scenario.endsWith("_ok"));
+        const expected = {
+          env: "local",
+          bot_principal: { auth_mode: "service-token", principal_id: null },
+          policy: {
+            state: "valid",
+            mode: "read-write",
+            profile_sha256: createHash("sha256").update(JSON.stringify(local)).digest("hex"),
+          },
+        };
+        const rows = auditRows();
+        expect(rows.filter((row) => row.audit_id === firstIntent.audit_id)).toEqual([
+          expect.objectContaining({ ...expected, phase: "intent" }),
+          expect.objectContaining({ ...expected, phase: "outcome" }),
+        ]);
+        expect(rows.findLast((row) => row.event_type === "policy_change")).toMatchObject({
+          env: "prod",
+          policy: { mode: "read-only" },
+        });
+        if (wrapped) {
+          expect(rows.find((row) => row.event_type === "tool_call")).toMatchObject(expected);
+        }
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(
+          verifyChain(fs.readFileSync(auditFile(workspace), "utf8"), { requirePaired: true }).ok,
+        ).toBe(true);
+      },
+    );
+  }
 });

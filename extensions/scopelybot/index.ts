@@ -163,12 +163,12 @@ const plugin = {
       // confirm gate matches on. Scoped to scopelybot's own sessions so other bots'
       // channels don't populate this bot's ledger.
       if (isScopelyBotZoomMessage({ channelId: ctx.channelId, sessionKey: ctx.sessionKey })) {
+        // Invalidate the previous run before ledger I/O can fail. This executes
+        // synchronously in the observation hook, before a new host run starts.
+        noteInboundSender(ctx.sessionKey, event.senderId);
         const senderEmail =
           typeof event.metadata?.senderName === "string" ? event.metadata.senderName : undefined;
         approverStore.recordSeenIdentity(event.senderId, senderEmail);
-        // Who posted last in this session: a run whose sender is no longer the
-        // latest (a steered second message) makes no requester claim (ops-client.ts).
-        noteInboundSender(ctx.sessionKey, event.senderId);
       }
       const text = typeof event.content === "string" ? event.content : "";
       if (isConfirmCommand(text)) {

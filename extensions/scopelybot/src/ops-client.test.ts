@@ -25,7 +25,7 @@ vi.mock("./comfort.js", () => ({
 
 import plugin from "../index.js";
 import { readAuditRows } from "./audit.test-helpers.js";
-import { noteInboundSender, opsRead, resetInboundSendersForTest } from "./ops-client.js";
+import { noteInboundSender, opsRead } from "./ops-client.js";
 import {
   GATE_DETAIL,
   type MockUser,
@@ -33,6 +33,7 @@ import {
   pricingRow,
   SNAPSHOT_FILE,
 } from "./ops-kernel.test-helpers.js";
+import { resetInboundSendersForTest } from "./requester-epoch.js";
 import { resetScopelyGuardForTest } from "./scopely-api.js";
 
 type Tool = {
@@ -89,11 +90,12 @@ type Hook = (event: Record<string, unknown>, ctx: Record<string, unknown>) => un
 function register(
   ctx: unknown = { agentId: "scopelybot", sessionKey: HUB, requesterSenderId: ALICE.id },
 ) {
+  const toolContext = { requesterRunStartedAt: performance.now(), ...(ctx as object) };
   const out = new Map<string, Tool>();
   const hooks = new Map<string, Hook[]>();
   const api = {
     registerTool: (factory: (ctx: unknown) => Tool | Tool[]) => {
-      const built = factory(ctx);
+      const built = factory(toolContext);
       for (const tool of Array.isArray(built) ? built : [built]) {
         out.set(tool.name, tool);
       }
@@ -717,6 +719,74 @@ describe("mock kernel fidelity", () => {
 // person. The claim is made only while the run's sender is the latest inbound
 // sender of its session; anything else is header-less (whoami only).
 describe("requester claim vs the latest inbound sender of the session", () => {
+  it.each([undefined, null, Number.NaN, Infinity, -Infinity, -1, 0, 99, 100, "101"])(
+    "refuses missing, invalid, or non-newer host start %s without network I/O",
+    async (requesterRunStartedAt) => {
+      vi.spyOn(performance, "now").mockReturnValue(100);
+      resetInboundSendersForTest();
+      noteInboundSender(HUB, ALICE.id);
+      const result = await run(
+        "scopely_list_vendors",
+        {},
+        {
+          agentId: "scopelybot",
+          sessionKey: HUB,
+          requesterSenderId: ALICE.id,
+          requesterRunStartedAt,
+        },
+      );
+      expect(result).toMatchObject({ ok: false, refusal: "requester_unresolved" });
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves the epoch start for repeat messages from the same canonical sender", async () => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(100);
+    resetInboundSendersForTest();
+    noteInboundSender(HUB, ALICE.id);
+    clock.mockReturnValue(200);
+    noteInboundSender(HUB, ALICE.id);
+    await run(
+      "scopely_list_vendors",
+      {},
+      {
+        agentId: "scopelybot",
+        sessionKey: HUB,
+        requesterSenderId: ALICE.id,
+        requesterRunStartedAt: 101,
+      },
+    );
+    expect(kernel.calls).toHaveLength(1);
+    expect(kernel.calls[0].headers[ZID]).toBe(ALICE.zoomId);
+  });
+
+  it.each(["different sender", "unknown sender", "reset", "eviction"])(
+    "an original run never regains identity after %s and Alice posts again",
+    async (interruption) => {
+      const { tools: built, hooks } = register();
+      if (interruption === "different sender") {
+        inbound(hooks, BOB.id);
+      } else if (interruption === "unknown sender") {
+        noteInboundSender(HUB, undefined);
+      } else if (interruption === "reset") {
+        resetInboundSendersForTest();
+      } else {
+        for (let index = 0; index < 1001; index++) {
+          noteInboundSender(`${HUB}:${index}`, BOB.id);
+        }
+      }
+      inbound(hooks, ALICE.id);
+      const after = JSON.parse(
+        (await built.get("scopely_list_vendors")!.execute("old-run", {})).content[0].text,
+      );
+      expect(after).toMatchObject({ ok: false, refusal: "requester_unresolved" });
+      expect(fetchMock).not.toHaveBeenCalled();
+      await tools().get("scopely_list_vendors")!.execute("fresh-run", {});
+      expect(kernel.calls).toHaveLength(1);
+      expect(kernel.calls[0].headers[ZID]).toBe(ALICE.zoomId);
+    },
+  );
+
   it("Alice's run, then Bob posts in the same session: Alice's next call makes no claim", async () => {
     const { tools: built, hooks } = register();
     inbound(hooks, ALICE.id, { email: ALICE.email });
@@ -769,6 +839,24 @@ describe("requester claim vs the latest inbound sender of the session", () => {
 // The message_received hook (index.ts) feeds the ledger and the latest-sender
 // table for scopelybot's own Zoom sessions only.
 describe("message_received scope", () => {
+  it("invalidates the prior sender even if persisting the identity ledger fails", async () => {
+    writeLedger({ [ALICE.email]: ALICE.id });
+    const { tools: built, hooks } = register();
+    fs.mkdirSync(path.join(workspace, "scopelybot-approvers.json.tmp"));
+    const hook = hooks.get("message_received")![0];
+    await expect(
+      hook(
+        { senderId: BOB.id, content: "hello", metadata: { senderName: BOB.email } },
+        { channelId: "zoom", conversationId: "room", sessionKey: HUB },
+      ),
+    ).rejects.toThrow();
+    const result = JSON.parse(
+      (await built.get("scopely_list_vendors")!.execute("old-run", {})).content[0].text,
+    );
+    expect(result).toMatchObject({ ok: false, refusal: "requester_unresolved" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   const ledger = () =>
     JSON.parse(fs.readFileSync(path.join(workspace, "scopelybot-approvers.json"), "utf8"))
       .identities as Record<string, string>;
