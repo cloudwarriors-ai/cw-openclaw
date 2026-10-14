@@ -81,10 +81,15 @@ async function run(name: string, args: Record<string, unknown>, built = tools())
   return JSON.parse((await built.get(name)!.execute("pricing-delete", args)).content[0].text);
 }
 function code() {
-  return String(send.mock.calls.at(-1)?.[1]).match(/CONFIRM ([a-f0-9]{32})/)![1];
+  return String(send.mock.calls.at(-1)?.[1])
+    .match(/CONFIRM ([a-f0-9]{32}|[2-9a-hjkmnp-z]{8})\b/i)![1]
+    .toLowerCase();
 }
 beforeEach(() => {
   workspace = fs.mkdtempSync(path.join(os.tmpdir(), "pricing-delete-"));
+  const codeDir = path.join(fs.realpathSync(workspace), "confirmation-codes");
+  fs.mkdirSync(codeDir, { mode: 0o700 });
+  vi.stubEnv("SCOPELYBOT_CONFIRM_CODE_DIR", codeDir);
   vi.stubEnv("OPENCLAW_WORKSPACE", workspace);
   vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", CHANNEL);
   profile();
@@ -124,7 +129,9 @@ beforeEach(() => {
 });
 afterEach(() => {
   for (const args of send.mock.calls) {
-    const value = String(args[1]).match(/CONFIRM ([a-f0-9]{32})/)?.[1];
+    const value = String(args[1])
+      .match(/CONFIRM ([a-f0-9]{32}|[2-9a-hjkmnp-z]{8})\b/i)?.[1]
+      ?.toLowerCase();
     if (value) {
       takePending(value, { conversationId: CHANNEL });
     }
@@ -150,7 +157,9 @@ it("discovers the native key, previews, refuses outsider confirmation, then conf
     capability: "pricing.items.delete",
     args: NATIVE,
   });
-  expect(send.mock.calls.at(-1)?.[1]).toContain(PREVIEW);
+  for (const value of Object.values(JSON.parse(PREVIEW))) {
+    expect(send.mock.calls.at(-1)?.[1]).toContain(JSON.stringify(value));
+  }
   expect(JSON.stringify(staged)).not.toContain(code());
   const text = `CONFIRM ${code()}`;
   const params = {

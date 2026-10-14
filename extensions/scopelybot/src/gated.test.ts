@@ -26,6 +26,9 @@ vi.mock("./ops-roster-client.js", () => ({
 // into ONE prompt with ONE code; unset/0 preserves the legacy one-prompt-per-
 // write behavior exactly (every existing tool test runs on that path).
 
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const sendScopelyTextMock = vi.fn();
@@ -50,7 +53,9 @@ const noopLogger = () => {};
 
 // The tool result is code-free by design; read the code from the delivery spy.
 const lastPromptCode = () =>
-  String(sendScopelyTextMock.mock.calls.at(-1)?.[1] ?? "").match(/CONFIRM ([a-f0-9]{32})/)?.[1];
+  String(sendScopelyTextMock.mock.calls.at(-1)?.[1] ?? "")
+    .match(/CONFIRM ([a-f0-9]{32}|[2-9a-hjkmnp-z]{8})\b/i)?.[1]
+    ?.toLowerCase();
 
 async function confirmAs(code: string) {
   return tryExecuteConfirm({
@@ -246,7 +251,10 @@ describe("test hook (F6)", () => {
 });
 
 describe("production native preview", () => {
+  let codeDir: string;
   beforeEach(() => {
+    codeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "short-confirm-")));
+    vi.stubEnv("SCOPELYBOT_CONFIRM_CODE_DIR", codeDir);
     setBackendProfileForTest({
       env: "prod",
       baseUrl: "https://core-production.invalid:9443",
@@ -260,6 +268,7 @@ describe("production native preview", () => {
     sendScopelyTextMock.mockReset();
   });
   afterEach(() => {
+    fs.rmSync(codeDir, { recursive: true, force: true });
     setBackendProfileForTest(null);
     vi.unstubAllEnvs();
   });
@@ -281,5 +290,29 @@ describe("production native preview", () => {
     if (kind === "exact") {
       expect(sendScopelyTextMock.mock.calls[0][3]).toBe(true);
     }
+  });
+  it("renders a native price preview as readable lines while preserving the raw audit summary", async () => {
+    const { takePending } = await import("./pending-confirm.js");
+    const preview = JSON.stringify({
+      vendor_key: "ops-test-canary",
+      pricing_key: "seat",
+      changes: { unit_amount: { before: "10.00", after: "15.00" } },
+      scope: "Shared vendor rates; historical snapshots remain unchanged.",
+    });
+    const { nativeWriteScope } = await import("./ops-write-policy.js");
+    const { readBackendProfile } = await import("./backend-profile.js");
+    const scope = nativeWriteScope(readBackendProfile(), process.env.SCOPELYBOT_ZOOM_CHANNEL)!;
+    await stageWrite(preview, vi.fn(), { scope });
+    const prompt = String(sendScopelyTextMock.mock.calls.at(-1)?.[1]);
+    expect(prompt).toContain('Vendor: "ops-test-canary"\nPricing key: "seat"');
+    expect(prompt).toContain('Unit amount: "10.00" → "15.00"');
+    expect(prompt).toContain("Shared vendor rates; historical snapshots remain unchanged.");
+    expect(prompt).not.toContain('"changes":');
+    expect(prompt).toMatch(/CONFIRM [2-9A-HJKMNP-Z]{8}`/);
+    const pending = takePending(lastPromptCode()!, {
+      conversationId: process.env.SCOPELYBOT_ZOOM_CHANNEL!,
+    });
+    expect(pending?.summary).toBe(preview);
+    expect(pending?.displaySummary).toContain('Unit amount: "10.00" → "15.00"');
   });
 });

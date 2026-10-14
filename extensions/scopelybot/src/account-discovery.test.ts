@@ -138,6 +138,9 @@ function reply(data: unknown) {
 }
 beforeEach(() => {
   workspace = fs.mkdtempSync(path.join(os.tmpdir(), "account-discovery-"));
+  const codeDir = path.join(fs.realpathSync(workspace), "confirmation-codes");
+  fs.mkdirSync(codeDir, { mode: 0o700 });
+  vi.stubEnv("SCOPELYBOT_CONFIRM_CODE_DIR", codeDir);
   vi.stubEnv("OPENCLAW_WORKSPACE", workspace);
   vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", CHANNEL);
   profile();
@@ -153,7 +156,9 @@ beforeEach(() => {
 afterEach(() => {
   // Discard synthetic staged callbacks without executing any confirmation.
   for (const args of send.mock.calls) {
-    const code = String(args[1]).match(/CONFIRM ([a-f0-9]{32})/)?.[1];
+    const code = String(args[1])
+      .match(/CONFIRM ([a-f0-9]{32}|[2-9a-hjkmnp-z]{8})\b/i)?.[1]
+      ?.toLowerCase();
     if (code) {
       takePending(code, { conversationId: CHANNEL });
     }

@@ -332,3 +332,50 @@ requests, ask which field to change first instead of automatically staging a bat
 empty strings clear only fields that allow them. Backend API multi-field authoring
 is unchanged. Exact human review still decides whether the selected change matches
 intent; a one-field shape does not infer natural-language authorization.
+
+### Readable native confirmation previews
+
+Native server previews render as labeled target, change, before/after and scope
+lines in Zoom. Every field and value remains visible; pricing scope and historical
+snapshot notes are retained. Unknown fields retain their quoted original names.
+Strings are quoted so an empty string, null, false and zero stay distinguishable.
+Control characters are escaped rather than allowed to impersonate card headings.
+
+The original server preview remains unchanged in the pending action and audit.
+The display is deterministic, never a model summary. Ambiguous JSON, lossy numbers
+and oversized or redacted displays refuse before a confirmation is armed; nothing
+is silently cut. Delivery and current-admission checks remain required. Success
+uses the same validated display. Native plain-text previews also escape control
+characters; ordinary wording is preserved. Existing legacy text previews remain unchanged.
+
+Native Zoom prompts use an eight-character typed code such as `CONFIRM K7M4P2RX`.
+The code is a human reference, never a replacement for verified sender, current
+approver, channel, five-minute expiry and one-time backend claim checks. Legacy
+previews retain their 128-bit tokens. Codes never enter the model's tool result.
+
+Before enabling native write staging, provision `SCOPELYBOT_CONFIRM_CODE_DIR` on
+the gateway's existing persistent **local POSIX** volume. It must be an existing,
+absolute canonical directory owned by the runtime UID with mode `0700`; resolve
+symlinked parent paths before configuring it. The application does not create it.
+Each issued code reserves one empty `0600` file using atomic exclusive creation,
+then syncs the file and directory before sending a prompt. Failed sends, expiry,
+consumption and process restarts never release names. Missing, unsafe or failed
+storage refuses staging, with no long-code fallback or automatic delivery retry.
+
+The alphabet has31 unambiguous symbols (about40 bits across eight characters).
+Durable non-reuse protects against replay into a later action; the trusted human
+identity checks remain mandatory. Reservation files contain no business data,
+credentials or executable actions. A restart discards live approvals; request a
+fresh preview. Do not treat reservation filenames as approvals or recover pending
+closures from them.
+
+**Deployment/rollback:** mount and retain the entire reservation directory for the
+same bot identity. Never clean, rotate, replace with an empty directory or restore
+an older copy while allowing writes. Preserve it when rolling back application
+images. A missing/corrupt/lost history requires writes to remain off while an
+operator reconciles it. Filesystem durability and retention are operator
+requirements; the application cannot detect an administrator deleting historical
+files. Do not use ephemeral container layers, tmpfs or network filesystems.
+
+Connected Zoom visual and short-code human acceptance of this patch is still
+needed; earlier Core7 UAT used the previous long-token build.

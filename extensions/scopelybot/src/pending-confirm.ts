@@ -7,7 +7,8 @@ import { randomBytes } from "node:crypto";
 export type PendingAction = {
   code: string;
   conversationId: string; // channel the CONFIRM must come from
-  summary: string; // human-readable description, echoed + audited
+  summary: string; // exact server/legacy description, audited unchanged
+  displaySummary?: string; // validated native presentation; never execution input
   // Executes the staged mutation. Receives the confirming actor's id so actions
   // that record WHO approved them (e.g. approver grants) can do so; most staged
   // API calls ignore it.

@@ -62,7 +62,9 @@ function stage() {
   );
 }
 function code() {
-  return String(send.mock.calls.at(-1)?.[1]).match(/CONFIRM ([a-f0-9]{32})/)![1];
+  return String(send.mock.calls.at(-1)?.[1])
+    .match(/CONFIRM ([a-f0-9]{32}|[2-9a-hjkmnp-z]{8})\b/i)![1]
+    .toLowerCase();
 }
 function confirm(value = code(), actor = "synthetic-admin", channel = "synthetic-channel") {
   return tryExecuteConfirm({
@@ -74,6 +76,9 @@ function confirm(value = code(), actor = "synthetic-admin", channel = "synthetic
 }
 beforeEach(() => {
   workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ops-write-"));
+  const codeDir = path.join(fs.realpathSync(workspace), "confirmation-codes");
+  fs.mkdirSync(codeDir, { mode: 0o700 });
+  vi.stubEnv("SCOPELYBOT_CONFIRM_CODE_DIR", codeDir);
   vi.stubEnv("OPENCLAW_WORKSPACE", workspace);
   vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", "synthetic-channel");
   setBackendProfileForTest({
@@ -131,7 +136,7 @@ it("stages exact preview then uses trusted confirmer with no replay", async () =
   expect(result.staged, JSON.stringify(result)).toBe(true);
   expect(JSON.stringify(result)).not.toContain(PENDING);
   expect(JSON.stringify(result)).not.toContain(code());
-  expect(send.mock.calls[0][1]).toContain(preview);
+  expect(send.mock.calls[0][1]).toContain('Record ID: 1\nChanges:\n  Label: "Before" → "After"');
   expect(send.mock.calls[0][1]).toContain("LOCAL SYNTHETIC DATA");
   expect(request).toHaveBeenCalledTimes(1);
   const confirmation = code();
@@ -317,7 +322,7 @@ it("production native prepare keeps exact strict-delivery prompt and human confi
   vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", productionChannel);
   const staged = body(await stage());
   expect(staged.staged).toBe(true);
-  expect(send.mock.calls[0][1]).toContain(preview);
+  expect(send.mock.calls[0][1]).toContain('Record ID: 1\nChanges:\n  Label: "Before" → "After"');
   expect(send.mock.calls[0][1]).toContain("PRODUCTION");
   expect(send.mock.calls[0][3]).toBe(true);
   expect(await confirm(code(), "synthetic-admin", productionChannel)).toContain("✅ Done");

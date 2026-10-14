@@ -137,6 +137,9 @@ async function run(tool: string, params: Record<string, unknown> = {}, ctx?: unk
 
 beforeEach(() => {
   workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ops-client-"));
+  const codeDir = path.join(fs.realpathSync(workspace), "confirmation-codes");
+  fs.mkdirSync(codeDir, { mode: 0o700 });
+  process.env.SCOPELYBOT_CONFIRM_CODE_DIR = codeDir;
   process.env.OPENCLAW_WORKSPACE = workspace;
   fs.writeFileSync(path.join(workspace, "scopelybot-backend.json"), JSON.stringify(PROD));
   fs.writeFileSync(path.join(workspace, "scopelybot-ops-token"), `${TOKEN}\n`, { mode: 0o600 });
@@ -153,6 +156,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   delete process.env.OPENCLAW_WORKSPACE;
+  delete process.env.SCOPELYBOT_CONFIRM_CODE_DIR;
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 

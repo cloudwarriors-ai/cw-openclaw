@@ -94,10 +94,15 @@ async function run(name: string, args: Record<string, unknown>, r = registered()
   return JSON.parse((await r.built.get(name)!.execute("roster-call", args)).content[0].text);
 }
 function code() {
-  return String(send.mock.calls.at(-1)?.[1]).match(/CONFIRM ([a-f0-9]{32})/)![1];
+  return String(send.mock.calls.at(-1)?.[1])
+    .match(/CONFIRM ([a-f0-9]{32}|[2-9a-hjkmnp-z]{8})\b/i)![1]
+    .toLowerCase();
 }
 beforeEach(() => {
   workspace = fs.mkdtempSync(path.join(os.tmpdir(), "roster-tools-"));
+  const codeDir = path.join(fs.realpathSync(workspace), "confirmation-codes");
+  fs.mkdirSync(codeDir, { mode: 0o700 });
+  vi.stubEnv("SCOPELYBOT_CONFIRM_CODE_DIR", codeDir);
   vi.stubEnv("OPENCLAW_WORKSPACE", workspace);
   vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", CHANNEL);
   profile();
@@ -179,7 +184,9 @@ beforeEach(() => {
 });
 afterEach(() => {
   for (const args of send.mock.calls) {
-    const value = String(args[1]).match(/CONFIRM ([a-f0-9]{32})/)?.[1];
+    const value = String(args[1])
+      .match(/CONFIRM ([a-f0-9]{32}|[2-9a-hjkmnp-z]{8})\b/i)?.[1]
+      ?.toLowerCase();
     if (value) {
       takePending(value, { conversationId: CHANNEL });
     }

@@ -11,15 +11,21 @@ import { readBackendProfile } from "./backend-profile.js";
 import { capabilityRefusal, currentToolName } from "./capability-registry.js";
 import { getChannelThreadAnchor, sendScopelyText } from "./comfort.js";
 import { formatBackendErrorDetail } from "./confirm.js";
+import { formatNativePreview } from "./confirmation-preview.js";
 import { nativeWriteScope } from "./ops-write-policy.js";
 import { makeCode, putPending, takePending } from "./pending-confirm.js";
 import { redactText } from "./redaction.js";
 import { jsonResult } from "./scopely-api.js";
+import { makeShortCode } from "./short-confirm-code.js";
 
 type FetchResult = Promise<{ ok: boolean; status: number; data: unknown }>;
 
 // One staged mutation awaiting flush into a confirm prompt.
-type StagedItem = { summary: string; run: (ctx?: { actor?: string }) => FetchResult };
+type StagedItem = {
+  summary: string;
+  displaySummary?: string;
+  run: (ctx?: { actor?: string }) => FetchResult;
+};
 
 // Per-item outcome of a confirmed bundle, surfaced back to the human so partial
 // application is never silent (deletes/updates over HTTP are not transactional).
@@ -54,7 +60,7 @@ function bundleWindowMs(): number {
 function buildPrompt(items: StagedItem[], code: string, target = "PROD"): string {
   if (items.length === 1) {
     return (
-      `⚠️ Confirm: ${items[0].summary} on ${target}.\n` +
+      `⚠️ Confirm: ${items[0].displaySummary ? `change on ${target}.\n${items[0].displaySummary}` : `${items[0].summary} on ${target}.`}\n` +
       `Reply \`CONFIRM ${code}\` within 5 minutes to proceed, or ignore to cancel.`
     );
   }
@@ -77,11 +83,25 @@ async function flushItems(
   if (items.length === 0) {
     return;
   }
-  const code = makeCode();
+  if (nativeScope !== undefined) {
+    // Refuse a known-invalid display before reserving a permanent short name.
+    // Keep the actual-prompt check too; placeholder validation is not approval.
+    const candidate = buildPrompt(items, "22222222", target);
+    if (candidate.length > 2300 || redactText(candidate, 2300) !== candidate) {
+      throw new Error("The complete native preview cannot be displayed safely.");
+    }
+  }
+  const code = nativeScope === undefined ? makeCode() : makeShortCode();
   let pending: Parameters<typeof putPending>[0];
   if (items.length === 1) {
     // Legacy pending shape — confirm.ts renders `✅ Done: <summary>.` unchanged.
-    pending = { code, conversationId: channel, summary: items[0].summary, run: items[0].run };
+    pending = {
+      code,
+      conversationId: channel,
+      summary: items[0].summary,
+      ...(items[0].displaySummary === undefined ? {} : { displaySummary: items[0].displaySummary }),
+      run: items[0].run,
+    };
   } else {
     const summary = redactText(
       `${items.length} changes: ${items.map((it) => it.summary).join("; ")}`,
@@ -119,13 +139,17 @@ async function flushItems(
     };
     pending = { code, conversationId: channel, summary, run };
   }
+  const prompt = buildPrompt(items, nativeScope === undefined ? code : code.toUpperCase(), target);
+  if (nativeScope !== undefined && (prompt.length > 2300 || redactText(prompt, 2300) !== prompt)) {
+    throw new Error("The complete native preview cannot be displayed safely.");
+  }
   if (nativeScope === undefined) {
     putPending(pending);
   }
   try {
     await sendScopelyText(
       channel,
-      buildPrompt(items, code, target),
+      prompt,
       getChannelThreadAnchor(channel),
       nativeScope !== undefined || target !== "PROD",
     );
@@ -222,9 +246,21 @@ export async function stageWrite(
         error: "The exact native preview cannot be displayed safely.",
       });
     }
+    let displaySummary: string;
+    try {
+      displaySummary = formatNativePreview(summary);
+      if (displaySummary.length > 2000 || redactText(displaySummary, 2000) !== displaySummary) {
+        throw new Error("Unsafe native display");
+      }
+    } catch {
+      return jsonResult({
+        ok: false,
+        error: "The exact native preview cannot be displayed safely.",
+      });
+    }
     await flushItems(
       channel,
-      [{ summary, run }],
+      [{ summary, displaySummary, run }],
       profile.env === "prod" ? "PRODUCTION" : "LOCAL SYNTHETIC DATA",
       scope,
     );

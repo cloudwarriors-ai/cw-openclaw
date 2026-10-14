@@ -78,7 +78,7 @@ export async function tryExecuteConfirm(params: {
   if (!isConfirmCommand(params.text)) {
     return null;
   }
-  const m = params.text.trim().match(/^CONFIRM\s+([a-f0-9]{32})$/i);
+  const m = params.text.trim().match(/^CONFIRM\s+([2-9a-hjkmnp-z]{8}|[a-f0-9]{32})$/i);
   if (!m) {
     return "Copy the complete CONFIRM line from the latest preview, or request a fresh preview.";
   }
@@ -138,7 +138,7 @@ export async function tryExecuteConfirm(params: {
       durationMs: Date.now() - start,
     });
     if (res.ok) {
-      return `✅ Done: ${action.summary}.`;
+      return `✅ Done: ${action.displaySummary ?? action.summary}.`;
     }
     // Bundled confirms (gated.ts coalescing) report per-item outcomes on
     // failure: HTTP ops are not transactional, so the human must see exactly
