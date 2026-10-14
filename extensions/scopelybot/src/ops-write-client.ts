@@ -10,7 +10,9 @@ type LocalWrite =
   | "catalog.deployment_types.update"
   | "catalog.scoping_cards.create"
   | "catalog.scoping_cards.update"
-  | "catalog.scoping_cards.delete";
+  | "catalog.scoping_cards.delete"
+  | "pricing.items.create"
+  | "pricing.items.update";
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }

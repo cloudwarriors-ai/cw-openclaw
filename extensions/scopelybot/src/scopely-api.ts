@@ -111,6 +111,8 @@ export const OPS_LOCAL_WRITE_CAPABILITIES = [
   "catalog.scoping_cards.create",
   "catalog.scoping_cards.update",
   "catalog.scoping_cards.delete",
+  "pricing.items.create",
+  "pricing.items.update",
   "catalog.project_types.update",
   "catalog.deployment_types.update",
   "ops.confirm",

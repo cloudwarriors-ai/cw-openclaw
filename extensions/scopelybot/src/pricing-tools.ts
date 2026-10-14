@@ -5,6 +5,7 @@ import { wrapToolWithAudit } from "./audit.js";
 import { fetchDeploymentTypeKeys } from "./deployment-keys.js";
 import { describeChanges, pickBody, stageWrite } from "./gated.js";
 import { opsRead } from "./ops-client.js";
+import { opsStageWrite } from "./ops-write-client.js";
 import { errorResult, jsonResult, scopelyFetch } from "./scopely-api.js";
 
 // Pricing-config tools (Scopely VIP admin). All IsPlatformStaff. Reads run
@@ -34,11 +35,17 @@ async function rejectUnknownDeploymentKeys(
   if (overrides && typeof overrides === "object" && !Array.isArray(overrides)) {
     referenced.push(...Object.keys(overrides));
   }
-  if (referenced.length === 0) return null;
+  if (referenced.length === 0) {
+    return null;
+  }
   const validKeys = await fetchDeploymentTypeKeys();
-  if (validKeys.length === 0) return null; // fail open — lookup unavailable
+  if (validKeys.length === 0) {
+    return null;
+  } // fail open — lookup unavailable
   const unknown = [...new Set(referenced.filter((k) => !validKeys.includes(k)))];
-  if (unknown.length === 0) return null;
+  if (unknown.length === 0) {
+    return null;
+  }
   return (
     `Unknown deployment type key(s): ${unknown.join(", ")}. Valid keys: ${validKeys.join(", ")}. ` +
     `A pricing row gated on an unknown deployment type never matches a real deployment and ` +
@@ -155,7 +162,9 @@ export function registerPricingTools(api: OpenClawPluginApi, logger: AuditLogger
         async execute(_id: string, params: Record<string, unknown>) {
           try {
             const keyError = await rejectUnknownDeploymentKeys(params);
-            if (keyError) return jsonResult({ ok: false, error: keyError });
+            if (keyError) {
+              return jsonResult({ ok: false, error: keyError });
+            }
             const body = pickBody(params, ["scope_category", ...PRICING_FIELDS]);
             return stageWrite(
               `create pricing default ${params.scope_category as string}/${params.pricing_key as string} @ ${params.unit_price as string}`,
@@ -202,7 +211,9 @@ export function registerPricingTools(api: OpenClawPluginApi, logger: AuditLogger
           try {
             const id = params.id as number;
             const keyError = await rejectUnknownDeploymentKeys(params);
-            if (keyError) return jsonResult({ ok: false, error: keyError });
+            if (keyError) {
+              return jsonResult({ ok: false, error: keyError });
+            }
             const body = pickBody(params, PRICING_FIELDS);
             if (Object.keys(body).length === 0) {
               return jsonResult({ ok: false, error: "No fields to update." });
@@ -275,94 +286,50 @@ export function registerPricingTools(api: OpenClawPluginApi, logger: AuditLogger
     ),
   );
 
-  api.registerTool(() =>
-    wrapToolWithAudit(
-      {
-        name: "scopely_create_pricing_item",
-        description:
-          "Create a Scopely VIP pricing item under a vendor's project type (admin action). You ARE " +
-          "authorized — CALL this tool. It only STAGES the create; nothing happens until `CONFIRM <code>`. " +
-          "Note: (project_type, pricing_key) must be unique.",
-        parameters: pricingBodyParams({
-          vendor_key: Type.String({ description: "Vendor key (e.g. zoom)" }),
-          project_type_id: Type.Number({ description: "Project-type id" }),
-        }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const vendorKey = params.vendor_key as string;
-            const ptPk = params.project_type_id as number;
-            const keyError = await rejectUnknownDeploymentKeys(params);
-            if (keyError) return jsonResult({ ok: false, error: keyError });
-            const body = pickBody(params, PRICING_FIELDS);
-            return stageWrite(
-              `create pricing item ${params.pricing_key as string} on ${vendorKey}/pt ${ptPk} @ ${params.unit_price as string}`,
-              () =>
-                scopelyFetch(itemBase(vendorKey, ptPk), {
-                  method: "POST",
-                  body: JSON.stringify(body),
-                }),
-            );
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
-      },
-      logger,
-    ),
-  );
-
-  api.registerTool(() =>
-    wrapToolWithAudit(
-      {
-        name: "scopely_update_pricing_item",
-        description:
-          "Update a Scopely VIP pricing item (admin action). You ARE authorized — CALL this tool. Pass " +
-          "only fields to change. It only STAGES the change; nothing applies until `CONFIRM <code>`. Note: " +
-          "deactivating an item referenced by a scoping card is rejected by the backend.",
-        parameters: Type.Object({
-          vendor_key: Type.String({ description: "Vendor key" }),
-          project_type_id: Type.Number({ description: "Project-type id" }),
-          id: Type.Number({ description: "Pricing item id" }),
-          display_name: Type.Optional(Type.String()),
-          description: Type.Optional(Type.String()),
-          unit_price: Type.Optional(Type.String({ description: 'Decimal string, e.g. "15.00"' })),
-          unit_price_by_deployment: Type.Optional(Type.Record(Type.String(), Type.String())),
-          category: Type.Optional(Type.String()),
-          sort_order: Type.Optional(Type.Number()),
-          deployment_types: Type.Optional(
-            Type.Array(Type.String(), {
-              description:
-                "Deployment type KEYS (e.g. autopilot, copilot, bespoke) — NOT a pricing " +
-                "category. Unknown keys are rejected with the valid list.",
-            }),
-          ),
-          is_active: Type.Optional(Type.Boolean()),
-        }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const vendorKey = params.vendor_key as string;
-            const ptPk = params.project_type_id as number;
-            const id = params.id as number;
-            const keyError = await rejectUnknownDeploymentKeys(params);
-            if (keyError) return jsonResult({ ok: false, error: keyError });
-            const body = pickBody(params, PRICING_FIELDS);
-            if (Object.keys(body).length === 0) {
-              return jsonResult({ ok: false, error: "No fields to update." });
-            }
-            return stageWrite(`update pricing item id ${id}: ${describeChanges(body)}`, () =>
-              scopelyFetch(`${itemBase(vendorKey, ptPk)}${id}/`, {
-                method: "PATCH",
-                body: JSON.stringify(body),
+  for (const action of ["create", "update"] as const) {
+    api.registerTool(() =>
+      wrapToolWithAudit(
+        {
+          name: `scopely_${action}_pricing_item`,
+          description:
+            `${action === "create" ? "Create" : "Update"} a VIP/ZW shared vendor rate by pricing_key. ` +
+            "Stages an exact preview for human CONFIRM; applies across project types using this key. " +
+            "Organization overrides and historical quotes remain intact. Creates a new rate-card version. " +
+            "Local synthetic vendors only. Legacy project_type_id/id, retirement and tier money edits refuse.",
+          parameters: Type.Object(
+            {
+              vendor_key: Type.String({ description: "Synthetic native vendor key" }),
+              pricing_key: Type.String({
+                description: "Stable vendor-wide pricing key; immutable on update",
               }),
-            );
-          } catch (err) {
-            return errorResult(err);
-          }
+              unit_price:
+                action === "create"
+                  ? Type.String({ description: "Exact decimal string, max two fractional places" })
+                  : Type.Optional(Type.String()),
+              unit_price_by_deployment: Type.Optional(Type.Record(Type.String(), Type.String())),
+              display_name: Type.Optional(Type.String()),
+              description: Type.Optional(Type.String()),
+              category: Type.Optional(Type.String()),
+              sort_order: Type.Optional(Type.Integer({ minimum: 0, maximum: 2147483647 })),
+              deployment_types: Type.Optional(Type.Array(Type.String(), { uniqueItems: true })),
+              is_active: Type.Optional(
+                Type.Boolean({
+                  description:
+                    "Backend accepts only true; retirement requests receive an audited refusal",
+                }),
+              ),
+            },
+            // Preserve obsolete arguments for the native backend's strict,
+            // audited refusal; never silently strip a legacy project/entry ID.
+            { additionalProperties: true },
+          ),
+          execute: (_id: string, params: Record<string, unknown>) =>
+            opsStageWrite(`pricing.items.${action}`, params),
         },
-      },
-      logger,
-    ),
-  );
+        logger,
+      ),
+    );
+  }
 
   api.registerTool(() =>
     wrapToolWithAudit(

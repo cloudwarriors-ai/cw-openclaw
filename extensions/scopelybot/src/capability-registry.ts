@@ -410,6 +410,8 @@ export function capabilityFor(tool: string): Capability | undefined {
             "scopely_create_scoping_card",
             "scopely_update_scoping_card",
             "scopely_delete_scoping_card",
+            "scopely_create_pricing_item",
+            "scopely_update_pricing_item",
           ].includes(tool) && readBackendProfile().env === "local"
         ? "local"
         : (STATUS_OVERRIDES[tool] ?? status),

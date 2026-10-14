@@ -175,3 +175,17 @@ production remains read only.
 Read arguments remain capped at 4 KiB. Guarded local-write arguments may use up
 to 16 KiB; the backend still enforces its combined 16 KiB pending envelope and
 2,000-character exact preview. Oversized requests refuse before any effect.
+
+### Native shared pricing writes
+
+Local `scopely_create_pricing_item` and `scopely_update_pricing_item` use
+`pricing.items.create/update` through the confirmed ops adapter. Select by
+`vendor_key` + `pricing_key`; do not pass old project/entry IDs. Every supplied
+argument reaches strict backend validation. No legacy HTTP fallback is attempted.
+
+CONFIRM displays the exact shared vendor change and source card version. A success
+creates a successor rate card, preserving history and organization overrides.
+Deployment maps follow existing engine rules, not a promise of uniform effects.
+Unsupported retirement, tier money edits, obsolete fields and oversized previews
+refuse. Pricing deletion remains disabled. Production stays read-only; local HTTP
+with mocked Zoom delivery is not connected channel or human Claude UAT.
