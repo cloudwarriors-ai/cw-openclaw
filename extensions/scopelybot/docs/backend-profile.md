@@ -1,77 +1,54 @@
 # ScopelyBot backend profile
 
-The backend profile decides which ZW app host the bot may reach and whether it may change anything. The guard (`src/scopely-api.ts`), the CONFIRM path and the capability registry read it on every request, so an edit applies to the next request with no restart.
+The profile selects the app origin, credentials and bot write mode. The request guard, confirmation path and capability registry reread it on each request. A missing, invalid or unsafe profile fails closed: no allowed host and no app request.
 
-## Location
+## Files and authority
 
-`<workspace>/scopelybot-backend.json`, next to `scopelybot-approvers.json`. The workspace is `$OPENCLAW_WORKSPACE`, or `/root/.openclaw/workspace` when that variable is unset or empty.
+The runtime workspace contains `scopelybot-backend.json` and the separately provisioned `scopelybot-ops-token`. The workspace is `OPENCLAW_WORKSPACE`, otherwise the gateway's default workspace. Resolve the actual persistent mount and runtime UID before deployment; do not assume a development UID.
 
-## Production
+The token file must be a regular runtime-owned0600 file. Never put the token in the profile, examples, logs or prompts. Tailscale supplies private connectivity; native app permissions and the server approver roster remain the authority. The older `scopelybot-approvers.json` file does not establish native write authority.
+
+## Production starts read only
+
+Use the private release owner's reviewed origin and exact allowed host. The following is documentation with placeholders, not an executable production profile:
 
 ```json
 {
   "profile": "zw2",
   "env": "prod",
   "mode": "read-only",
+  "productionCoreWrites": false,
   "authMode": "service-token",
-  "baseUrl": "https://api.vip.pscx.ai",
-  "allowedHosts": ["api.vip.pscx.ai"],
-  "digestEnabled": false
+  "baseUrl": "https://<reviewed-private-host>:9443",
+  "allowedHosts": ["<reviewed-private-host>:9443"],
+  "digestEnabled": false,
+  "maxRequestsPerMinute": 20
 }
 ```
 
-Keep `digestEnabled` false on production. With `true` (and the digest timer armed by `SCOPELYBOT_DAILY_DIGEST=1`), the daily digest sends 4 extra GETs a day to legacy admin paths the new app does not serve, and the health GET is no longer the bot's only app request. M1a's audit-attribution claim depends on it too (`docs/PK-7a-DO-NOT-DEPLOY-ALONE.md`).
+Only origins accepted by `ops-write-policy.ts` and `backend-profile.ts` are valid; an operator cannot add an arbitrary host through JSON. The former public API profile and the old dev IP are legacy fixtures, not the native operator deployment recipe. Keep `digestEnabled` false: the legacy digest uses admin paths outside this release's operator surface.
 
-## Dev (zw2 sprint stack on noob-root)
+Read-only mode denies business writes and confirmation execution. Native REST/MCP read capabilities may use POST transport; read-only does not mean every HTTP POST is a mutation.
 
-```json
-{
-  "profile": "zw2",
-  "env": "dev",
-  "mode": "read-only",
-  "authMode": "service-token",
-  "baseUrl": "http://100.114.142.100:8022",
-  "allowedHosts": ["100.114.142.100:8022"],
-  "hostHeader": "vip.localhost",
-  "digestEnabled": false
-}
-```
+## Explicit write activation
 
-## Rules the bot enforces
+Production native writes are implemented but default off. Enabling them requires all of the following:
 
-- `mode` is `off` (kill switch: no app request, and no staged change runs on CONFIRM), `read-only` (GET/HEAD only; the default) or `read-write`.
-- `read-write` is accepted only with `env: "dev"`. Production stays read-only: lifting that cap for a tool family is a reviewed code change (PK-14), never a profile edit.
-- `allowedHosts` must come from the env's host table in the code (prod: `api.vip.pscx.ai`; dev: `100.114.142.100:8022`), and `baseUrl` must be a bare origin on one of them (https; http only for dev).
-- `hostHeader` is dev-only and must be one of the dev stack's virtual hosts in the code (`vip.localhost`, `noob-root`), so it cannot pick another service behind the same proxy.
-- `authMode` is `anonymous` (the default: no credential, so no app tool sends anything) or `service-token` (the operator-layer invoke carries the bot's service token; `docs/ops-client.md`). The token is never in this file: it is read on every invoke from `scopelybot-ops-token` next to it, a regular file owned by the gateway's user with mode `0600`, holding one app-minted token `zwops_<12 hex>_<32-64 of A-Za-z0-9_->`, sent only as `Authorization: Bearer` on the invoke. A missing, unsafe or malformed token file refuses the invoke (`auth_unavailable`), nothing else.
-- `maxRequestsPerMinute` (1 to 600, default 20) caps the bot's app requests.
-- `issueLinks` maps a family id (for example `F7`) to a `https://github.com/cloudwarriors-ai/` issue URL in canonical form. Without one, a refusal names only the manual path and makes no tracking claim.
-- Unknown keys are ignored.
+- A matched, reviewed backend and gateway build, approved production vendor/channel/principal scope, verified native identity links and current server roster.
+- Backend production admission and the selected business-family switches enabled through the release procedure, with local-write flags off.
+- The reviewed private production origin, service-token auth, `mode: "read-write"` and `productionCoreWrites: true` in the effective bot profile.
+- The bot agent's reviewed tool allowlist and its exact original channel binding. An agent/session prefix never substitutes for a channel match; confirmation matches the actual dispatch conversation, including threaded replies.
+- Persistent audit storage and `SCOPELYBOT_CONFIRM_CODE_DIR` pointing inside the persistent mount. The code directory is runtime-owned0700; reservations are0600 and retained across restart and rollback. Never empty or restore older code history.
+- A chosen safe acceptance vendor and quote, human confirmation, readback and separate operator go/no-go. No target means read-only acceptance only.
 
-## Editing the file
+Only the seven reviewed native pricing/catalog operations and supporting controls are eligible. Legacy raw writes, account/lifecycle/delivery actions and unrelated tools do not become production-enabled through this profile.
 
-The bot re-reads the file on every request, so never edit it in place. Write the new content to a temporary file in the same directory, then move it over the old one in one step:
+## Local synthetic profile
 
-```sh
-cd /root/.openclaw/workspace          # or the deployment's $OPENCLAW_WORKSPACE
-cat > scopelybot-backend.json.tmp     # paste the new JSON, then Ctrl-D
-mv scopelybot-backend.json.tmp scopelybot-backend.json
-```
+Local native testing uses `env: "local"` and the code-reviewed loopback origin. Development host/header overrides are separately constrained in `backend-profile.ts`; do not copy a synthetic principal, user, vendor or channel into production. A profile's environment is operator-supplied and must be checked against the actual stack.
 
-To stop anything but an owner from changing the file, the host owner can make it immutable with `chattr +i scopelybot-backend.json` (Linux, root), and remove the flag with `chattr -i` before the next edit. This is a host step; the bot never does it.
+## Changes and rollback
 
-Each content change writes one `policy_change` row to the audit-v2 chain `<workspace>/scopelybot/audit-v2.jsonl` (valid, or the error and the fail-closed default). Nothing writes the v1 `audit.jsonl` any more.
+Replace the profile atomically using a temporary file in the same directory. A profile change applies on the next request, but shared gateway environment, tool allowlist or binding changes need the reviewed host reload/restart procedure. Preserve other bots and the live shared configuration.
 
-## env is self-declared
-
-The bot cannot tell which stack it runs on: `env` is whatever the file says. A prod file copied onto a dev stack is valid there and points that stack at the production API (read-only). The deploy runbook must check `env`, `baseUrl` and `allowedHosts` on every stack.
-
-## Rollout checks
-
-1. On every stack, check that `env`, `baseUrl` and `allowedHosts` name that stack (see above), and that the newest `policy_change` row says `valid: true` with the same `env` and `allowedHosts`.
-2. Kill-switch drill: replace the file with the same content plus `"mode": "off"`. The next health check must answer that the connection is switched off by the operator, with a `backend_off` row in the audit log and no request to the app (the token file is not even read). Put `"mode": "read-only"` back and check that the health check answers again.
-3. Rollback is `"mode": "off"`, which applies on the next request with no restart. It is NOT a revert of this change: a revert brings back the deleted legacy login that used the env credentials.
-
-## Missing or invalid file
-
-A missing file, an invalid value anywhere in it, invalid JSON, or anything at the path that is not a regular file of at most 64 KB (a directory or a FIFO, for example) makes the bot apply the fail-closed default: read-only, digest off, and no allowed host, so it sends no request to the app at all. The health check then answers that there is no valid backend profile, and the reason is in the `policy_change` row.
+`mode: "off"` prevents app requests and confirmations; `read-only` prevents business writes. Freeze first on uncertain outcomes, retain audit/pending/code history and reconcile before any new preview. Do not retry an uncertain mutation or roll back to older reservations. Profile changes are recorded in the bot audit chain; backend identity and business audit records provide the native action attribution.

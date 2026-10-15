@@ -149,17 +149,13 @@ describe("ScopelyBot confirmation actor gate", () => {
     });
     expect(takePendingMock).toHaveBeenCalledWith("12341234123412341234123412341234", {
       conversationId: "vipbot_prod",
-      fromOwnZoomSurface: false,
     });
     expect(result).toContain("HTTP 502");
     expect(result).not.toContain("secret");
   });
 
-  // Regression for the 2026-07-20 incident: a CONFIRM sent inside a Zoom thread
-  // dispatches with the THREAD id as conversationId (never matching the
-  // channel-JID-bound pending), but the scopelybot session key proves it arrived
-  // through the bot's own Zoom binding — takePending must receive that proof.
-  it("marks a threaded CONFIRM from scopelybot's own zoom session as own-surface", async () => {
+  // Zoom thread sessions retain their actual channel in the dispatch context.
+  it("passes the actual channel unchanged for a threaded Zoom confirmation", async () => {
     takePendingMock.mockReturnValue({
       summary: "reset password for user 47",
       run: vi.fn().mockResolvedValue({ ok: true, status: 200, data: {} }),
@@ -167,14 +163,13 @@ describe("ScopelyBot confirmation actor gate", () => {
     const result = await tryExecuteConfirm({
       text: "CONFIRM 82488248824882488248824882488248",
       actor: approver,
-      conversationId: "554f6079-4d2e-4727-87db-1b1c482fff3d",
+      conversationId: "synthetic@conference.xmpp.zoom.us",
       channelId: "zoom",
       sessionKey: "agent:scopelybot:zoom:channel:554f6079-4d2e-4727-87db-1b1c482fff3d",
       logger,
     });
     expect(takePendingMock).toHaveBeenCalledWith("82488248824882488248824882488248", {
-      conversationId: "554f6079-4d2e-4727-87db-1b1c482fff3d",
-      fromOwnZoomSurface: true,
+      conversationId: "synthetic@conference.xmpp.zoom.us",
     });
     expect(result).toContain("✅ Done");
   });
@@ -191,7 +186,6 @@ describe("ScopelyBot confirmation actor gate", () => {
     });
     expect(takePendingMock).toHaveBeenCalledWith("43214321432143214321432143214321", {
       conversationId: "some-thread-id",
-      fromOwnZoomSurface: false,
     });
     expect(result).toContain("No pending action");
   });

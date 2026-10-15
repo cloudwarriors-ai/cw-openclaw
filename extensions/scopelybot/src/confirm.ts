@@ -10,11 +10,13 @@ import { auditBackendEvent, readBackendProfile } from "./backend-profile.js";
 import { isCurrentApprover } from "./ops-roster-client.js";
 import { takePending } from "./pending-confirm.js";
 import { redactText } from "./redaction.js";
-import { isScopelyBotZoomMessage } from "./zoom-format.js";
 
-// Claim malformed/old commands too so they never fall through to model dispatch.
+// Only an exact code command is deterministic approval; ordinary confirm prose
+// and malformed codes remain normal requests; neither consumes a pending action.
+// The model may prepare a change, but only this exact command can execute one.
+const CONFIRM_LINE = /^CONFIRM\s+([2-9a-hjkmnp-z]{8}|[a-f0-9]{32})$/i;
 export function isConfirmCommand(text: string): boolean {
-  return /^CONFIRM(?:\s|$)/i.test(text.trim());
+  return CONFIRM_LINE.test(text.trim());
 }
 
 function uncertainBundleItem(value: unknown): boolean {
@@ -75,12 +77,9 @@ export async function tryExecuteConfirm(params: {
   sessionKey?: string;
   logger: AuditLogger;
 }): Promise<string | null> {
-  if (!isConfirmCommand(params.text)) {
-    return null;
-  }
-  const m = params.text.trim().match(/^CONFIRM\s+([2-9a-hjkmnp-z]{8}|[a-f0-9]{32})$/i);
+  const m = params.text.trim().match(CONFIRM_LINE);
   if (!m) {
-    return "Copy the complete CONFIRM line from the latest preview, or request a fresh preview.";
+    return null;
   }
   // Refuse locally before any authority request, then recheck after awaiting it.
   if (readBackendProfile().mode !== "read-write") {
@@ -99,17 +98,9 @@ export async function tryExecuteConfirm(params: {
     auditBackendEvent("write_blocked_read_only", { via: "confirm" });
     return "Changes are paused: the bot is read-only, so nothing was run.";
   }
-  // Channel-scoped: only consumes an action staged for THIS conversation. Zoom
-  // thread replies dispatch with the thread id as conversationId, so the session
-  // key — which proves the message came through ScopelyBot's own Zoom binding —
-  // is the accepted channel-binding evidence for threaded CONFIRMs.
-  const action = takePending(m[1].toLowerCase(), {
-    conversationId: params.conversationId,
-    fromOwnZoomSurface: isScopelyBotZoomMessage({
-      channelId: params.channelId ?? "",
-      sessionKey: params.sessionKey,
-    }),
-  });
+  // The host preserves the Zoom channel JID in dispatch conversationId even
+  // for thread-scoped sessions. An agent prefix alone cannot prove that channel.
+  const action = takePending(m[1].toLowerCase(), { conversationId: params.conversationId });
   if (!action) {
     return "No pending action for that confirmation — it may have expired (5 min), already been used, or was requested in a different channel.";
   }

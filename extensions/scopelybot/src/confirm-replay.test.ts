@@ -86,7 +86,7 @@ describe("ScopelyBot confirmation replay boundary", () => {
     const action = run();
     const code = "a".repeat(32);
     putPending({ code, conversationId: CHANNEL, summary: "untouched", run: action });
-    expect(await confirm(text)).toContain("Copy the complete CONFIRM line");
+    expect(await confirm(text)).toBeNull();
     expect(action).not.toHaveBeenCalled();
     expect(takePending(code, { conversationId: CHANNEL })?.run).toBe(action);
   });

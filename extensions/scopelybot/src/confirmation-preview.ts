@@ -5,6 +5,8 @@ const LABELS: Record<string, string> = {
   pricing_key: "Pricing key",
   card_key: "Scoping card",
   project_type_id: "Project type ID",
+  project_type: "Project type",
+  project_label: "Project label",
   resource: "Resource",
   id: "Record ID",
   operation: "Operation",
@@ -32,7 +34,18 @@ const LABELS: Record<string, string> = {
   scope_category: "Scope category",
   tiers: "Tiers",
 };
-const TARGET_KEYS = ["vendor_key", "resource", "id", "project_type_id", "card_key", "pricing_key"];
+const TARGET_KEYS = [
+  "vendor_key",
+  "resource",
+  "project_type",
+  "project_label",
+  "key",
+  "label",
+  "id",
+  "project_type_id",
+  "card_key",
+  "pricing_key",
+];
 
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
