@@ -2,15 +2,14 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
-import { runPassthroughCycle } from "./passthrough-runner-cycle.js";
-import { readState } from "./passthrough-state.js";
-import { jsonResult, errorResult } from "./scopely-api.js";
+import { capabilityRefusal } from "./capability-registry.js";
 
-export function registerPassthroughTools(
-  api: OpenClawPluginApi,
-  logger: AuditLogger,
-  workspaceDir: string,
-) {
+// Both passthrough tools stay registered (INV-7: tool ids never disappear) but
+// are refused in code. PK-7a deleted the legacy runner, which spawned
+// Playwright with env credentials against env URLs outside the scopelyFetch
+// guard (plan F12/L4), and the state file only it wrote. The registry wrapper
+// refuses them first; the code refusal keeps them inert without it.
+export function registerPassthroughTools(api: OpenClawPluginApi, logger: AuditLogger) {
   // scopely_passthrough_status — "Are all the passthroughs healthy?"
   api.registerTool(() =>
     wrapToolWithAudit(
@@ -25,37 +24,8 @@ export function registerPassthroughTools(
             Type.Boolean({ description: "Only show currently failing passthroughs" }),
           ),
         }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const state = readState(workspaceDir);
-            const tests = Object.values(state.tests);
-            const filtered = params.only_failing
-              ? tests.filter((t) => t.status !== "passed")
-              : tests;
-
-            const summary = {
-              ok: true,
-              last_run: state.lastRun,
-              last_run_duration_ms: state.lastRunDurationMs,
-              total_tests: tests.length,
-              passing: tests.filter((t) => t.status === "passed").length,
-              failing: tests.filter((t) => t.status === "failed").length,
-              skipped: tests.filter((t) => t.status === "skipped").length,
-              tests: filtered.map((t) => ({
-                passthrough: t.passthrough,
-                test_title: t.testTitle,
-                status: t.status,
-                last_checked: t.lastChecked,
-                duration_ms: t.durationMs,
-                consecutive_failures: t.consecutiveFailures,
-                error_message: t.errorMessage,
-              })),
-            };
-
-            return jsonResult(summary);
-          } catch (err) {
-            return errorResult(err);
-          }
+        async execute() {
+          return capabilityRefusal("scopely_passthrough_status");
         },
       },
       logger,
@@ -73,15 +43,7 @@ export function registerPassthroughTools(
           "Useful after a deploy or when investigating a reported issue.",
         parameters: Type.Object({}),
         async execute() {
-          try {
-            const summary = await runPassthroughCycle(workspaceDir, { source: "manual" });
-            return jsonResult({
-              ok: true,
-              ...summary,
-            });
-          } catch (err) {
-            return errorResult(err);
-          }
+          return capabilityRefusal("scopely_passthrough_run_now");
         },
       },
       logger,

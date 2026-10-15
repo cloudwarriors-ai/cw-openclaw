@@ -2,69 +2,67 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
+import { opsRead } from "./ops-client.js";
+import { redactText } from "./redaction.js";
 import { scopelyFetch, jsonResult, errorResult, buildQuery } from "./scopely-api.js";
 
+// The new app's order statuses (orders/ops_capabilities.py, the sessions.list
+// status enum); the old in_progress/generated/converted filter is gone.
+const SESSION_STATUSES = [
+  "archived",
+  "cancelled",
+  "closed",
+  "declined",
+  "draft",
+  "in_progress",
+  "locked",
+  "pricing_complete",
+  "signed",
+  "sow_generated",
+  "sow_sent",
+  "voided",
+] as const;
+
 export function registerScopelyTools(api: OpenClawPluginApi, logger: AuditLogger) {
-  // scopely_auth_status — "Are we connected?"
+  // scopely_auth_status — "Who is the bot acting as for me?" (operator layer system.whoami)
   api.registerTool(() =>
     wrapToolWithAudit(
       {
         name: "scopely_auth_status",
         description:
-          "Check Scopely VIP authentication status. Returns current session and user info.",
+          "Check who the bot is acting as in the new ZW app for the person asking: the matched ZW " +
+          "user (or that none matched) and the bot's service principal. Read-only.",
         parameters: Type.Object({}),
-        async execute() {
-          try {
-            const result = await scopelyFetch("/api/auth/me/");
-            if (!result.ok) {
-              return jsonResult({ ok: false, error: `HTTP ${result.status}` });
-            }
-            return jsonResult({ ok: true, user: result.data });
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+        execute: opsRead,
       },
       logger,
     ),
   );
 
-  // Health endpoints live on the API host (api.vip.pscx.ai), not the frontend
-  // BFF, and need no auth — served directly by Django (scopely config/urls.py).
-  // SCOPELY_HEALTH_URL overrides the /health/ URL; component health derives
-  // from the same base so one override moves both.
-  function healthUrl(suffix: "" | "components/"): string {
-    const baseUrl =
-      process.env.SCOPELY_BASE_URL ?? process.env.SCOPELY_URL ?? "https://vip.pscx.ai";
-    const root =
-      process.env.SCOPELY_HEALTH_URL ?? `${baseUrl.replace("//vip.", "//api.vip.")}/health/`;
-    return `${root.replace(/\/+$/, "")}/${suffix}`;
+  // The new app has no component health; scopely_component_health stays
+  // registry-blocked (capability-registry.ts) and its body never runs.
+  const HEALTH_PATH = "/api/v1/health/";
+  // The health body is echoed to the model: a non-JSON answer (an HTML error or
+  // Django debug page; prod DEBUG=0 is unconfirmed) is cut to about 1 KB.
+  const HEALTH_TEXT_LIMIT = 1024;
+
+  async function fetchHealth(suffix: "components/") {
+    const result = await scopelyFetch(`${HEALTH_PATH}${suffix}`);
+    const data =
+      typeof result.data === "string" ? redactText(result.data, HEALTH_TEXT_LIMIT) : result.data;
+    return jsonResult({ ok: result.ok, status: result.status, data });
   }
 
-  async function fetchHealth(url: string) {
-    const resp = await fetch(url);
-    const data = resp.headers.get("content-type")?.includes("application/json")
-      ? await resp.json()
-      : await resp.text();
-    return jsonResult({ ok: resp.ok, status: resp.status, data });
-  }
-
-  // scopely_health_check — "Is the service up?"
+  // scopely_health_check — "Is the service up?" (operator layer system.health)
   api.registerTool(() =>
     wrapToolWithAudit(
       {
         name: "scopely_health_check",
         description:
-          "Check Scopely VIP service health. Returns service status and database connectivity. " +
-          "Use this to determine if there is an immediate infrastructure problem.",
+          "Check the new VIP app's operator layer: its status, how many capabilities it serves " +
+          "and which capability families are switched off. Read-only.",
         parameters: Type.Object({}),
-        async execute() {
-          try {
-            return await fetchHealth(healthUrl(""));
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+        execute: opsRead,
       },
       logger,
     ),
@@ -83,7 +81,7 @@ export function registerScopelyTools(api: OpenClawPluginApi, logger: AuditLogger
         parameters: Type.Object({}),
         async execute() {
           try {
-            return await fetchHealth(healthUrl("components/"));
+            return await fetchHealth("components/");
           } catch (err) {
             return errorResult(err);
           }
@@ -93,78 +91,52 @@ export function registerScopelyTools(api: OpenClawPluginApi, logger: AuditLogger
     ),
   );
 
-  // scopely_list_users — "Who are the users?" / "Who was the last person to login?"
+  // Native support roster; the backend owns search and actual actor permission.
   api.registerTool(() =>
     wrapToolWithAudit(
       {
         name: "scopely_list_users",
         description:
-          "List Scopely VIP users. Returns user profiles with roles, organizations, last_login, and session count. " +
-          "Use this to answer 'who was the last person to login' or 'who are the active users'. " +
-          "Set ordering to '-last_login' to sort by most recent login. `search` handles a full " +
-          "person name (e.g. 'Josh Rickerd') automatically — no need to split it yourself.",
-        parameters: Type.Object({
-          role: Type.Optional(
-            Type.String({
-              description: "Filter by role (platform_admin, power_user, org_admin, user)",
-            }),
-          ),
-          search: Type.Optional(Type.String({ description: "Search by name or email" })),
-          ordering: Type.Optional(
-            Type.String({
-              description:
-                "Sort order: -last_login, last_login, -created_at, created_at (default: -created_at)",
-            }),
-          ),
-        }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const qs = buildQuery(params, ["role", "search", "ordering"]);
-            const result = await scopelyFetch(`/api/auth/users/${qs}`);
-            if (!result.ok) {
-              return jsonResult({
-                ok: false,
-                error: `HTTP ${result.status}`,
-                details: result.data,
-              });
-            }
-            const rows = Array.isArray(result.data) ? result.data : [];
-            const search = typeof params.search === "string" ? params.search.trim() : "";
-            // The backend OR-matches the *whole* search string against email, first_name,
-            // last_name, and username separately (icontains) — a two-word "Josh Rickerd"
-            // never matches, since no single field holds both tokens together. When the
-            // first attempt returns nothing and the query looks like a full name, retry
-            // per token and union the results client-side (deduped by id) instead of
-            // reporting a false "no user found".
-            const tokens = search.split(/\s+/).filter((t) => t.length > 1);
-            if (rows.length === 0 && tokens.length > 1) {
-              const byId = new Map<number, unknown>();
-              for (const token of tokens) {
-                const tokenQs = buildQuery({ ...params, search: token }, [
-                  "role",
-                  "search",
-                  "ordering",
-                ]);
-                const tokenResult = await scopelyFetch(`/api/auth/users/${tokenQs}`);
-                if (tokenResult.ok && Array.isArray(tokenResult.data)) {
-                  for (const row of tokenResult.data as Array<{ id: number }>) {
-                    byId.set(row.id, row);
-                  }
-                }
-              }
-              if (byId.size > 0) {
-                return jsonResult({
-                  ok: true,
-                  data: [...byId.values()],
-                  note: `No exact match for "${search}" as one phrase; matched individual name terms instead.`,
-                });
-              }
-            }
-            return jsonResult({ ok: true, data: rows });
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+          "Find native VIP/ZW users, including inactive accounts, in global platform-support scope. " +
+          "Active platform admin required. Search ANDs up to ten terms across username, email and names; " +
+          "do not split or retry a full name automatically. Native IDs identify candidates; inspect the " +
+          "chosen ID with scopely_get_user before a write preview. native_user_role is a stored field, " +
+          "not effective authorization. Legacy role filters, session counts/history and lockout state " +
+          "are unsupported. Follow next_offset until null; whole-row byte limits may shorten pages. " +
+          "Lookup does not grant write eligibility.",
+        parameters: Type.Object(
+          {
+            search: Type.Optional(
+              Type.String({ description: "1-200 characters after trim; at most ten AND terms" }),
+            ),
+            is_active: Type.Optional(
+              Type.Boolean({ description: "Omit to include active and inactive accounts" }),
+            ),
+            organization_id: Type.Optional(
+              Type.Integer({
+                minimum: 1,
+                maximum: 2147483647,
+                description: "Exact native organization membership",
+              }),
+            ),
+            ordering: Type.Optional(
+              Type.String({
+                enum: ["created_at", "-created_at", "last_login", "-last_login"],
+                description: "Default -created_at; null last_login last; ID breaks ties",
+              }),
+            ),
+            limit: Type.Optional(
+              Type.Integer({
+                minimum: 1,
+                maximum: 50,
+                description: "Default 25; actual page may be smaller",
+              }),
+            ),
+            offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 2147483647 })),
+          },
+          { additionalProperties: true },
+        ),
+        execute: opsRead,
       },
       logger,
     ),
@@ -176,43 +148,32 @@ export function registerScopelyTools(api: OpenClawPluginApi, logger: AuditLogger
       {
         name: "scopely_list_sessions",
         description:
-          "List Scopely VIP scoping sessions. Shows wizard sessions with status, step, company, and creator. " +
-          "Use this to see what users are clicking on and what they are working on.",
+          "List Scopely VIP deals (scoping sessions) with status, company, vendor, organization and " +
+          "total, newest first, paged. Platform staff only.",
         parameters: Type.Object({
           status: Type.Optional(
-            Type.String({ description: "Filter: in_progress, generated, cancelled, converted" }),
+            Type.Array(Type.Unsafe<string>({ type: "string", enum: [...SESSION_STATUSES] }), {
+              description: "Filter by one or more statuses",
+            }),
           ),
-          vendor: Type.Optional(Type.String({ description: "Filter by destination vendor" })),
-          search: Type.Optional(Type.String({ description: "Search by company name or contact" })),
-          created_by: Type.Optional(Type.String({ description: "Filter by creator user ID" })),
-          date_from: Type.Optional(Type.String({ description: "Start date filter (YYYY-MM-DD)" })),
-          date_to: Type.Optional(Type.String({ description: "End date filter (YYYY-MM-DD)" })),
-          limit: Type.Optional(Type.Number({ description: "Max results (default 50)" })),
+          search: Type.Optional(
+            Type.String({
+              description: "Search by company name, order number or organization name",
+            }),
+          ),
+          organization_id: Type.Optional(Type.Integer({ description: "Only this organization" })),
+          page: Type.Optional(Type.Integer({ minimum: 1, description: "Page number (default 1)" })),
+          // The app allows 100, but about 30 rows fill the bot's 16,000-character
+          // output limit: a larger page would be cut and its tail unreachable.
+          page_size: Type.Optional(
+            Type.Integer({
+              minimum: 1,
+              maximum: 30,
+              description: "Results per page (default 25, at most 30)",
+            }),
+          ),
         }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const qs = buildQuery(params, [
-              "status",
-              "vendor",
-              "search",
-              "created_by",
-              "date_from",
-              "date_to",
-              "limit",
-            ]);
-            const result = await scopelyFetch(`/api/admin/sessions/${qs}`);
-            if (!result.ok) {
-              return jsonResult({
-                ok: false,
-                error: `HTTP ${result.status}`,
-                details: result.data,
-              });
-            }
-            return jsonResult({ ok: true, data: result.data });
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+        execute: opsRead,
       },
       logger,
     ),
@@ -224,28 +185,18 @@ export function registerScopelyTools(api: OpenClawPluginApi, logger: AuditLogger
       {
         name: "scopely_get_session",
         description:
-          "Get detailed info about a specific Scopely VIP scoping session. " +
-          "Returns wizard state, answers, pricing, status, company info, and who created it.",
+          "Get one Scopely VIP deal by session id OR order number (give exactly one): status, " +
+          "company, vendor, project and deployment type, total, version and answer keys.",
+        // Exactly one of the two (the kernel refuses both or neither).
         parameters: Type.Object({
-          id: Type.String({ description: "Session ID" }),
+          session_id: Type.Optional(
+            Type.Integer({ description: "Session id (the `id` from scopely_list_sessions)" }),
+          ),
+          order_number: Type.Optional(
+            Type.String({ description: "Order number, e.g. PS-0000123" }),
+          ),
         }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const result = await scopelyFetch(
-              `/api/admin/sessions/${encodeURIComponent(params.id as string)}/`,
-            );
-            if (!result.ok) {
-              return jsonResult({
-                ok: false,
-                error: `HTTP ${result.status}`,
-                details: result.data,
-              });
-            }
-            return jsonResult({ ok: true, data: result.data });
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+        execute: opsRead,
       },
       logger,
     ),

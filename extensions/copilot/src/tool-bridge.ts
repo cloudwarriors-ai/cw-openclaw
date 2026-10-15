@@ -286,6 +286,7 @@ function buildOpenClawCodingToolsOptions(
   return {
     agentId: input.agentId,
     ...buildEmbeddedAttemptToolRunContext({
+      requesterRunStartedAt: a.requesterRunStartedAt,
       trigger: a.trigger,
       jobId: a.jobId,
       memoryFlushWritePath: a.memoryFlushWritePath,

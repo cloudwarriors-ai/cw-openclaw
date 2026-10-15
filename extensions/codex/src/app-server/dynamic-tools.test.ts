@@ -990,6 +990,38 @@ describe("createCodexDynamicToolBridge", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it.each([null, [], true, false, 0, "", "{}"])(
+    "preserves malformed raw arguments %j for strict preparation refusal",
+    async (argumentsValue) => {
+      const execute = vi.fn(async () => textToolResult("should not run"));
+      const prepareArguments = vi.fn((raw: unknown) => {
+        if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+          throw new Error("object required");
+        }
+        return raw as Record<string, unknown>;
+      });
+      const bridge = createCodexDynamicToolBridge({
+        tools: [createTool({ name: "strict_read", execute, prepareArguments })],
+        signal: new AbortController().signal,
+      });
+      const result = await bridge.handleToolCall({
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "call-1",
+        namespace: null,
+        tool: "strict_read",
+        arguments: argumentsValue,
+      });
+      expect(prepareArguments).toHaveBeenCalledExactlyOnceWith(argumentsValue);
+      expect(result).toEqual({
+        success: false,
+        contentItems: [{ type: "inputText", text: "object required" }],
+      });
+      expect(result.sideEffectEvidence).toBeUndefined();
+      expect(execute).not.toHaveBeenCalled();
+    },
+  );
+
   it("uses raw tool provenance for media trust after middleware rewrites details", async () => {
     const registry = createEmptyPluginRegistry();
     const handler = vi.fn(async (event: { result: AgentToolResult<unknown> }) => ({

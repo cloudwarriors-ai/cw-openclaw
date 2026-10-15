@@ -20,6 +20,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { auditBackendEvent, readBackendProfile } from "./backend-profile.js";
 import { sendScopelyText } from "./comfort.js";
 import { scopelyFetch } from "./scopely-api.js";
 
@@ -260,6 +261,9 @@ export function chunkDigestText(text: string, limit = CHUNK_LIMIT): string[] {
 // marker and double-post. Single-process module state is sufficient (one
 // gateway process owns the interval).
 let tickInFlight = false;
+// UTC day of the last digest_skipped row, so a skip is audited once per day
+// rather than on every minute tick.
+let skippedDay = "";
 
 export async function runDigestTick(
   workspaceDir: string,
@@ -268,6 +272,19 @@ export async function runDigestTick(
   const now = deps?.now ? deps.now() : Date.now();
   if (tickInFlight) return false;
   if (!digestDue(workspaceDir, now)) return false;
+  // The env flag only arms the timer; the live backend profile decides whether
+  // anything is built or posted. Off by default and under the zw2 profile
+  // (DEC-20): the digest still reads old admin endpoints the new app lacks.
+  // digestEnabled: true on a prod profile makes buildDigest send 4 extra GETs
+  // to those legacy admin paths each day, so M1's "the only app request is
+  // the health GET" holds only while the digest is off.
+  if (!readBackendProfile(workspaceDir).digestEnabled) {
+    if (skippedDay !== utcDateKey(now)) {
+      skippedDay = utcDateKey(now);
+      auditBackendEvent("digest_skipped", { reason: "digestEnabled is false" }, workspaceDir);
+    }
+    return false;
+  }
   const channel = process.env.SCOPELYBOT_ZOOM_CHANNEL ?? "";
   if (!channel) return false;
 

@@ -171,6 +171,8 @@ The cache rule is documented in [Plugin architecture internals](/plugins/archite
 
 Some cold-path callers still reconstruct manifest registries directly from the persisted installed plugin index instead of receiving a Gateway `PluginLookUpTable`. That path now reconstructs the registry on demand; prefer passing the current lookup table or an explicit manifest registry through runtime flows when a caller already has one.
 
+Tool descriptor caching cannot represent executable `prepareArguments` callbacks. When a resolved plugin factory returns a tool with that callback, the plugin's descriptors are not cached, including sibling tools. Later resolutions run its factories with the current request context and retain preparation before host argument validation. Ordinary tools still use descriptor caching. This costs repeated factory resolution for those plugins; factories should keep discovery lightweight. Plugin updates require the normal restart or explicit reload lifecycle, which clears the runtime cache; an extension-only hot replacement is not a cache migration.
+
 ### Activation planning
 
 Activation planning is part of the control plane. Callers can ask which plugins are relevant to a concrete command, provider, channel, route, agent harness, or capability before loading broader runtime registries.
@@ -481,3 +483,7 @@ For the load pipeline, registry model, provider runtime hooks, Gateway HTTP rout
 - [Building plugins](/plugins/building-plugins)
 - [Plugin manifest](/plugins/manifest)
 - [Plugin SDK setup](/plugins/sdk-setup)
+
+### Requester run timestamp
+
+Plugin tool context may include readonly `requesterRunStartedAt`, a host-stamped, process-local `performance.now()` timestamp captured before the first await of a foreground or queued logical turn. The host forwards the same value through model fallback, transient retries, embedded attempts and lazy tool-factory rebuilds. Direct embedded calls without a matching host scope stamp their own entry before queueing. Scopes are isolated with AsyncLocalStorage and bound to a run ID, so a different nested/subagent run cannot borrow its parent's timestamp. It is not a wall-clock timestamp, persisted identifier or caller/tool argument. An absent or nonfinite value makes no requester-lifetime claim; plugins requiring that provenance must refuse rather than manufacture a fresh timestamp. The timestamp alone does not grant application permissions. The built-in, Codex and Copilot attempt tool builders forward the existing attempt value. Inventory inspection, Codex side-question and compaction tool construction do not establish requester lifetime authority.

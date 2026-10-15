@@ -684,6 +684,71 @@ async function runTurnWithCooldownSeed(params: {
 }
 
 describe("runEmbeddedAgent auth profile rotation", () => {
+  it.each([false, true])(
+    "pins trusted requester run time before queueing and across retry attempts (outer scope=%s)",
+    async (outerScope) => {
+      await withAgentWorkspace(async ({ agentDir, workspaceDir }) => {
+        await writeAuthStore(agentDir);
+        let clock = 100;
+        const clockSpy = vi.spyOn(performance, "now").mockImplementation(() => clock);
+        try {
+          runEmbeddedAttemptMock
+            .mockImplementationOnce(async () => {
+              clock = 900;
+              return makeErrorAttempt({ errorMessage: "rate limit" });
+            })
+            .mockResolvedValueOnce(
+              makeAttempt({
+                assistantTexts: ["ok"],
+                lastAssistant: buildAssistant({
+                  stopReason: "stop",
+                  content: [{ type: "text", text: "ok" }],
+                }),
+              }),
+            );
+          const params = {
+            sessionId: "session:test",
+            sessionKey: "agent:test:requester-run-time",
+            sessionFile: path.join(workspaceDir, "session.jsonl"),
+            workspaceDir,
+            agentDir,
+            config: makeConfig(),
+            prompt: "hello",
+            provider: "openai",
+            model: "mock-1",
+            authProfileId: "openai:p1",
+            authProfileIdSource: "auto" as const,
+            timeoutMs: 5000,
+            runId: "run:requester-run-time",
+            // Deliberately inject an untyped caller value; the host must ignore it.
+            requesterRunStartedAt: 999999,
+            enqueue: async <T>(task: () => Promise<T>) => {
+              clock = 500;
+              return task();
+            },
+          };
+          if (outerScope) {
+            const { withRequesterRunLifetime } = await import("./requester-run-lifetime.js");
+            await withRequesterRunLifetime(params.runId, () => {
+              clock = 500;
+              return runEmbeddedAgent(params);
+            });
+          } else {
+            await runEmbeddedAgent(params);
+          }
+          expect(runEmbeddedAttemptMock).toHaveBeenCalledTimes(2);
+          expect(
+            runEmbeddedAttemptMock.mock.calls.map(
+              ([attempt]) => (attempt as { requesterRunStartedAt?: number }).requesterRunStartedAt,
+            ),
+          ).toEqual([100, 100]);
+        } finally {
+          clockSpy.mockRestore();
+        }
+      });
+    },
+  );
+
   it("refreshes copilot token after auth error and retries once", async () => {
     const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-agent-"));
     const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-workspace-"));

@@ -1,13 +1,8 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
-
 import { sendZoomMessage } from "./api.js";
 import { createZoomConversationStoreFs } from "./conversation-store-fs.js";
 import type { ZoomConversationStoreEntry } from "./conversation-store.js";
-import {
-  classifyZoomSendError,
-  formatZoomSendErrorHint,
-  formatUnknownError,
-} from "./errors.js";
+import { classifyZoomSendError, formatZoomSendErrorHint, formatUnknownError } from "./errors.js";
 import { getZoomRuntime } from "./runtime.js";
 import { rememberZoomSentMessageId, rememberZoomSentMessageText } from "./sent-message-ids.js";
 import { resolveZoomCredentials } from "./token.js";
@@ -410,10 +405,7 @@ export async function sendZoomTextMessage(
   const conversationStore = createZoomConversationStoreFs();
   let to = params.to;
   if (!isChannel) {
-    const resolved = resolveDmRecipientFromKnownConversations(
-      to,
-      await conversationStore.list(),
-    );
+    const resolved = resolveDmRecipientFromKnownConversations(to, await conversationStore.list());
     if (resolved) {
       to = resolved;
     } else {
@@ -545,10 +537,7 @@ export async function sendZoomActionMessage(params: {
   const conversationStore = createZoomConversationStoreFs();
   let to = params.to;
   if (!isChannel) {
-    const resolved = resolveDmRecipientFromKnownConversations(
-      to,
-      await conversationStore.list(),
-    );
+    const resolved = resolveDmRecipientFromKnownConversations(to, await conversationStore.list());
     if (resolved) {
       to = resolved;
     } else {
@@ -597,10 +586,10 @@ export async function sendZoomActionMessage(params: {
           })),
         };
       }
-      
+
       const { cleanText, atItems } = parseMentions(item.text);
-      return { 
-        type: "message" as const, 
+      return {
+        type: "message" as const,
         text: cleanText,
         at_items: atItems.length > 0 ? atItems : undefined,
       };

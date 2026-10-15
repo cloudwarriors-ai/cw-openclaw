@@ -6,11 +6,16 @@ const EMAIL_RE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const PHONE_RE = /(?<![\w-])(?:\+\d{1,3}[ .-]?)?(?:\(?\d{3}\)?[ .-])\d{3}[ .-]\d{4}(?![\w-])/g;
 const BEARER_RE = /\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+\/-]+=*/gi;
 const COOKIE_RE = /\b(?:access_token|refresh_token|sessionid|csrftoken)=[^;\s]+/gi;
+// Operator-layer tokens (zoomwarriors_2 apps/opsplane identity.py), bare in
+// any text: the audit chain is append-only, so a token there could never be
+// removed. Matches from 16 secret characters on (the kernel's floor is 32).
+const OPS_TOKEN_RE = /zwops_[0-9a-f]{12}_[A-Za-z0-9_-]{16,}/gi;
 const NAMED_SECRET_RE =
   /\b(password|passwd|secret|token|api[_-]?key|authorization|cookie)\b\s*[:=]\s*([^\s,;]+)/gi;
 
 export function redactText(value: string, maxLength = 20_000): string {
   const redacted = value
+    .replace(OPS_TOKEN_RE, "[REDACTED_TOKEN]")
     .replace(BEARER_RE, "[REDACTED_AUTH]")
     .replace(COOKIE_RE, "[REDACTED_COOKIE]")
     .replace(NAMED_SECRET_RE, (_match, name: string) => `${name}=[REDACTED]`)

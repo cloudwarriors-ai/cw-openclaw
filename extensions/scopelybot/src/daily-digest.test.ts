@@ -2,8 +2,9 @@
 // (flag gate, UTC hour gate, once-per-day marker), section building against a
 // mocked BFF (stats delta rendering, approvals count, stuck-deal line with the
 // created->cutoff query shape, extraction failures, per-section fail-soft),
-// line-boundary chunking under the Zoom limit, and the tick's persistence
-// (marker + stats snapshot survive to the next day's delta).
+// line-boundary chunking under the Zoom limit, the tick's persistence
+// (marker + stats snapshot survive to the next day's delta), and the live
+// backend-profile gate (digestEnabled; skipped + audited once per day when off).
 
 import * as fs from "fs";
 import * as os from "os";
@@ -45,8 +46,23 @@ function mockAllReads() {
   });
 }
 
+// A valid dev backend profile in the test workspace; the digest posts only
+// when it says digestEnabled (the env flag merely arms the timer).
+function writeProfile(extra: Record<string, unknown>) {
+  fs.writeFileSync(
+    path.join(workspace, "scopelybot-backend.json"),
+    JSON.stringify({
+      env: "dev",
+      baseUrl: "http://100.114.142.100:8022",
+      allowedHosts: ["100.114.142.100:8022"],
+      ...extra,
+    }),
+  );
+}
+
 beforeEach(() => {
   workspace = fs.mkdtempSync(path.join(os.tmpdir(), "digest-test-"));
+  writeProfile({ digestEnabled: true });
   process.env.SCOPELYBOT_DAILY_DIGEST = "1";
   process.env.SCOPELYBOT_ZOOM_CHANNEL = "chan@conference.xmpp.zoom.us";
   scopelyFetchMock.mockReset();
@@ -187,6 +203,22 @@ describe("runDigestTick", () => {
     // Second tick same day: no-op.
     expect(await runDigestTick(workspace, { now: () => NOW + 60_000, send: sendMock })).toBe(false);
     expect(sendMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips without building or posting when the profile is absent (default off), audited once per day", async () => {
+    fs.rmSync(path.join(workspace, "scopelybot-backend.json"));
+    mockAllReads();
+    expect(await runDigestTick(workspace, { now: () => NOW, send: sendMock })).toBe(false);
+    expect(await runDigestTick(workspace, { now: () => NOW + 60_000, send: sendMock })).toBe(false);
+    expect(scopelyFetchMock).not.toHaveBeenCalled();
+    expect(sendMock).not.toHaveBeenCalled();
+    const rows = fs
+      .readFileSync(path.join(workspace, "scopelybot", "audit-v2.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(rows.filter((r) => r.event_type === "digest_skipped")).toHaveLength(1);
+    expect(readDigestState(workspace).lastPostedDate).toBeUndefined();
   });
 
   it("does nothing without a bound channel", async () => {

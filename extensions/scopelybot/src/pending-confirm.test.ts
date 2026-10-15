@@ -1,8 +1,7 @@
 /**
  * Pending-store scope tests: a CONFIRM consumes an action only when it provably
  * arrived where the action was staged — exact conversation match (channel root)
- * or the caller's own-zoom-surface proof (thread replies dispatch with the
- * thread id as conversationId; 2026-07-20 incident).
+ * including thread replies (the host retains the actual channel JID).
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -36,19 +35,15 @@ describe("takePending scope acceptance", () => {
     expect(takePending("2222", { conversationId: CHANNEL })?.summary).toBe("test action 2222");
   });
 
-  it("consumes a thread-scoped CONFIRM carrying own-surface proof (2026-07-20 regression)", () => {
+  it("a thread id cannot bypass the actual channel match", () => {
     stage("8248");
-    // Thread replies dispatch with the thread id, never the channel JID.
-    const action = takePending("8248", {
-      conversationId: "554f6079-4d2e-4727-87db-1b1c482fff3d",
-      fromOwnZoomSurface: true,
-    });
-    expect(action?.summary).toBe("test action 8248");
+    expect(
+      takePending("8248", { conversationId: "554f6079-4d2e-4727-87db-1b1c482fff3d" }),
+    ).toBeUndefined();
+    expect(takePending("8248", { conversationId: CHANNEL })?.summary).toBe("test action 8248");
   });
 
-  it("misses on an unknown code even with own-surface proof", () => {
-    expect(
-      takePending("9999", { conversationId: CHANNEL, fromOwnZoomSurface: true }),
-    ).toBeUndefined();
+  it("misses on an unknown code in the rightful channel", () => {
+    expect(takePending("9999", { conversationId: CHANNEL })).toBeUndefined();
   });
 });

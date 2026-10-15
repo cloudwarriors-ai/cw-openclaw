@@ -160,6 +160,8 @@ export function createOpenClawTools(
     recordToolPrepStage?: (name: string) => void;
     /** Trusted sender id from inbound context (not tool args). */
     requesterSenderId?: string | null;
+    /** Host-stamped process-local monotonic run start, unchanged across attempts. */
+    readonly requesterRunStartedAt?: number;
     /** Auth profiles already loaded for this run; used for prompt-time tool availability. */
     authProfileStore?: AuthProfileStore;
     /** Ephemeral session UUID — regenerated on /new and /reset. */

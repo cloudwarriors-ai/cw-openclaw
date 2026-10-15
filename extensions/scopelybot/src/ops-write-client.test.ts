@@ -1,0 +1,471 @@
+// Only this test module injects a reserved non-network origin into the real policy.
+vi.mock("./ops-write-policy.js", async (original) => {
+  const actual = await original<typeof import("./ops-write-policy.js")>();
+  const origins = ["https://core-production.invalid:9443"];
+  return {
+    ...actual,
+    isReviewedProductionOrigin: (origin: string) =>
+      actual.isReviewedProductionOrigin(origin, origins),
+    productionCoreEnabled: (profile: Parameters<typeof actual.productionCoreEnabled>[0]) =>
+      actual.productionCoreEnabled(profile, origins),
+    nativeWriteScope: (
+      profile: Parameters<typeof actual.nativeWriteScope>[0],
+      channel: string | undefined,
+    ) => actual.nativeWriteScope(profile, channel, origins),
+  };
+});
+// This domain fixture supplies explicit server eligibility; roster authority is tested separately.
+vi.mock("./ops-roster-client.js", () => ({
+  isCurrentApprover: async (actor: string) => ["synthetic-admin"].includes(actor),
+}));
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+const send = vi.hoisted(() => vi.fn());
+vi.mock("./comfort.js", () => ({ sendScopelyText: send, getChannelThreadAnchor: () => undefined }));
+import { setBackendProfileForTest } from "./backend-profile.js";
+import { runInCall, type CallContext } from "./call-context.js";
+import { tryExecuteConfirm } from "./confirm.js";
+import { noteInboundSender } from "./ops-client.js";
+import { opsStageWrite } from "./ops-write-client.js";
+import { captureRequesterEpoch, resetInboundSendersForTest } from "./requester-epoch.js";
+import { resetScopelyGuardForTest } from "./scopely-api.js";
+const HUB = "agent:scopelybot:zoom:channel:synthetic-channel";
+const PENDING = "12345678-1234-4234-9234-123456789abc";
+const preview = '{"id":1,"changes":{"label":{"before":"Before","after":"After"}}}';
+const context: CallContext = {
+  tool: "scopely_update_project_type",
+  trigger: "tool",
+  requester: { resolved: true, zoom_operator_id: "synthetic-member", source: "ctx", reason: null },
+  openclaw: { agent_id: "scopelybot", session_key: HUB, tool_call_id: "local-test" },
+  action: {
+    tool: "scopely_update_project_type",
+    family: "catalog",
+    op_class: "write",
+    registry_status: "local",
+  },
+};
+const request = vi.fn();
+let workspace: string;
+let state: string;
+function body(result: { content: { text: string }[] }) {
+  return JSON.parse(result.content[0].text);
+}
+function stage() {
+  return runInCall(context, () =>
+    opsStageWrite("catalog.project_types.update", {
+      vendor_key: "ops-test-canary",
+      project_type_id: 1,
+      label: "After",
+    }),
+  );
+}
+function code() {
+  return String(send.mock.calls.at(-1)?.[1])
+    .match(/CONFIRM ([a-f0-9]{32}|[2-9a-hjkmnp-z]{8})\b/i)![1]
+    .toLowerCase();
+}
+function confirm(value = code(), actor = "synthetic-admin", channel = "synthetic-channel") {
+  return tryExecuteConfirm({
+    text: `CONFIRM ${value}`,
+    actor,
+    conversationId: channel,
+    logger: vi.fn(),
+  });
+}
+beforeEach(() => {
+  workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ops-write-"));
+  const codeDir = path.join(fs.realpathSync(workspace), "confirmation-codes");
+  fs.mkdirSync(codeDir, { mode: 0o700 });
+  vi.stubEnv("SCOPELYBOT_CONFIRM_CODE_DIR", codeDir);
+  vi.stubEnv("OPENCLAW_WORKSPACE", workspace);
+  vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", "synthetic-channel");
+  setBackendProfileForTest({
+    env: "local",
+    baseUrl: "http://127.0.0.1:8100",
+    allowedHosts: ["127.0.0.1:8100"],
+    authMode: "service-token",
+    mode: "read-write",
+  });
+  fs.writeFileSync(
+    path.join(workspace, "scopelybot-ops-token"),
+    "zwops_0123456789ab_Synthetic_0123456789abcdefABCDEF_xyz",
+    { mode: 0o600 },
+  );
+  resetScopelyGuardForTest();
+  resetInboundSendersForTest();
+  noteInboundSender(HUB, "synthetic-member");
+  context.requesterEpoch = captureRequesterEpoch(HUB, performance.now());
+  state = "succeeded";
+  send.mockReset();
+  send.mockResolvedValue(undefined);
+  request.mockReset();
+  request.mockImplementation(async (_url, options) => {
+    const input = JSON.parse(options.body);
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        data:
+          input.capability === "ops.confirm"
+            ? {
+                state,
+                result: { changed: { label: "After" } },
+                reconcile_required: state === "claimed",
+              }
+            : {
+                state: "pending",
+                confirmation_required: true,
+                pending_action_id: PENDING,
+                preview,
+              },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  });
+  vi.stubGlobal("fetch", request);
+});
+afterEach(() => {
+  setBackendProfileForTest(null);
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+it("stages exact preview then uses trusted confirmer with no replay", async () => {
+  const result = body(await stage());
+  expect(result.staged, JSON.stringify(result)).toBe(true);
+  expect(JSON.stringify(result)).not.toContain(PENDING);
+  expect(JSON.stringify(result)).not.toContain(code());
+  expect(send.mock.calls[0][1]).toContain('Record ID: 1\nChanges:\n  Label: "Before" → "After"');
+  expect(send.mock.calls[0][1]).toContain("LOCAL SYNTHETIC DATA");
+  expect(request).toHaveBeenCalledTimes(1);
+  const confirmation = code();
+  expect(await confirm(confirmation)).toContain("✅ Done");
+  const opts = request.mock.calls[1][1];
+  expect(new Headers(opts.headers).get("x-ops-requester-zoom-id")).toBe("synthetic-admin");
+  expect(new Headers(opts.headers).get("x-ops-surface")).toBe("synthetic-channel");
+  expect(JSON.parse(opts.body).args).toEqual({ pending_action_id: PENDING });
+  expect(await confirm(confirmation)).toContain("No pending action");
+  expect(request).toHaveBeenCalledTimes(2);
+});
+it.each(["failed", "claimed", "pending", "cancelled"])(
+  "does not report HTTP200 %s as success",
+  async (value) => {
+    state = value;
+    await stage();
+    const result = await confirm();
+    expect(result).not.toContain("✅ Done");
+    if (value === "claimed") {
+      expect(result).toContain("reconcile");
+    }
+    expect(request).toHaveBeenCalledTimes(2);
+  },
+);
+it.each(["503", "malformed", "truncated", "timeout", "reset", "pending", "unknown-state"])(
+  "reports %s confirmation as uncertain without a second attempt",
+  async (failure) => {
+    await stage();
+    const confirmation = code();
+    request.mockImplementationOnce(async () => {
+      if (failure === "timeout" || failure === "reset") {
+        throw new Error("arbitrary sensitive exception text");
+      }
+      if (failure === "malformed") {
+        return new Response("not json", { status: 200 });
+      }
+      if (failure === "truncated") {
+        return new Response(JSON.stringify({ data: "x".repeat(300000) }), { status: 200 });
+      }
+      return new Response(
+        JSON.stringify({
+          ok: failure !== "503",
+          data: { state: failure === "pending" ? "pending" : "future-state" },
+        }),
+        { status: failure === "503" ? 503 : 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    const result = await confirm(confirmation);
+    expect(result).toMatch(/outcome (unknown|uncertain)/i);
+    expect(result).toMatch(/reconcil|inspect/i);
+    expect(result).not.toContain("did not apply");
+    expect(result).not.toContain("arbitrary sensitive");
+    expect(await confirm(confirmation)).toContain("No pending action");
+    expect(request).toHaveBeenCalledTimes(2);
+  },
+);
+it.each(["sender", "sender-returned", "missing-epoch", "channel", "readonly", "prod", "dev"])(
+  "refuses %s before network",
+  async (reason) => {
+    if (reason === "sender") {
+      noteInboundSender(HUB, "different-sender");
+    }
+    if (reason === "sender-returned") {
+      noteInboundSender(HUB, "different-sender");
+      noteInboundSender(HUB, "synthetic-member");
+    }
+    if (reason === "missing-epoch") {
+      delete context.requesterEpoch;
+    }
+    if (reason === "channel") {
+      vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", "");
+    }
+    if (reason === "readonly") {
+      setBackendProfileForTest({
+        env: "local",
+        baseUrl: "http://127.0.0.1:8100",
+        allowedHosts: ["127.0.0.1:8100"],
+        mode: "read-only",
+      });
+    }
+    if (reason === "prod") {
+      setBackendProfileForTest({
+        env: "prod",
+        baseUrl: "https://api.vip.pscx.ai",
+        allowedHosts: ["api.vip.pscx.ai"],
+        mode: "read-only",
+      });
+    }
+    if (reason === "dev") {
+      setBackendProfileForTest({ mode: "read-write" });
+    }
+    expect(body(await stage()).ok).toBe(false);
+    expect(request).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  },
+);
+it("refuses unauthorized and wrong-channel confirmations without consuming", async () => {
+  await stage();
+  const c = code();
+  expect(await confirm(c, "outsider")).toContain("not authorized");
+  expect(await confirm(c, "synthetic-admin", "different-channel")).toContain("No pending action");
+  expect(request).toHaveBeenCalledTimes(1);
+  expect(await confirm(c)).toContain("✅ Done");
+});
+it("invalidates an ambiguously delivered prompt without claiming staging or retrying", async () => {
+  send.mockRejectedValueOnce(new Error("delivery unknown"));
+  expect(body(await stage()).ok).toBe(false);
+  expect(await confirm()).toContain("No pending action");
+  expect(request).toHaveBeenCalledTimes(1);
+  expect(send).toHaveBeenCalledTimes(1);
+});
+it("channel drift after staging cannot confirm", async () => {
+  await stage();
+  vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", "different-channel");
+  expect(await confirm()).not.toContain("✅ Done");
+  expect(request).toHaveBeenCalledTimes(1);
+});
+
+it.each([
+  [
+    "pricing.defaults.update",
+    { vendor_key: "ops-test-canary", pricing_key: "seat", unit_price: "15.00" },
+  ],
+  ["pricing.items.delete", { vendor_key: "ops-test-canary", pricing_key: "ops_test_discard" }],
+  ["identity.users.unlock", { user_id: 7 }],
+  ["identity.users.set_active", { user_id: 7, is_active: false }],
+  ["sessions.archive", { session_id: 7, reason: "Synthetic duplicate" }],
+] as const)("%s uses the trusted one-shot confirmation path", async (capability, args) => {
+  const staged = await runInCall(context, () => opsStageWrite(capability, args));
+  expect(body(staged).staged).toBe(true);
+  expect(JSON.parse(request.mock.calls[0][1].body)).toMatchObject({ capability, args });
+  const confirmation = code();
+  expect(await confirm(confirmation, "outsider")).toContain("not authorized");
+  expect(request).toHaveBeenCalledTimes(1);
+  expect(await confirm(confirmation)).toContain("✅ Done");
+  expect(new Headers(request.mock.calls[1][1].headers).get("x-ops-requester-zoom-id")).toBe(
+    "synthetic-admin",
+  );
+  expect(await confirm(confirmation)).toContain("No pending action");
+  expect(request).toHaveBeenCalledTimes(2);
+});
+
+it.each(["succeeded", "failed", "cancelled", "expired", "claimed"])(
+  "handles retained %s responses with the preview key omitted",
+  async (value) => {
+    await stage();
+    const retained = {
+      state: value,
+      reconcile_required: value === "claimed",
+      result: { changed: { label: "After" } },
+    };
+    expect(Object.hasOwn(retained, "preview")).toBe(false);
+    request.mockImplementationOnce(
+      async () =>
+        new Response(JSON.stringify({ ok: true, data: retained }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const result = await confirm();
+    expect(result?.includes("✅ Done")).toBe(value === "succeeded");
+    // The bot may render its already staged summary; this response supplies none.
+    if (value === "claimed") {
+      expect(result).toContain("reconcile");
+    }
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(await confirm()).toContain("No pending action");
+    expect(request).toHaveBeenCalledTimes(2);
+  },
+);
+
+const productionProfile = {
+  env: "prod" as const,
+  baseUrl: "https://core-production.invalid:9443",
+  allowedHosts: ["core-production.invalid:9443"],
+  authMode: "service-token" as const,
+  mode: "read-write" as const,
+  productionCoreWrites: true,
+};
+const productionChannel = "a".repeat(32) + "@conference.xmpp.zoom.us";
+it("production native prepare keeps exact strict-delivery prompt and human confirm", async () => {
+  setBackendProfileForTest(productionProfile);
+  vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", productionChannel);
+  const staged = body(await stage());
+  expect(staged.staged).toBe(true);
+  expect(send.mock.calls[0][1]).toContain('Record ID: 1\nChanges:\n  Label: "Before" → "After"');
+  expect(send.mock.calls[0][1]).toContain("PRODUCTION");
+  expect(send.mock.calls[0][3]).toBe(true);
+  expect(await confirm(code(), "synthetic-admin", productionChannel)).toContain("✅ Done");
+  expect(request).toHaveBeenCalledTimes(2);
+});
+
+it.each(["mode", "switch", "channel", "sender", "sender-returned"])(
+  "production preparation refuses %s drift before prompt",
+  async (change) => {
+    setBackendProfileForTest(productionProfile);
+    vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", productionChannel);
+    const response = request.getMockImplementation()!;
+    request.mockImplementationOnce(async (...args) => {
+      if (change === "mode" || change === "switch") {
+        setBackendProfileForTest({
+          ...productionProfile,
+          mode: "read-only",
+          productionCoreWrites: change !== "switch",
+        });
+      } else if (change === "channel") {
+        vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", "b".repeat(32) + "@conference.xmpp.zoom.us");
+      } else {
+        noteInboundSender(HUB, "other-person");
+        if (change === "sender-returned") {
+          noteInboundSender(HUB, "synthetic-member");
+        }
+      }
+      return response(...args);
+    });
+    expect(body(await stage()).ok).toBe(false);
+    expect(send).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledTimes(1);
+  },
+);
+it.each(["mode", "switch", "channel", "delivery"])(
+  "production %s change during delivery invalidates code and never confirms",
+  async (change) => {
+    setBackendProfileForTest(productionProfile);
+    vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", productionChannel);
+    send.mockImplementationOnce(async () => {
+      if (change === "delivery") {
+        throw new Error("delivery unknown");
+      }
+      if (change === "channel") {
+        vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", "b".repeat(32) + "@conference.xmpp.zoom.us");
+      } else {
+        setBackendProfileForTest({
+          ...productionProfile,
+          mode: "read-only",
+          productionCoreWrites: change !== "switch",
+        });
+      }
+    });
+    expect(body(await stage()).ok).toBe(false);
+    setBackendProfileForTest(productionProfile);
+    vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", productionChannel);
+    expect(await confirm(code(), "synthetic-admin", productionChannel)).toContain(
+      "No pending action",
+    );
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
+  },
+);
+it.each([
+  "pricing.defaults.update",
+  "pricing.items.delete",
+  "ops.approvers.grant",
+  "ops.approvers.revoke",
+  "identity.users.unlock",
+  "identity.users.set_active",
+  "identity.users.request_reset",
+  "identity.invites.create",
+  "sessions.archive",
+] as const)("production cannot stage excluded %s", async (capability) => {
+  setBackendProfileForTest(productionProfile);
+  vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", productionChannel);
+  expect(body(await runInCall(context, () => opsStageWrite(capability, {}))).ok).toBe(false);
+  expect(request).not.toHaveBeenCalled();
+  expect(send).not.toHaveBeenCalled();
+});
+it("production scope drift after staging cannot confirm even with a retained code", async () => {
+  setBackendProfileForTest(productionProfile);
+  vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", productionChannel);
+  await stage();
+  setBackendProfileForTest({
+    env: "local",
+    mode: "read-write",
+    authMode: "service-token",
+    baseUrl: "http://127.0.0.1:8100",
+    allowedHosts: ["127.0.0.1:8100"],
+  });
+  expect(await confirm(code(), "synthetic-admin", productionChannel)).not.toContain("✅ Done");
+  expect(request).toHaveBeenCalledTimes(1);
+});
+
+it.each(["local", "prod"] as const)(
+  "%s native confirmation waits for acknowledged delivery, then remains single-use",
+  async (env) => {
+    if (env === "prod") {
+      setBackendProfileForTest(productionProfile);
+    }
+    const channel = env === "prod" ? productionChannel : "synthetic-channel";
+    vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", channel);
+    let resolveDelivery!: () => void;
+    send.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveDelivery = resolve;
+        }),
+    );
+    const preparing = stage();
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(await confirm(code(), "synthetic-admin", channel)).toContain("No pending action");
+    expect(request).toHaveBeenCalledTimes(1);
+    resolveDelivery();
+    expect(body(await preparing).staged).toBe(true);
+    expect(await confirm(code(), "synthetic-admin", channel)).toContain("✅ Done");
+    expect(await confirm(code(), "synthetic-admin", channel)).toContain("No pending action");
+    expect(request).toHaveBeenCalledTimes(2);
+  },
+);
+it.each(["local", "prod"] as const)(
+  "%s native confirmation cannot execute before failed delivery",
+  async (env) => {
+    if (env === "prod") {
+      setBackendProfileForTest(productionProfile);
+    }
+    const channel = env === "prod" ? productionChannel : "synthetic-channel";
+    vi.stubEnv("SCOPELYBOT_ZOOM_CHANNEL", channel);
+    let rejectDelivery!: (reason: Error) => void;
+    send.mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectDelivery = reject;
+        }),
+    );
+    const preparing = stage();
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(await confirm(code(), "synthetic-admin", channel)).toContain("No pending action");
+    expect(request).toHaveBeenCalledTimes(1);
+    rejectDelivery(new Error("delivery unknown"));
+    expect(body(await preparing).ok).toBe(false);
+    expect(await confirm(code(), "synthetic-admin", channel)).toContain("No pending action");
+    expect(request).toHaveBeenCalledTimes(1);
+  },
+);

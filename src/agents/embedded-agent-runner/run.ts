@@ -96,6 +96,7 @@ import {
   resolveSelectedOpenAIRuntimeProvider,
 } from "../openai-routing.js";
 import { resolveProviderIdForAuth } from "../provider-auth-aliases.js";
+import { requesterRunStartedAt as scopedRequesterRunStartedAt } from "../requester-run-lifetime.js";
 import { runAgentCleanupStep } from "../run-cleanup-timeout.js";
 import { buildAgentRuntimeAuthPlan } from "../runtime-plan/auth.js";
 import { buildAgentRuntimePlan } from "../runtime-plan/build.js";
@@ -470,6 +471,8 @@ function buildHandledReplyPayloads(reply?: ReplyPayload) {
 export async function runEmbeddedAgent(
   paramsInput: RunEmbeddedAgentParams,
 ): Promise<EmbeddedAgentRunResult> {
+  // Reuse only matching host provenance; direct entries stamp before queueing.
+  const requesterRunStartedAt = scopedRequesterRunStartedAt(paramsInput.runId) ?? performance.now();
   let params = paramsInput;
   // Resolve sessionKey early so all downstream consumers (hooks, LCM, compaction)
   // receive a non-null key even when callers omit it. See #60552.
@@ -1556,6 +1559,7 @@ export async function runEmbeddedAgent(
             parentAbortSignal?.addEventListener("abort", relayParentAbort, { once: true });
           }
           const rawAttempt = await runEmbeddedAttemptWithBackend({
+            requesterRunStartedAt,
             sessionId: activeSessionId,
             sessionKey: resolvedSessionKey,
             promptCacheKey: params.promptCacheKey,

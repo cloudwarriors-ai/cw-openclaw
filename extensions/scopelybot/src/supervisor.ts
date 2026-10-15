@@ -125,7 +125,11 @@ function fuseCooldownMs(): number {
 // A CONFIRM code in an outbound draft means the model is relaying/fabricating
 // a confirmation code — the one thing the confirm-gate design forbids (codes
 // are posted deterministically by stageWrite, never through the LLM).
-const CONFIRM_CODE_RE = /\bCONFIRM\s+\d{4}\b/i;
+// Also block old-format relays; this is egress detection, not approval parsing.
+// Codes may be all letters and are case-insensitive. Ambiguous code-shaped
+// words are deliberately blocked on egress; requiring digits or capitals would
+// miss valid code relays. Ordinary inbound prose still follows normal dispatch.
+const CONFIRM_CODE_RE = /\bCONFIRM\s+(?:[2-9a-hjkmnp-z]{8}|[a-f0-9]{32}|\d{4})\b/i;
 
 // Conservative secret shapes: JWTs, PEM private keys, bearer/api-key tokens,
 // and explicit "the password is X" constructions. Deliberately narrow — a
@@ -164,7 +168,9 @@ function looksLikeJsonDump(draft: string): boolean {
     }
   }
   const blob = trimmed.match(/[{[][\s\S]{300,}[}\]]/);
-  if (!blob) return false;
+  if (!blob) {
+    return false;
+  }
   try {
     JSON.parse(blob[0]);
     return true;
@@ -196,7 +202,9 @@ const INTERNAL_EVENT_MARKERS = [
 // Extract plain text from a transcript message's content (string or blocks).
 function messageText(msg: unknown): string {
   const content = (msg as { content?: unknown } | null)?.content;
-  if (typeof content === "string") return content;
+  if (typeof content === "string") {
+    return content;
+  }
   if (Array.isArray(content)) {
     return content
       .map((block) => {
@@ -226,7 +234,9 @@ export type TurnEvidence = {
 // Walk the transcript: HUMAN user messages reset the turn; toolResults and
 // internal-event user messages accumulate as evidence.
 export function collectTurnEvidence(messages: unknown[] | undefined): TurnEvidence {
-  if (!Array.isArray(messages)) return { hadEvidence: false, corpus: "", humanText: "" };
+  if (!Array.isArray(messages)) {
+    return { hadEvidence: false, corpus: "", humanText: "" };
+  }
   let corpusParts: string[] = [];
   let humanText = "";
   for (const msg of messages) {
@@ -284,7 +294,9 @@ function normalizeNumber(raw: string): string {
 // years than fabricated ids/counts — excluded to keep the false-positive cost
 // down (audit finding: dates/years dominate ordinary evidence packets).
 function isPlausibleYear(normalized: string): boolean {
-  if (!/^\d{4}$/.test(normalized)) return false;
+  if (!/^\d{4}$/.test(normalized)) {
+    return false;
+  }
   const n = Number(normalized);
   return n >= 1900 && n <= 2100;
 }
@@ -293,11 +305,17 @@ function isPlausibleYear(normalized: string): boolean {
 export function extractHardTokens(draft: string): string[] {
   const stripped = draft.replace(ISO_DATETIME_RE, " ");
   const tokens = new Set<string>();
-  for (const m of stripped.matchAll(EMAIL_RE)) tokens.add(m[0].toLowerCase());
-  for (const m of stripped.matchAll(EXPLICIT_ID_RE)) tokens.add(m[1]);
+  for (const m of stripped.matchAll(EMAIL_RE)) {
+    tokens.add(m[0].toLowerCase());
+  }
+  for (const m of stripped.matchAll(EXPLICIT_ID_RE)) {
+    tokens.add(m[1]);
+  }
   for (const m of stripped.matchAll(NUMBER_RE)) {
     const normalized = normalizeNumber(m[0]);
-    if (isPlausibleYear(normalized)) continue;
+    if (isPlausibleYear(normalized)) {
+      continue;
+    }
     tokens.add(normalized);
   }
   return [...tokens];
@@ -308,10 +326,14 @@ export function extractHardTokens(draft: string): string[] {
 // case-insensitively; decimals also match on their integer part (rendered
 // "149.00" vs stored "149").
 function tokenGrounded(token: string, haystack: string): boolean {
-  if (haystack.includes(token)) return true;
+  if (haystack.includes(token)) {
+    return true;
+  }
   if (/^\d/.test(token) && token.includes(".")) {
     const integerPart = token.split(".")[0];
-    if (integerPart.length >= 3 && haystack.includes(integerPart)) return true;
+    if (integerPart.length >= 3 && haystack.includes(integerPart)) {
+      return true;
+    }
   }
   return false;
 }
@@ -501,7 +523,9 @@ function fuseFor(fuseKey: string): FuseState {
     fuseBySession.set(fuseKey, s);
     if (fuseBySession.size > FUSE_KEYS_MAX) {
       const oldest = fuseBySession.keys().next().value;
-      if (oldest !== undefined) fuseBySession.delete(oldest);
+      if (oldest !== undefined) {
+        fuseBySession.delete(oldest);
+      }
     }
   }
   return s;
@@ -560,12 +584,16 @@ function markVoiceRevised(runKey: string, sessionKey: string, now: number): void
   voiceRevisedRuns.add(runKey);
   if (voiceRevisedRuns.size > VOICE_JUDGED_RUNS_MAX) {
     const oldest = voiceRevisedRuns.values().next().value;
-    if (oldest !== undefined) voiceRevisedRuns.delete(oldest);
+    if (oldest !== undefined) {
+      voiceRevisedRuns.delete(oldest);
+    }
   }
   voiceCooldownUntil.set(sessionKey, now + voiceCooldownMs());
   if (voiceCooldownUntil.size > VOICE_COOLDOWN_KEYS_MAX) {
     const oldest = voiceCooldownUntil.keys().next().value;
-    if (oldest !== undefined) voiceCooldownUntil.delete(oldest);
+    if (oldest !== undefined) {
+      voiceCooldownUntil.delete(oldest);
+    }
   }
 }
 
@@ -591,12 +619,18 @@ export async function superviseFinalize(
   event: FinalizeEvent,
   deps: { logger: AuditLogger; now?: () => number; llmComplete?: VoiceLlmComplete },
 ): Promise<FinalizeResult | undefined> {
-  if (!supervisorEnabled()) return undefined;
+  if (!supervisorEnabled()) {
+    return undefined;
+  }
   const sessionKey = event.sessionKey ?? "";
   const scope = resolveScope(sessionKey);
-  if (!scope) return undefined;
+  if (!scope) {
+    return undefined;
+  }
   const draft = typeof event.lastAssistantMessage === "string" ? event.lastAssistantMessage : "";
-  if (!draft.trim()) return undefined;
+  if (!draft.trim()) {
+    return undefined;
+  }
 
   const now = deps.now ? deps.now() : Date.now();
   const fused = isFused(scope.fuseKey, now);
@@ -634,7 +668,9 @@ export async function superviseFinalize(
 
   // Fused cooldown pass-through applies only to the QUALITY lanes (voice +
   // grounding/format checks) — the churn-prone classes the fuse exists for.
-  if (fused) return { action: "continue" };
+  if (fused) {
+    return { action: "continue" };
+  }
 
   // Voice lane (v2.1, SCOPELYBOT_SUPERVISOR_VOICE=1): only when the
   // deterministic plane is satisfied, only for human-facing coordinator
@@ -668,7 +704,9 @@ export async function superviseFinalize(
       };
     }
   }
-  if (verdict.ok) return undefined;
+  if (verdict.ok) {
+    return undefined;
+  }
 
   // Voice revises bypass the shared correctness fuse: they are already
   // bounded by the per-run + cooldown caps above, and the fuse's escalation

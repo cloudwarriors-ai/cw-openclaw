@@ -54,6 +54,7 @@ import {
   resolvePersistedOverrideModelRef,
 } from "../../agents/model-selection.js";
 import { resolveOpenAIRuntimeProvider } from "../../agents/openai-routing.js";
+import { withRequesterRunLifetime } from "../../agents/requester-run-lifetime.js";
 import { buildAgentRuntimeOutcomePlan } from "../../agents/runtime-plan/build.js";
 import {
   resolveGroupSessionKey,
@@ -1460,8 +1461,7 @@ export function resolveRunAfterAutoFallbackPrimaryProbeRecheck(params: {
   };
 }
 
-/** Runs the agent turn with provider/model fallback, retry, and failure mapping. */
-export async function runAgentTurnWithFallback(params: {
+type AgentTurnWithFallbackParams = {
   commandBody: string;
   transcriptCommandBody?: string;
   followupRun: FollowupRun;
@@ -1493,7 +1493,20 @@ export async function runAgentTurnWithFallback(params: {
   resolvedVerboseLevel: VerboseLevel;
   toolProgressDetail?: "explain" | "raw";
   replyMediaContext?: ReplyMediaContext;
-}): Promise<AgentRunLoopResult> {
+};
+
+/** Host scope covers every model candidate and transient retry of this turn. */
+export async function runAgentTurnWithFallback(
+  params: AgentTurnWithFallbackParams,
+): Promise<AgentRunLoopResult> {
+  const runId = params.opts?.runId ?? crypto.randomUUID();
+  return withRequesterRunLifetime(runId, () => runAgentTurnInLifetime(params, runId));
+}
+
+async function runAgentTurnInLifetime(
+  params: AgentTurnWithFallbackParams,
+  runId: string,
+): Promise<AgentRunLoopResult> {
   const TRANSIENT_HTTP_RETRY_DELAY_MS = 2_500;
   let didLogHeartbeatStrip = false;
   let autoCompactionCount = 0;
@@ -1553,7 +1566,6 @@ export async function runAgentTurnWithFallback(params: {
     run.autoFallbackPrimaryProbe = undefined;
   };
 
-  const runId = params.opts?.runId ?? crypto.randomUUID();
   const agentTurnTiming = createAgentTurnTimingTracker({
     profilerEnabled: isReplyProfilerEnabled({ config: runtimeConfig }),
   });

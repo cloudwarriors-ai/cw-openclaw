@@ -47,7 +47,10 @@ const COMFORT_DOMAINS: Array<{ re: RegExp; text: string }> = [
     text: "Checking user records...",
   },
   { re: /\bpric|rate card|discount|cost|curve|quote\b/i, text: "Pulling pricing details..." },
-  { re: /\bvendor|card config|scoping card|project type\b/i, text: "Checking vendor configuration..." },
+  {
+    re: /\bvendor|card config|scoping card|project type\b/i,
+    text: "Checking vendor configuration...",
+  },
   {
     re: /\bsession|deal|sow|approv|archive|reopen|clone|pipeline|scope\b/i,
     text: "Looking into the deal pipeline...",
@@ -69,7 +72,9 @@ const GREETING_RE =
 // vocabulary is recognizable, otherwise the legacy random pool.
 export function pickComfortText(inboundText: string): string {
   for (const { re, text } of COMFORT_DOMAINS) {
-    if (re.test(inboundText)) return text;
+    if (re.test(inboundText)) {
+      return text;
+    }
   }
   return COMFORT_MESSAGES[Math.floor(Math.random() * COMFORT_MESSAGES.length)];
 }
@@ -137,10 +142,16 @@ export async function sendScopelyText(
   channelJid: string,
   text: string,
   replyToMessageId?: string,
+  requireDelivery = false,
 ): Promise<void> {
   const botJid = process.env.ZOOM_BOT_JID ?? "";
   const accountId = process.env.ZOOM_ACCOUNT_ID ?? "";
-  if (!channelJid || !botJid || !accountId) return;
+  if (!channelJid || !botJid || !accountId) {
+    if (requireDelivery) {
+      throw new Error("Confirmation delivery is not configured.");
+    }
+    return;
+  }
   const replyTo =
     typeof replyToMessageId === "string" && replyToMessageId.trim().length > 0
       ? replyToMessageId.trim()
@@ -157,12 +168,21 @@ export async function sendScopelyText(
       body.reply_to = replyTo;
       body.reply_main_message_id = replyTo;
     }
-    await fetch("https://api.zoom.us/v2/im/chat/messages", {
+    const response = await fetch("https://api.zoom.us/v2/im/chat/messages", {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
+    if (requireDelivery && !response.ok) {
+      throw new Error("Confirmation delivery was rejected.");
+    }
   } catch (err) {
+    // No retry: a transport failure may have delivered the prompt.
+    if (requireDelivery) {
+      // A transport cause can contain credentials; never return it to the model.
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error("Confirmation delivery was not acknowledged.");
+    }
     console.error("[scopelybot] sendScopelyText failed:", err);
   }
 }
@@ -179,7 +199,9 @@ const ANCHOR_TTL_MS = 6 * 60 * 60 * 1000; // 6h, matches the zoom reply-root TTL
 const threadAnchors = new Map<string, ThreadAnchor>();
 
 export function rememberChannelThreadAnchor(channelJid: string, messageId?: string): void {
-  if (!channelJid || !messageId) return;
+  if (!channelJid || !messageId) {
+    return;
+  }
   threadAnchors.set(channelJid, { messageId, expiresAt: Date.now() + ANCHOR_TTL_MS });
 }
 
@@ -208,7 +230,9 @@ export function resolveInboundThreadAnchor(metadata: {
 
 export function getChannelThreadAnchor(channelJid: string): string | undefined {
   const entry = threadAnchors.get(channelJid);
-  if (!entry) return undefined;
+  if (!entry) {
+    return undefined;
+  }
   if (entry.expiresAt <= Date.now()) {
     threadAnchors.delete(channelJid);
     return undefined;

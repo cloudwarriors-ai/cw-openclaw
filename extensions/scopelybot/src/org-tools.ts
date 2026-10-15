@@ -81,7 +81,128 @@ export function registerOrgTools(api: OpenClawPluginApi, logger: AuditLogger) {
     ),
   );
 
+  // ── Destination lock read ───────────────────────────────────────────────
+  api.registerTool(() =>
+    wrapToolWithAudit(
+      {
+        name: "scopely_get_org_destination_lock",
+        description:
+          "Get the destination vendor lock for a Scopely VIP organization. Read-only — runs immediately.",
+        parameters: Type.Object({
+          org_id: Type.Number({ description: "Numeric organization id" }),
+        }),
+        async execute(_id: string, params: Record<string, unknown>) {
+          try {
+            const orgId = params.org_id as number;
+            const res = await scopelyFetch(`/api/auth/orgs/${orgId}/`);
+            if (!res.ok) return jsonResult({ ok: false, status: res.status, data: res.data });
+            const org = (res.data ?? {}) as Record<string, unknown>;
+            const profileId =
+              typeof org.experience_profile === "number" ? org.experience_profile : null;
+            if (profileId === null) {
+              return jsonResult({
+                ok: true,
+                status: res.status,
+                data: {
+                  organization_id: orgId,
+                  experience_profile_configured: false,
+                  locked_destination_vendor_key: "",
+                },
+              });
+            }
+            const profileRes = await scopelyFetch(`/api/admin/experience-profiles/${profileId}/`);
+            return jsonResult({
+              ok: profileRes.ok,
+              status: profileRes.status,
+              data: {
+                organization_id: orgId,
+                experience_profile_configured: true,
+                locked_destination_vendor_key:
+                  (profileRes.data as Record<string, unknown> | null)
+                    ?.locked_destination_vendor_key ?? "",
+              },
+            });
+          } catch (err) {
+            return errorResult(err);
+          }
+        },
+      },
+      logger,
+    ),
+  );
+
   // ── Confirm-gated writes ────────────────────────────────────────────────
+  api.registerTool(() =>
+    wrapToolWithAudit(
+      {
+        name: "scopely_set_org_destination_lock",
+        description:
+          "Set or clear a Scopely VIP organization's destination vendor lock. The organization must " +
+          "already have Custom branding configured; this tool refuses to create a profile. It first " +
+          "checks the current organization, then STAGES the branding change. Nothing applies until the " +
+          "requester replies `CONFIRM <code>`.",
+        parameters: Type.Object({
+          org_id: Type.Number({ description: "Numeric organization id" }),
+          vendor_key: Type.Optional(
+            Type.String({
+              description: "Destination vendor key to lock (omit when clear is true)",
+            }),
+          ),
+          clear: Type.Optional(
+            Type.Boolean({
+              description: "Clear the current lock; mutually exclusive with vendor_key",
+            }),
+          ),
+        }),
+        async execute(_id: string, params: Record<string, unknown>) {
+          try {
+            const orgId = params.org_id as number;
+            const vendorKey = typeof params.vendor_key === "string" ? params.vendor_key.trim() : "";
+            const clear = params.clear === true;
+            if ((vendorKey !== "") === clear) {
+              return jsonResult({
+                ok: false,
+                error: "Provide exactly one of vendor_key or clear=true.",
+              });
+            }
+
+            const current = await scopelyFetch(`/api/auth/orgs/${orgId}/`);
+            if (!current.ok) {
+              return jsonResult({ ok: false, status: current.status, data: current.data });
+            }
+            const org = (current.data ?? {}) as Record<string, unknown>;
+            const profileId =
+              typeof org.experience_profile === "number" ? org.experience_profile : null;
+            if (profileId === null) {
+              return jsonResult({
+                ok: false,
+                error:
+                  "Cannot set an organization destination lock because no experience profile is configured. " +
+                  "Configure Custom branding first, then retry this operation.",
+              });
+            }
+
+            const target = clear ? "clear" : vendorKey;
+            return stageWrite(
+              `${clear ? "clear" : `lock`} destination vendor for org id ${orgId} (${target})`,
+              () =>
+                scopelyFetch(`/api/admin/orgs/${orgId}/branding/`, {
+                  method: "PATCH",
+                  body: JSON.stringify({
+                    mode: "custom",
+                    profile: { locked_destination_vendor_key: clear ? "" : vendorKey },
+                  }),
+                }),
+            );
+          } catch (err) {
+            return errorResult(err);
+          }
+        },
+      },
+      logger,
+    ),
+  );
+
   api.registerTool(() =>
     wrapToolWithAudit(
       {

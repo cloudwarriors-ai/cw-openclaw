@@ -11,12 +11,14 @@ import type { EmbeddedRunTrigger } from "./params.js";
  * Builds the stable tool-run context forwarded into an embedded-attempt execution.
  */
 export function buildEmbeddedAttemptToolRunContext(params: {
+  readonly requesterRunStartedAt?: number;
   trigger?: EmbeddedRunTrigger;
   jobId?: string;
   memoryFlushWritePath?: string;
   toolsAllow?: string[];
   trace?: DiagnosticTraceContext;
 }): {
+  readonly requesterRunStartedAt?: number;
   trigger?: EmbeddedRunTrigger;
   jobId?: string;
   memoryFlushWritePath?: string;
@@ -24,6 +26,7 @@ export function buildEmbeddedAttemptToolRunContext(params: {
   trace?: DiagnosticTraceContext;
 } {
   return {
+    requesterRunStartedAt: params.requesterRunStartedAt,
     trigger: params.trigger,
     jobId: params.jobId,
     memoryFlushWritePath: params.memoryFlushWritePath,

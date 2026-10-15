@@ -6,14 +6,27 @@
 // (bigheadbot/pulsebot/zws/cloudflow-support/external-org-autopilot).
 
 import type { AuditLogger } from "./audit.js";
+import { auditBackendEvent, readBackendProfile } from "./backend-profile.js";
+import { isCurrentApprover } from "./ops-roster-client.js";
 import { takePending } from "./pending-confirm.js";
 import { redactText } from "./redaction.js";
-import { isScopelyBotZoomMessage } from "./zoom-format.js";
 
-export function isApprovedWriteActor(actor: string, approverIds: string[]): boolean {
-  const normalized = actor.trim().toLowerCase();
-  const allowed = new Set(approverIds.map((value) => value.trim().toLowerCase()).filter(Boolean));
-  return Boolean(normalized) && allowed.size > 0 && allowed.has(normalized);
+// Only an exact code command is deterministic approval; ordinary confirm prose
+// and malformed codes remain normal requests; neither consumes a pending action.
+// The model may prepare a change, but only this exact command can execute one.
+const CONFIRM_LINE = /^CONFIRM\s+([2-9a-hjkmnp-z]{8}|[a-f0-9]{32})$/i;
+export function isConfirmCommand(text: string): boolean {
+  return CONFIRM_LINE.test(text.trim());
+}
+
+function uncertainBundleItem(value: unknown): boolean {
+  if (value === null || typeof value !== "object") {
+    return true;
+  }
+  const item = value as { ok?: boolean; status?: number };
+  return (
+    item.ok !== true && (typeof item.status !== "number" || item.status < 400 || item.status >= 500)
+  );
 }
 
 // Compact, redacted extract of a backend error body so a failed confirm
@@ -27,7 +40,9 @@ export function isApprovedWriteActor(actor: string, approverIds: string[]): bool
 // (stack traces, proxies' HTML) and stay hidden — pinned by the existing
 // "hides backend failure bodies" 502 test.
 export function formatBackendErrorDetail(data: unknown): string {
-  if (!data) return "";
+  if (!data) {
+    return "";
+  }
   let text = "";
   if (typeof data === "string") {
     text = data;
@@ -45,7 +60,9 @@ export function formatBackendErrorDetail(data: unknown): string {
   } else if (Array.isArray(data)) {
     text = data.map((v) => (typeof v === "string" ? v : JSON.stringify(v))).join(" ");
   }
-  if (/^\s*</.test(text)) return ""; // HTML error page — no useful detail
+  if (/^\s*</.test(text)) {
+    return "";
+  } // HTML error page — no useful detail
   return redactText(text, 400).trim();
 }
 
@@ -58,74 +75,103 @@ export async function tryExecuteConfirm(params: {
   conversationId: string;
   channelId?: string;
   sessionKey?: string;
-  approverIds: string[];
   logger: AuditLogger;
 }): Promise<string | null> {
-  const m = params.text.trim().match(/^CONFIRM\s+(\d{4})\b/i);
-  if (!m) return null;
+  const m = params.text.trim().match(CONFIRM_LINE);
+  if (!m) {
+    return null;
+  }
+  // Refuse locally before any authority request, then recheck after awaiting it.
+  if (readBackendProfile().mode !== "read-write") {
+    auditBackendEvent("write_blocked_read_only", { via: "confirm" });
+    return "Changes are paused: the bot is read-only, so nothing was run.";
+  }
   // Check identity before touching the pending store. An unauthorized user in
   // the correct channel cannot execute OR consume a valid pending action.
-  if (!isApprovedWriteActor(params.actor, params.approverIds)) {
+  if (!(await isCurrentApprover(params.actor))) {
     return "Write confirmation is not authorized for this Zoom identity.";
   }
-  // Channel-scoped: only consumes an action staged for THIS conversation. Zoom
-  // thread replies dispatch with the thread id as conversationId, so the session
-  // key — which proves the message came through ScopelyBot's own Zoom binding —
-  // is the accepted channel-binding evidence for threaded CONFIRMs.
-  const action = takePending(m[1], {
-    conversationId: params.conversationId,
-    fromOwnZoomSurface: isScopelyBotZoomMessage({
-      channelId: params.channelId ?? "",
-      sessionKey: params.sessionKey,
-    }),
-  });
+  // READ-ONLY REFUSAL (INV-2/INV-8): re-check the live profile before touching
+  // the pending store. An action staged while the profile was read-write must
+  // not run after the owner switched to read-only or threw the kill switch.
+  if (readBackendProfile().mode !== "read-write") {
+    auditBackendEvent("write_blocked_read_only", { via: "confirm" });
+    return "Changes are paused: the bot is read-only, so nothing was run.";
+  }
+  // The host preserves the Zoom channel JID in dispatch conversationId even
+  // for thread-scoped sessions. An agent prefix alone cannot prove that channel.
+  const action = takePending(m[1].toLowerCase(), { conversationId: params.conversationId });
   if (!action) {
-    return `No pending action for code ${m[1]} — it may have expired (5 min), already been used, or was requested in a different channel.`;
+    return "No pending action for that confirmation — it may have expired (5 min), already been used, or was requested in a different channel.";
   }
   const start = Date.now();
   try {
     const res = await action.run({ actor: params.actor });
+    const bundle = res.data as { bundle?: boolean; applied?: number; results?: unknown[] } | null;
+    const uncertain =
+      !res.ok &&
+      (res.status < 400 ||
+        res.status >= 500 ||
+        (bundle?.bundle === true &&
+          Array.isArray(bundle.results) &&
+          bundle.results.some(uncertainBundleItem)) ||
+        (res.data !== null &&
+          typeof res.data === "object" &&
+          "code" in res.data &&
+          res.data.code === "outcome_unknown"));
     params.logger({
       ts: new Date().toISOString(),
       tool: "scopely_confirm_execute",
       actor: params.actor || "unknown",
       params: { summary: action.summary },
-      resultSummary: res.ok ? "ok" : `error: ${res.status}`,
+      ...(action.backendAction ? { backendAction: action.backendAction } : {}),
+      resultSummary: uncertain ? "outcome_unknown" : res.ok ? "ok" : `error: ${res.status}`,
+      ...(uncertain ? { error: "confirmation_outcome_unknown" } : {}),
       durationMs: Date.now() - start,
     });
     if (res.ok) {
-      return `✅ Done: ${action.summary}.`;
+      return `✅ Done: ${action.displaySummary ?? action.summary}.`;
     }
     // Bundled confirms (gated.ts coalescing) report per-item outcomes on
     // failure: HTTP ops are not transactional, so the human must see exactly
     // which items applied and which did not — a bare "Failed" would hide a
     // partial application.
-    const bundle = res.data as { bundle?: boolean; applied?: number; results?: unknown[] } | null;
     if (bundle && bundle.bundle === true && Array.isArray(bundle.results)) {
       const lines = bundle.results
         .slice(0, 10)
         .map((r) => {
           const item = r as { summary: string; ok: boolean; status: number; detail?: string };
-          if (item.ok) return `✅ ${item.summary}`;
+          if (item.ok) {
+            return `✅ ${item.summary}`;
+          }
+          if (uncertainBundleItem(item)) {
+            return `⚠️ ${item.summary} (HTTP ${item.status}) — outcome unknown`;
+          }
           const itemDetail = item.detail ? ` — ${item.detail}` : "";
           return `❌ ${item.summary} (HTTP ${item.status})${itemDetail}`;
         })
         .join("\n");
-      return `⚠️ Applied ${bundle.applied ?? 0} of ${bundle.results.length}:\n${lines}`;
+      const warning = uncertain
+        ? "\nThese are confirmed successes; remaining outcomes may be unknown. Inspect and reconcile the existing pending action and audit. Do not retry blindly."
+        : "";
+      return `⚠️ Applied ${bundle.applied ?? 0} of ${bundle.results.length}:\n${lines}${warning}`;
+    }
+    if (uncertain) {
+      return `⚠️ Outcome unknown (HTTP ${res.status}): ${action.summary}. Inspect and reconcile the existing pending action and audit before a new request. Do not retry blindly.`;
     }
     const detail = res.status >= 400 && res.status < 500 ? formatBackendErrorDetail(res.data) : "";
     return `❌ Failed (HTTP ${res.status}): ${action.summary}.${detail ? ` — ${detail}` : ""}`;
-  } catch (err) {
-    const msg = redactText(err instanceof Error ? err.message : String(err), 500);
+  } catch {
     params.logger({
       ts: new Date().toISOString(),
       tool: "scopely_confirm_execute",
       actor: params.actor || "unknown",
       params: { summary: action.summary },
-      resultSummary: "error: exception",
-      error: msg,
+      ...(action.backendAction ? { backendAction: action.backendAction } : {}),
+      resultSummary: "outcome_unknown",
+      error: "confirmation_outcome_unknown",
       durationMs: Date.now() - start,
     });
-    return `❌ Error executing ${action.summary}.`;
+    return `⚠️ Outcome unknown: ${action.summary}. Inspect and reconcile the existing pending action and audit before a new request. Do not retry blindly.`;
   }
 }

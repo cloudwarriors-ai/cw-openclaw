@@ -131,10 +131,13 @@ describe("gating", () => {
 });
 
 describe("reviewDraft checks", () => {
-  it("blocks CONFIRM code relays (confirm-gate boundary)", () => {
-    const v = reviewDraft("Reply CONFIRM 4821 to proceed.", ev());
-    expect(v).toMatchObject({ ok: false, checkId: "confirm_code_leak" });
-  });
+  it.each(["4821", "ABCDEFGH", "23456789", "a1".repeat(16)])(
+    "blocks CONFIRM code relays: %s",
+    (code) => {
+      const v = reviewDraft(`Reply CONFIRM ${code} to proceed.`, ev());
+      expect(v).toMatchObject({ ok: false, checkId: "confirm_code_leak" });
+    },
+  );
 
   it("blocks secret-shaped values", () => {
     const jwt = `token: eyJ${"a".repeat(24)}.${"b".repeat(16)}`;
@@ -233,7 +236,9 @@ describe("ungrounded_auth_denial (v2)", () => {
   it("blocks the exact live fabrication (no auth failure anywhere this turn)", () => {
     const v = reviewDraft(INCIDENT_DRAFT, ev({ corpus: "", humanText: "Confimed" }));
     expect(v).toMatchObject({ ok: false, checkId: "ungrounded_auth_denial" });
-    if (!v.ok) expect(v.instruction).toContain("CONFIRM <code>");
+    if (!v.ok) {
+      expect(v.instruction).toContain("CONFIRM <code>");
+    }
   });
 
   it("allows the claim when a tool result actually reported an auth failure", () => {

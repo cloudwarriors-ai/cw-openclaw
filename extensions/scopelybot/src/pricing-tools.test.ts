@@ -1,5 +1,12 @@
+// This domain fixture supplies explicit server eligibility; roster authority is tested separately.
+vi.mock("./ops-roster-client.js", () => ({
+  isCurrentApprover: async (actor: string) => ["t"].includes(actor),
+}));
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { validateToolArguments } from "../../../packages/llm-core/src/validation.js";
 
+const nativeStage = vi.hoisted(() => vi.fn());
+vi.mock("./ops-write-client.js", () => ({ opsStageWrite: nativeStage }));
 const fetchMock = vi.fn();
 vi.mock("./scopely-api.js", () => ({
   scopelyFetch: (...args: unknown[]) => fetchMock(...args),
@@ -9,7 +16,14 @@ vi.mock("./scopely-api.js", () => ({
   }),
   buildQuery: (params: Record<string, unknown>, keys: string[]) => {
     const qs = new URLSearchParams();
-    for (const k of keys) if (params[k] !== undefined) qs.set(k, String(params[k]));
+    for (const k of keys) {
+      const value = params[k];
+      if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+        qs.set(k, String(value));
+      } else if (value !== undefined) {
+        throw new Error("Mock query arguments must be primitive scalars");
+      }
+    }
     const s = qs.toString();
     return s ? `?${s}` : "";
   },
@@ -25,8 +39,14 @@ vi.mock("./comfort.js", () => ({
   sendComfortMessage: () => {},
 }));
 
+import { setBackendProfileForTest } from "./backend-profile.js";
+import { opsBindingFor } from "./capability-registry.js";
 import { tryExecuteConfirm } from "./confirm.js";
 import { registerPricingTools } from "./pricing-tools.js";
+
+// These tests exercise the CONFIRM staging path, which exists only while the
+// live backend profile is read-write (gated.ts refuses staging otherwise).
+setBackendProfileForTest({ mode: "read-write" });
 
 type ToolDef = {
   name: string;
@@ -52,7 +72,7 @@ const CHANNEL = "vipbot@conference.xmpp.zoom.us";
 // codeOf(await stage(...)): the tool result is code-free by design; the code is
 // read from the channel delivery spy (sendScopelyText prompt, arg index 1).
 const codeOf = (_res: { content: { text: string }[] }) =>
-  String(sendScopelyTextMock.mock.calls.at(-1)?.[1] ?? "").match(/CONFIRM (\d{4})/)?.[1];
+  String(sendScopelyTextMock.mock.calls.at(-1)?.[1] ?? "").match(/CONFIRM ([a-f0-9]{32})/)?.[1];
 
 const WRITE_TOOLS: Record<string, Record<string, unknown>> = {
   scopely_create_pricing_default: {
@@ -62,23 +82,13 @@ const WRITE_TOOLS: Record<string, Record<string, unknown>> = {
     unit_price: "1.00",
     category: "c",
   },
-  scopely_update_pricing_default: { id: 1, unit_price: "2.00" },
-  scopely_delete_pricing_default: { id: 1 },
-  scopely_create_pricing_item: {
-    vendor_key: "zoom",
-    project_type_id: 1,
-    pricing_key: "k",
-    display_name: "n",
-    unit_price: "1.00",
-    category: "c",
-  },
-  scopely_update_pricing_item: {
-    vendor_key: "zoom",
-    project_type_id: 1,
-    id: 2,
+  scopely_update_pricing_default: {
+    vendor_key: "ops-test-canary",
+    pricing_key: "seat",
     unit_price: "2.00",
   },
-  scopely_delete_pricing_item: { vendor_key: "zoom", project_type_id: 1, id: 2 },
+  scopely_delete_pricing_default: { id: 1 },
+  scopely_delete_pricing_item: { vendor_key: "ops-test-canary", pricing_key: "ops_test_discard" },
   scopely_create_currency: { code: "EUR", symbol: "€", name: "Euro" },
   scopely_update_currency: { id: 1, exchange_rate: "0.9" },
   scopely_delete_currency: { id: 1 },
@@ -88,6 +98,8 @@ const WRITE_TOOLS: Record<string, Record<string, unknown>> = {
 describe("pricing-tools", () => {
   beforeEach(() => {
     fetchMock.mockReset();
+    nativeStage.mockReset();
+    nativeStage.mockResolvedValue({ content: [{ type: "text", text: '{"staged":true}' }] });
     sendScopelyTextMock.mockReset();
     process.env.SCOPELYBOT_ZOOM_CHANNEL = CHANNEL;
   });
@@ -95,17 +107,24 @@ describe("pricing-tools", () => {
     delete process.env.SCOPELYBOT_ZOOM_CHANNEL;
   });
 
+  // Slice-1 reads go only to the operator layer (ops-client.ts opsRead): with
+  // no registry call context they refuse and reach no legacy path.
+  it("native reads never call a legacy path", async () => {
+    const t = buildTools();
+    for (const name of ["scopely_list_pricing_defaults", "scopely_list_pricing_items"]) {
+      const result = JSON.parse(
+        (await t[name].execute("x", { scope_category: "ucaas" })).content[0].text,
+      );
+      expect(result.ok, name).toBe(false);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("read tools hit the correct BFF paths immediately", async () => {
     const t = buildTools();
     fetchMock.mockResolvedValue({ ok: true, status: 200, data: [] });
-    await t.scopely_list_pricing_defaults.execute("x", { scope_category: "ucaas" });
-    expect(fetchMock).toHaveBeenCalledWith("/api/admin/pricing-defaults/?scope_category=ucaas");
     await t.scopely_get_pricing_default.execute("x", { id: 4 });
     expect(fetchMock).toHaveBeenCalledWith("/api/admin/pricing-defaults/4/");
-    await t.scopely_list_pricing_items.execute("x", { vendor_key: "zoom", project_type_id: 3 });
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/admin/vendors/zoom/project-types/3/pricing-items/",
-    );
     await t.scopely_list_currencies.execute("x", {});
     expect(fetchMock).toHaveBeenCalledWith("/api/admin/currencies/");
     await t.scopely_get_session_pricing_config.execute("x", {});
@@ -125,13 +144,20 @@ describe("pricing-tools", () => {
     expect(fetchMock, "no write tool may call scopelyFetch before CONFIRM").not.toHaveBeenCalled();
   });
 
+  it("native deletion stages exact keys and never synthesizes a legacy route", async () => {
+    const args = { vendor_key: "ops-test-canary", pricing_key: "ops_test_discard", id: 2 };
+    await buildTools().scopely_delete_pricing_item.execute("x", args);
+    expect(nativeStage).toHaveBeenCalledWith("pricing.items.delete", args);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   // Live incident 2026-07-21: asked to "Make it core", the model wrote the
   // pricing CATEGORY "core" into deployment_types on two dialpad items. The
   // backend accepted it (validator only checks "list of strings") but the
   // pricing engine's deployment gate means such rows silently drop from every
   // quote. Deployment keys are validated pre-stage against the live template
   // list; the backend stays the loud authority for category.
-  describe("deployment-key validation (silent-drop guard)", () => {
+  describe("legacy default deployment-key validation (disabled by registry)", () => {
     const TEMPLATES = {
       ok: true,
       status: 200,
@@ -150,7 +176,7 @@ describe("pricing-tools", () => {
       const t = buildTools();
       fetchMock.mockResolvedValueOnce(TEMPLATES);
       const res = parse(
-        await t.scopely_create_pricing_item.execute("x", {
+        await t.scopely_create_pricing_default.execute("x", {
           ...ITEM_ARGS,
           deployment_types: ["core"],
         }),
@@ -169,7 +195,7 @@ describe("pricing-tools", () => {
       const t = buildTools();
       fetchMock.mockResolvedValueOnce(TEMPLATES);
       const res = parse(
-        await t.scopely_update_pricing_item.execute("x", {
+        await t.scopely_create_pricing_default.execute("x", {
           vendor_key: "dialpad",
           project_type_id: 99,
           id: 1080,
@@ -181,19 +207,19 @@ describe("pricing-tools", () => {
       expect(sendScopelyTextMock).not.toHaveBeenCalled();
     });
 
-    it("valid keys stage normally on defaults and items", async () => {
+    it("valid keys stage normally on legacy defaults", async () => {
       const t = buildTools();
       fetchMock.mockResolvedValue(TEMPLATES);
       const item = parse(
-        await t.scopely_create_pricing_item.execute("x", {
+        await t.scopely_create_pricing_default.execute("x", {
           ...ITEM_ARGS,
           deployment_types: ["bespoke", "copilot"],
         }),
       );
       expect(item.staged).toBe(true);
       const dflt = parse(
-        await t.scopely_update_pricing_default.execute("x", {
-          id: 3,
+        await t.scopely_create_pricing_default.execute("x", {
+          ...ITEM_ARGS,
           deployment_types: ["tnm"],
         }),
       );
@@ -204,7 +230,7 @@ describe("pricing-tools", () => {
       const t = buildTools();
       fetchMock.mockRejectedValueOnce(new Error("backend down"));
       const res = parse(
-        await t.scopely_create_pricing_item.execute("x", {
+        await t.scopely_create_pricing_default.execute("x", {
           ...ITEM_ARGS,
           deployment_types: ["bespoke"],
         }),
@@ -214,7 +240,7 @@ describe("pricing-tools", () => {
 
     it("skips the lookup entirely when no deployment keys are supplied", async () => {
       const t = buildTools();
-      const res = parse(await t.scopely_create_pricing_item.execute("x", ITEM_ARGS));
+      const res = parse(await t.scopely_create_pricing_default.execute("x", ITEM_ARGS));
       expect(res.staged).toBe(true);
       expect(fetchMock).not.toHaveBeenCalled();
     });
@@ -239,7 +265,6 @@ describe("pricing-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
-      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });
@@ -256,57 +281,68 @@ describe("pricing-tools", () => {
     });
   });
 
-  it("create_pricing_item confirms to the nested vendor/project-type path", async () => {
-    const t = buildTools();
-    const code = codeOf(
-      await t.scopely_create_pricing_item.execute("x", {
-        vendor_key: "zoom",
-        project_type_id: 7,
-        pricing_key: "addon",
-        display_name: "Addon",
-        unit_price: "99.00",
-        category: "Add-Ons",
-      }),
-    );
-    fetchMock.mockResolvedValue({ ok: true, status: 201, data: {} });
-    await tryExecuteConfirm({
-      text: `CONFIRM ${code}`,
-      actor: "t",
-      approverIds: ["t"],
-      conversationId: CHANNEL,
-      logger: noopLogger as never,
-    });
-    const [path, opts] = fetchMock.mock.calls.at(-1)!;
-    expect(path).toBe("/api/admin/vendors/zoom/project-types/7/pricing-items/");
-    expect(opts.method).toBe("POST");
-    // project_type / vendor are path params, NOT body fields
-    expect(JSON.parse(opts.body)).not.toHaveProperty("vendor_key");
-    expect(JSON.parse(opts.body)).not.toHaveProperty("project_type_id");
-  });
-
-  it("update_pricing_item targets the nested item path and sends only changed fields", async () => {
-    const t = buildTools();
-    const code = codeOf(
-      await t.scopely_update_pricing_item.execute("x", {
-        vendor_key: "zoom",
+  it.each([
+    ["create", "item", "pricing.items.create"],
+    ["update", "item", "pricing.items.update"],
+    ["update", "default", "pricing.defaults.update"],
+  ])(
+    "routes %s pricing %s through native shared pricing without dropping obsolete args",
+    async (action, kind, capability) => {
+      const params = {
+        vendor_key: "ops-test-canary",
+        pricing_key: "seat",
+        unit_price: "12.00",
         project_type_id: 7,
         id: 42,
-        unit_price: "120.00",
-      }),
-    );
-    fetchMock.mockResolvedValue({ ok: true, status: 200, data: {} });
-    await tryExecuteConfirm({
-      text: `CONFIRM ${code}`,
-      actor: "t",
-      approverIds: ["t"],
-      conversationId: CHANNEL,
-      logger: noopLogger as never,
-    });
-    const [path, opts] = fetchMock.mock.calls.at(-1)!;
-    expect(path).toBe("/api/admin/vendors/zoom/project-types/7/pricing-items/42/");
-    expect(opts.method).toBe("PATCH");
-    expect(JSON.parse(opts.body)).toEqual({ unit_price: "120.00" });
-  });
+        is_active: true,
+      };
+      const tool = buildTools()[`scopely_${action}_pricing_${kind}`];
+      const checked = validateToolArguments(tool as never, {
+        type: "toolCall",
+        id: "call",
+        name: tool.name,
+        arguments: params,
+      });
+      expect(checked).toEqual(params);
+      await tool.execute("call", checked as Record<string, unknown>);
+      expect(nativeStage).toHaveBeenCalledExactlyOnceWith(capability, params);
+      expect(nativeStage.mock.calls[0][1]).toEqual(params);
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["create_pricing_item", "update_pricing_item", "update_pricing_default"])(
+    "%s refuses unsupported retirement in the model schema without staging",
+    (action) => {
+      const tool = buildTools()[`scopely_${action}`];
+      expect(() =>
+        validateToolArguments(tool as never, {
+          type: "toolCall",
+          id: "call",
+          name: tool.name,
+          arguments: {
+            vendor_key: "ops-test-canary",
+            pricing_key: "seat",
+            unit_price: "12.00",
+            is_active: false,
+          },
+        }),
+      ).toThrow(/is_active/);
+      expect(nativeStage).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["create_pricing_item", "update_pricing_item", "update_pricing_default"])(
+    "never falls back when native %s refuses",
+    async (action) => {
+      const refused = { content: [{ type: "text", text: '{"ok":false,"error":"refused"}' }] };
+      nativeStage.mockResolvedValue(refused);
+      expect(await buildTools()[`scopely_${action}`].execute("call", {})).toBe(refused);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(sendScopelyTextMock).not.toHaveBeenCalled();
+    },
+  );
 
   it("delete_currency confirms to DELETE", async () => {
     const t = buildTools();
@@ -315,7 +351,6 @@ describe("pricing-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
-      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });
@@ -323,6 +358,20 @@ describe("pricing-tools", () => {
       "/api/admin/currencies/9/",
       expect.objectContaining({ method: "DELETE" }),
     );
+  });
+
+  it("preserves explicit all-scope requests through model validation and the native binding", () => {
+    const tool = buildTools().scopely_list_pricing_defaults;
+    const args = { vendor_key: "ops-test-canary", scope_mode: "all", offset: 20 };
+    expect(
+      validateToolArguments(tool as never, {
+        type: "toolCall",
+        id: "all-scopes",
+        name: tool.name,
+        arguments: args,
+      }),
+    ).toEqual(args);
+    expect(opsBindingFor(tool.name)?.args).toContain("scope_mode");
   });
 
   it("registers all 15 pricing tools", () => {

@@ -2,7 +2,10 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
+import { assertNativeSchema } from "./capability-registry.js";
 import { describeChanges, pickBody, stageWrite } from "./gated.js";
+import { opsRead } from "./ops-client.js";
+import { opsStageWrite } from "./ops-write-client.js";
 import { errorResult, jsonResult, scopelyFetch } from "./scopely-api.js";
 
 // Deployment-type config tools (Scopely VIP admin). Two surfaces:
@@ -29,6 +32,60 @@ const TEMPLATE_FIELDS = [
   "sort_order",
 ] as const;
 
+const deploymentTypeFields = {
+  label: Type.String({ minLength: 1, maxLength: 100 }),
+  description: Type.String({ maxLength: 500 }),
+  long_description: Type.String({ maxLength: 500 }),
+  icon: Type.String({ maxLength: 100 }),
+  sort_order: Type.Integer({ minimum: 0, maximum: 2147483647 }),
+};
+const deploymentTypeUpdateSchema = Type.Object(
+  {
+    vendor_key: Type.String({
+      pattern: "^[-a-zA-Z0-9_]+$",
+      minLength: 1,
+      maxLength: 50,
+      description: "Exact native key from catalog reads",
+    }),
+    project_type: Type.String({
+      pattern: "^[-a-zA-Z0-9_]+$",
+      minLength: 1,
+      maxLength: 50,
+      description: "Exact native key from catalog reads",
+    }),
+    deployment_type: Type.String({
+      pattern: "^[-a-zA-Z0-9_]+$",
+      minLength: 1,
+      maxLength: 50,
+      description: "Exact native key from catalog reads",
+    }),
+    field: Type.String({
+      enum: Object.keys(deploymentTypeFields),
+      description: "The single field the human explicitly asked to change",
+    }),
+    value: Type.Unknown({
+      description:
+        "The exact replacement value: sort_order requires an integer; other fields require strings. No defaults.",
+    }),
+  },
+  { additionalProperties: false },
+);
+function prepareDeploymentTypeUpdate(args: unknown): Record<string, unknown> {
+  assertNativeSchema(deploymentTypeUpdateSchema, args);
+  const params = args as Record<string, unknown>;
+  if (!Object.hasOwn(deploymentTypeFields, params.field as string)) {
+    throw new Error("The selected field is unsupported.");
+  }
+  if (!Object.hasOwn(params, "value") || params.value === undefined) {
+    throw new Error("An explicit value is required for the selected field.");
+  }
+  assertNativeSchema(
+    deploymentTypeFields[params.field as keyof typeof deploymentTypeFields],
+    params.value,
+  );
+  return params;
+}
+
 export function registerDeploymentConfigTools(api: OpenClawPluginApi, logger: AuditLogger) {
   const dtBase = (vendorKey: string, ptPk: number) =>
     `/api/admin/vendors/${encodeURIComponent(vendorKey)}/project-types/${ptPk}/deployment-types/`;
@@ -39,22 +96,15 @@ export function registerDeploymentConfigTools(api: OpenClawPluginApi, logger: Au
       {
         name: "scopely_list_deployment_types",
         description:
-          "List the deployment types configured on a Scopely VIP vendor's project type (e.g. autopilot, " +
-          "copilot, bespoke). Read-only — runs immediately.",
+          "List the deployment types offered for a VIP vendor's project type (key, label, " +
+          "description; e.g. autopilot, copilot, bespoke). Read-only — runs immediately.",
         parameters: Type.Object({
           vendor_key: Type.String({ description: "Vendor key (e.g. zoom)" }),
-          project_type_id: Type.Number({ description: "Project-type id" }),
+          project_type: Type.String({
+            description: "Project-type key (from scopely_list_project_types)",
+          }),
         }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const res = await scopelyFetch(
-              dtBase(params.vendor_key as string, params.project_type_id as number),
-            );
-            return jsonResult({ ok: res.ok, status: res.status, data: res.data });
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+        execute: opsRead,
       },
       logger,
     ),
@@ -105,38 +155,20 @@ export function registerDeploymentConfigTools(api: OpenClawPluginApi, logger: Au
       {
         name: "scopely_update_deployment_type",
         description:
-          "Update a deployment type on a Scopely VIP project type (admin action). You ARE authorized — " +
-          "CALL this tool. Pass only fields to change. It only STAGES the change; nothing applies until " +
-          "`CONFIRM <code>`.",
-        parameters: Type.Object({
-          vendor_key: Type.String({ description: "Vendor key" }),
-          project_type_id: Type.Number({ description: "Project-type id" }),
-          id: Type.Number({
-            description: "Deployment-type id (from scopely_list_deployment_types)",
-          }),
-          key: Type.Optional(Type.String()),
-          label: Type.Optional(Type.String()),
-          description: Type.Optional(Type.String()),
-          long_description: Type.Optional(Type.String()),
-          icon: Type.Optional(Type.String()),
-          sort_order: Type.Optional(Type.Number()),
-          is_active: Type.Optional(Type.Boolean()),
-        }),
+          "Prepare exactly ONE native field update per human preview. Choose field and value explicitly; " +
+          "do not copy other current values or invent empty/zero defaults. For a multi-field request, ask which " +
+          "field to change first; do not stage a batch automatically. Human CONFIRM is required.",
+        parameters: deploymentTypeUpdateSchema,
+        prepareArguments: prepareDeploymentTypeUpdate,
         async execute(_id: string, params: Record<string, unknown>) {
           try {
-            const vendorKey = params.vendor_key as string;
-            const ptPk = params.project_type_id as number;
-            const id = params.id as number;
-            const body = pickBody(params, DT_FIELDS);
-            if (Object.keys(body).length === 0) {
-              return jsonResult({ ok: false, error: "No fields to update." });
-            }
-            return stageWrite(`update deployment type id ${id}: ${describeChanges(body)}`, () =>
-              scopelyFetch(`${dtBase(vendorKey, ptPk)}${id}/`, {
-                method: "PATCH",
-                body: JSON.stringify(body),
-              }),
-            );
+            const args = prepareDeploymentTypeUpdate(params);
+            return opsStageWrite("catalog.deployment_types.update", {
+              vendor_key: args.vendor_key,
+              project_type: args.project_type,
+              deployment_type: args.deployment_type,
+              [args.field as string]: args.value,
+            });
           } catch (err) {
             return errorResult(err);
           }

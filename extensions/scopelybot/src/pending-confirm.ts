@@ -2,12 +2,14 @@
 // An action only runs after a human types `CONFIRM <code>` in the channel — the
 // LLM cannot fabricate that inbound message, so it cannot self-approve.
 
-import { randomInt } from "node:crypto";
+import { randomBytes } from "node:crypto";
 
 export type PendingAction = {
   code: string;
   conversationId: string; // channel the CONFIRM must come from
-  summary: string; // human-readable description, echoed + audited
+  summary: string; // exact server/legacy description, audited unchanged
+  backendAction?: { pending_action_id: string; preview_sha256: string };
+  displaySummary?: string; // validated native presentation; never execution input
   // Executes the staged mutation. Receives the confirming actor's id so actions
   // that record WHO approved them (e.g. approver grants) can do so; most staged
   // API calls ignore it.
@@ -27,49 +29,38 @@ function prune(): void {
   }
 }
 
-// 4-digit code, unpredictable (CSPRNG), unique within the live store. A guessable
-// code lets the LLM fabricate a CONFIRM; randomInt closes that.
+// Per-action128-bit token: consumed/expired actions and process restarts must
+// not recycle the small four-digit namespace into a different approval. Live
+// collisions are excluded; cross-lifetime non-reuse relies on CSPRNG entropy.
 export function makeCode(): string {
   prune();
-  let code = String(randomInt(1000, 10000));
+  let code = randomBytes(16).toString("hex");
   while (store.has(code)) {
-    code = String(randomInt(1000, 10000));
+    code = randomBytes(16).toString("hex");
   }
   return code;
 }
 
 export function putPending(a: Omit<PendingAction, "expiresAt">): void {
   prune();
+  if (store.has(a.code)) {
+    throw new Error("A confirmation token already has a pending action");
+  }
   store.set(a.code, { ...a, expiresAt: Date.now() + TTL_MS });
 }
 
-// Where the CONFIRM arrived from, as observed by the dispatch pipeline.
-export type ConfirmScope = {
-  conversationId: string; // dispatch conversation the CONFIRM arrived in
-  // True when the caller proved — via the agent-scoped session key — that the
-  // CONFIRM arrived through ScopelyBot's own Zoom binding. Zoom thread-scoped
-  // sessions dispatch with the THREAD id as conversationId, so an exact match
-  // against the channel-JID-bound pending can never succeed for a threaded reply
-  // (2026-07-20 incident: a 13-second-old code was reported "expired"). The
-  // session-key prefix is the channel-binding proof in that case: scopelybot has
-  // exactly one bound channel, so any `agent:scopelybot:zoom:*` session IS that
-  // channel or a thread inside it.
-  fromOwnZoomSurface?: boolean;
-};
+// Dispatch supplies the actual channel JID for both root and threaded Zoom
+// messages. Agent identity or a thread session prefix is not channel authority.
+export type ConfirmScope = { conversationId: string };
 
-// Retrieve and consume a pending action (one-time use). Channel-scoped: a CONFIRM
-// only fires an action staged for the SAME conversation (exact id match, or the
-// caller's proof that the message came through this bot's own Zoom surface), so a
-// code leaked/observed in another bot's channel cannot trigger a write staged here.
-// A scope mismatch does NOT consume the action — the rightful channel can still
-// confirm it.
+// A mismatch never consumes the code; the rightful channel can still confirm.
 export function takePending(code: string, scope: ConfirmScope): PendingAction | undefined {
   prune();
   const a = store.get(code);
   if (!a) {
     return undefined;
   }
-  if (a.conversationId !== scope.conversationId && scope.fromOwnZoomSurface !== true) {
+  if (!scope.conversationId || a.conversationId !== scope.conversationId) {
     return undefined;
   }
   store.delete(code);

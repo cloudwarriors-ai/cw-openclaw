@@ -7,16 +7,27 @@
 // when a human replies `CONFIRM <code>`. The LLM cannot fabricate that inbound message,
 // so the bot cannot self-mutate. Tests assert scopelyFetch is not called during execute().
 
+import { createHash } from "node:crypto";
+import { readBackendProfile } from "./backend-profile.js";
+import { capabilityRefusal, currentToolName } from "./capability-registry.js";
 import { getChannelThreadAnchor, sendScopelyText } from "./comfort.js";
 import { formatBackendErrorDetail } from "./confirm.js";
-import { makeCode, putPending } from "./pending-confirm.js";
+import { formatNativePreview } from "./confirmation-preview.js";
+import { nativeWriteScope } from "./ops-write-policy.js";
+import { makeCode, putPending, takePending } from "./pending-confirm.js";
 import { redactText } from "./redaction.js";
 import { jsonResult } from "./scopely-api.js";
+import { makeShortCode } from "./short-confirm-code.js";
 
 type FetchResult = Promise<{ ok: boolean; status: number; data: unknown }>;
 
 // One staged mutation awaiting flush into a confirm prompt.
-type StagedItem = { summary: string; run: (ctx?: { actor?: string }) => FetchResult };
+type StagedItem = {
+  summary: string;
+  backendAction?: { pending_action_id: string; preview_sha256: string };
+  displaySummary?: string;
+  run: (ctx?: { actor?: string }) => FetchResult;
+};
 
 // Per-item outcome of a confirmed bundle, surfaced back to the human so partial
 // application is never silent (deletes/updates over HTTP are not transactional).
@@ -38,7 +49,9 @@ const bundles = new Map<string, { items: StagedItem[]; timer: ReturnType<typeof 
 // explicit, reversible env change, not a silent behavior shift.
 function bundleWindowMs(): number {
   const raw = Number(process.env.SCOPELYBOT_CONFIRM_BUNDLE_MS ?? "0");
-  if (!Number.isFinite(raw) || raw <= 0) return 0;
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return 0;
+  }
   return Math.min(raw, 10_000);
 }
 
@@ -46,28 +59,52 @@ function bundleWindowMs(): number {
 // multiple items render a numbered list so the approver sees the COMPLETE set
 // of intended changes behind the one code (John Rudolph's 2026-07-20 ask:
 // "one message to confirm all intentions not broke apart").
-function buildPrompt(items: StagedItem[], code: string): string {
+function buildPrompt(items: StagedItem[], code: string, target = "PROD"): string {
   if (items.length === 1) {
     return (
-      `⚠️ Confirm: ${items[0].summary} on PROD.\n` +
+      `⚠️ Confirm: ${items[0].displaySummary ? `change on ${target}.\n${items[0].displaySummary}` : `${items[0].summary} on ${target}.`}\n` +
       `Reply \`CONFIRM ${code}\` within 5 minutes to proceed, or ignore to cancel.`
     );
   }
   const lines = items.map((it, i) => `${i + 1}. ${it.summary}`).join("\n");
   return (
-    `⚠️ Confirm ${items.length} changes on PROD:\n${lines}\n` +
+    `⚠️ Confirm ${items.length} changes on ${target}:\n${lines}\n` +
     `Reply \`CONFIRM ${code}\` within 5 minutes to apply ALL ${items.length}, or ignore to cancel.`
   );
 }
 
 // Register the pending action for a flushed bundle and post its prompt.
-// putPending happens BEFORE the send so even an instant CONFIRM finds the code.
-async function flushItems(channel: string, items: StagedItem[]): Promise<void> {
-  if (items.length === 0) return;
-  const code = makeCode();
+// Legacy codes are visible before send. Native codes become usable only after
+// strict delivery acknowledgement and the captured admission scope recheck.
+async function flushItems(
+  channel: string,
+  items: StagedItem[],
+  target = "PROD",
+  nativeScope?: string,
+): Promise<void> {
+  if (items.length === 0) {
+    return;
+  }
+  if (nativeScope !== undefined) {
+    // Refuse a known-invalid display before reserving a permanent short name.
+    // Keep the actual-prompt check too; placeholder validation is not approval.
+    const candidate = buildPrompt(items, "22222222", target);
+    if (candidate.length > 2300 || redactText(candidate, 2300) !== candidate) {
+      throw new Error("The complete native preview cannot be displayed safely.");
+    }
+  }
+  const code = nativeScope === undefined ? makeCode() : makeShortCode();
+  let pending: Parameters<typeof putPending>[0];
   if (items.length === 1) {
     // Legacy pending shape — confirm.ts renders `✅ Done: <summary>.` unchanged.
-    putPending({ code, conversationId: channel, summary: items[0].summary, run: items[0].run });
+    pending = {
+      code,
+      conversationId: channel,
+      summary: items[0].summary,
+      ...(items[0].backendAction ? { backendAction: items[0].backendAction } : {}),
+      ...(items[0].displaySummary === undefined ? {} : { displaySummary: items[0].displaySummary }),
+      run: items[0].run,
+    };
   } else {
     const summary = redactText(
       `${items.length} changes: ${items.map((it) => it.summary).join("; ")}`,
@@ -103,9 +140,36 @@ async function flushItems(channel: string, items: StagedItem[]): Promise<void> {
         data: { bundle: true, applied: results.length - failed.length, results },
       };
     };
-    putPending({ code, conversationId: channel, summary, run });
+    pending = { code, conversationId: channel, summary, run };
   }
-  await sendScopelyText(channel, buildPrompt(items, code), getChannelThreadAnchor(channel));
+  const prompt = buildPrompt(items, nativeScope === undefined ? code : code.toUpperCase(), target);
+  if (nativeScope !== undefined && (prompt.length > 2300 || redactText(prompt, 2300) !== prompt)) {
+    throw new Error("The complete native preview cannot be displayed safely.");
+  }
+  if (nativeScope === undefined) {
+    putPending(pending);
+  }
+  try {
+    await sendScopelyText(
+      channel,
+      prompt,
+      getChannelThreadAnchor(channel),
+      nativeScope !== undefined || target !== "PROD",
+    );
+    if (
+      nativeScope !== undefined &&
+      nativeWriteScope(readBackendProfile(), process.env.SCOPELYBOT_ZOOM_CHANNEL) !== nativeScope
+    ) {
+      throw new Error("Admission changed during confirmation delivery.");
+    }
+    if (nativeScope !== undefined) {
+      putPending(pending);
+    }
+  } catch (error) {
+    // Invalidate an ambiguously delivered prompt; never retry its send.
+    takePending(code, { conversationId: channel });
+    throw error;
+  }
 }
 
 // Timer-driven flush for an open bundle. Errors must not become unhandled
@@ -113,9 +177,11 @@ async function flushItems(channel: string, items: StagedItem[]): Promise<void> {
 // fail-safe — the pending simply expires unconfirmable in 5 minutes.
 function flushBundle(channel: string): void {
   const b = bundles.get(channel);
-  if (!b) return;
+  if (!b) {
+    return;
+  }
   bundles.delete(channel);
-  void flushItems(channel, b.items).catch((err) => {
+  void flushItems(channel, b.items).catch((err: unknown) => {
     console.error(`[scopelybot] confirm-prompt post failed for ${channel}:`, err);
   });
 }
@@ -136,7 +202,19 @@ function flushBundle(channel: string): void {
 //
 // `run` receives the confirming actor's id at execution time; actions that record
 // who approved them (approver grants) use it, staged API calls ignore it.
-export async function stageWrite(summary: string, run: (ctx?: { actor?: string }) => FetchResult) {
+export async function stageWrite(
+  summary: string,
+  run: (ctx?: { actor?: string }) => FetchResult,
+  localBackend: boolean | { scope: string; pendingActionId?: string } = false,
+) {
+  // READ-ONLY REFUSAL (INV-2/INV-8): unless the live backend profile says
+  // read-write, refuse BEFORE a code is minted, a pending action stored or a
+  // CONFIRM prompt posted — a prompt for a write that can never run would
+  // invite a human to approve nothing. The refusal names the calling tool's
+  // family link (set by the capability-registry wrapper).
+  if (readBackendProfile().mode !== "read-write") {
+    return capabilityRefusal(currentToolName() ?? "", "blocked_read_only");
+  }
   // Read the channel at call time (not module load) so env that loads after import
   // — and test stubbing — both resolve correctly.
   const channel = process.env.SCOPELYBOT_ZOOM_CHANNEL ?? "";
@@ -151,6 +229,62 @@ export async function stageWrite(summary: string, run: (ctx?: { actor?: string }
       error:
         "SCOPELYBOT_ZOOM_CHANNEL is not configured — write staging is disabled (fail-closed). " +
         "Set the env var to the bot's Zoom channel JID.",
+    });
+  }
+  if (localBackend) {
+    const profile = readBackendProfile();
+    const scope = nativeWriteScope(profile, channel);
+    const expectedScope = typeof localBackend === "object" ? localBackend.scope : scope;
+    // The exact frozen preview must fit and survive redaction unchanged. Never
+    // approve a shortened description or combine independent backend claims.
+    if (
+      !scope ||
+      scope !== expectedScope ||
+      (localBackend === true && profile.env !== "local") ||
+      summary.length > 2000 ||
+      redactText(summary, 2000) !== summary
+    ) {
+      return jsonResult({
+        ok: false,
+        error: "The exact native preview cannot be displayed safely.",
+      });
+    }
+    let displaySummary: string;
+    try {
+      displaySummary = formatNativePreview(summary);
+      if (displaySummary.length > 2000 || redactText(displaySummary, 2000) !== displaySummary) {
+        throw new Error("Unsafe native display");
+      }
+    } catch {
+      return jsonResult({
+        ok: false,
+        error: "The exact native preview cannot be displayed safely.",
+      });
+    }
+    await flushItems(
+      channel,
+      [
+        {
+          summary,
+          displaySummary,
+          run,
+          ...(typeof localBackend === "object" && localBackend.pendingActionId
+            ? {
+                backendAction: {
+                  pending_action_id: localBackend.pendingActionId,
+                  preview_sha256: createHash("sha256").update(summary).digest("hex"),
+                },
+              }
+            : {}),
+        },
+      ],
+      profile.env === "prod" ? "PRODUCTION" : "LOCAL SYNTHETIC DATA",
+      scope,
+    );
+    return jsonResult({
+      staged: true,
+      awaiting_confirmation: true,
+      message: "Confirm prompt posted. Reply NO_REPLY; do not relay the code.",
     });
   }
   const safeSummary = redactText(summary, 500);
@@ -183,8 +317,15 @@ export async function stageWrite(summary: string, run: (ctx?: { actor?: string }
 }
 
 // Test hook: deterministically flush any open bundle without waiting for the
-// debounce timer. Returns after the prompt post settles.
+// debounce timer. Returns after the prompt post settles. Throws outside a
+// Vitest worker (like the other test hooks); the AST closure scan forbids
+// production calls.
 export async function flushStagedBundlesForTest(): Promise<void> {
+  if (!process.env.VITEST) {
+    throw new Error("flushStagedBundlesForTest is test-only");
+  }
+  // Snapshot: a send may await while another turn stages a new bundle.
+  // eslint-disable-next-line unicorn/no-useless-spread
   for (const [channel, b] of [...bundles]) {
     bundles.delete(channel);
     clearTimeout(b.timer);

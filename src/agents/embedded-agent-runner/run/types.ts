@@ -42,6 +42,8 @@ export type EmbeddedRunContextWindowInfo = {
 };
 
 export type EmbeddedRunAttemptParams = EmbeddedRunAttemptBase & {
+  /** Host-stamped process-local monotonic run start, retained across attempts. */
+  readonly requesterRunStartedAt?: number;
   initialReplayState?: EmbeddedRunReplayState;
   /** Pluggable context engine for ingest/assemble/compact lifecycle. */
   contextEngine?: ContextEngine;

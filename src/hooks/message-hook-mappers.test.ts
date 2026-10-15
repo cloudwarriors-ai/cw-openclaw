@@ -3,7 +3,7 @@ import type { FinalizedMsgContext } from "../auto-reply/templating.js";
 import type { ChannelMessagingAdapter } from "../channels/plugins/types.core.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type { DiagnosticTraceContext } from "../infra/diagnostic-trace-context.js";
-import { setActivePluginRegistry } from "../plugins/runtime.js";
+import { requireActivePluginRegistry, setActivePluginRegistry } from "../plugins/runtime.js";
 import { createChannelTestPluginBase, createTestRegistry } from "../test-utils/channel-plugins.js";
 import {
   buildCanonicalSentMessageHookContext,
@@ -544,3 +544,34 @@ describe("message hook mappers", () => {
     });
   });
 });
+
+it.each([undefined, "thread-root-message"])(
+  "Zoom dispatch keeps its channel identity with thread %s",
+  (threadId) => {
+    const previousRegistry = requireActivePluginRegistry();
+    try {
+      setActivePluginRegistry(createTestRegistry([]));
+      const channel = "synthetic@conference.xmpp.zoom.us";
+      const canonical = deriveInboundMessageHookContext(
+        makeInboundCtx({
+          Provider: "zoom",
+          Surface: "zoom",
+          From: `zoom:channel:${channel}`,
+          To: channel,
+          OriginatingChannel: "zoom",
+          OriginatingTo: channel,
+          GroupChannel: channel,
+          ChatType: "channel",
+          MessageThreadId: threadId,
+          SessionKey: `agent:scopelybot:zoom:channel:${threadId ?? channel}`,
+        }),
+      );
+      const scope = toPluginInboundClaimContext(canonical);
+      expect(scope.channelId).toBe("zoom");
+      expect(scope.conversationId).toBe(channel);
+      expect(scope.sessionKey).toBe(`agent:scopelybot:zoom:channel:${threadId ?? channel}`);
+    } finally {
+      setActivePluginRegistry(previousRegistry);
+    }
+  },
+);

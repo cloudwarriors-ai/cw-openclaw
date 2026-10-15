@@ -1,3 +1,7 @@
+// This domain fixture supplies explicit server eligibility; roster authority is tested separately.
+vi.mock("./ops-roster-client.js", () => ({
+  isCurrentApprover: async (actor: string) => ["tester", "t", "attacker"].includes(actor),
+}));
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the prod HTTP layer so no real network call is ever made and we can
@@ -23,8 +27,13 @@ vi.mock("./comfort.js", () => ({
   sendComfortMessage: () => {},
 }));
 
+import { setBackendProfileForTest } from "./backend-profile.js";
 import { tryExecuteConfirm } from "./confirm.js";
 import { registerUserMaintenanceTools } from "./user-maintenance-tools.js";
+
+// These tests exercise the CONFIRM staging path, which exists only while the
+// live backend profile is read-write (gated.ts refuses staging otherwise).
+setBackendProfileForTest({ mode: "read-write" });
 
 type ToolDef = {
   name: string;
@@ -60,7 +69,7 @@ function parse(res: { content: { text: string }[] }) {
 function codeFromDelivery(): string | undefined {
   // sendScopelyText(channel, text, replyTo) — the prompt text is arg index 1.
   const text = sendScopelyTextMock.mock.calls.at(-1)?.[1];
-  return String(text ?? "").match(/CONFIRM (\d{4})/)?.[1];
+  return String(text ?? "").match(/CONFIRM ([a-f0-9]{32})/)?.[1];
 }
 
 describe("user-maintenance-tools", () => {
@@ -73,12 +82,16 @@ describe("user-maintenance-tools", () => {
     delete process.env.SCOPELYBOT_ZOOM_CHANNEL;
   });
 
-  it("read-only tools execute immediately against the correct BFF paths", async () => {
+  it("native user details refuse missing call context without reaching the legacy backend", async () => {
+    const tools = buildTools();
+    const result = parse(await tools.scopely_get_user.execute("t", { user_id: 42 }));
+    expect(result.ok).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("remaining legacy reads use their existing BFF paths", async () => {
     const tools = buildTools();
     fetchMock.mockResolvedValue({ ok: true, status: 200, data: [] });
-
-    await tools.scopely_get_user.execute("t", { user_id: 42 });
-    expect(fetchMock).toHaveBeenCalledWith("/api/auth/users/42/detail/");
 
     await tools.scopely_list_invites.execute("t", {});
     expect(fetchMock).toHaveBeenCalledWith("/api/auth/invites/");
@@ -87,31 +100,18 @@ describe("user-maintenance-tools", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/auth/access-requests/");
   });
 
-  it("staging delivers the code to the channel (threaded) and returns NO code to the model", async () => {
+  it("native reset refuses missing sender context before any legacy request or prompt", async () => {
     const tools = buildTools();
-
-    const staged = parse(
+    const result = parse(
       await tools.scopely_reset_user_password.execute("t", {
         user_id: 123,
-        email: "matt@example.com",
+        surface_key: "vip",
+        email: "target@example.invalid",
       }),
     );
-
-    // The model-facing result is code-free — it cannot fabricate/relay/duplicate it.
-    expect(staged.staged).toBe(true);
-    expect(staged.awaiting_confirmation).toBe(true);
-    expect(JSON.stringify(staged)).not.toMatch(/CONFIRM \d{4}/);
-    expect(JSON.stringify(staged)).not.toMatch(/\b\d{4}\b/);
-
-    // The real prompt — with the code — was posted to the channel, threaded.
-    expect(sendScopelyTextMock).toHaveBeenCalledTimes(1);
-    const [channel, text, replyTo] = sendScopelyTextMock.mock.calls[0];
-    expect(channel).toBe(CHANNEL);
-    expect(text).toMatch(/CONFIRM \d{4}/);
-    expect(replyTo).toBe("MSG-ANCHOR");
-
-    // Staging must not touch prod until confirmed.
+    expect(result.ok).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(sendScopelyTextMock).not.toHaveBeenCalled();
   });
 
   it("scopely_update_user stages only the supplied fields and does NOT execute until confirmed", async () => {
@@ -130,7 +130,6 @@ describe("user-maintenance-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "tester",
-      approverIds: ["tester"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });
@@ -150,27 +149,41 @@ describe("user-maintenance-tools", () => {
     expect(sendScopelyTextMock).not.toHaveBeenCalled();
   });
 
-  it("scopely_create_invite stages email+role and posts to the invite endpoint on confirm", async () => {
+  it("native invitation declares explicit fields and refuses missing sender context", async () => {
     const tools = buildTools();
-    await tools.scopely_create_invite.execute("t", {
-      email: "new@example.com",
-      role: "org_admin",
+    expect(tools.scopely_create_invite).toMatchObject({
+      parameters: {
+        required: [
+          "email",
+          "first_name",
+          "last_name",
+          "role",
+          "organization",
+          "inviter_user_id",
+          "surface_key",
+        ],
+        additionalProperties: true,
+        properties: {
+          role: { const: "standard" },
+          organization: { type: "integer", minimum: 1, maximum: 2147483647 },
+          inviter_user_id: { type: "integer", minimum: 1, maximum: 2147483647 },
+        },
+      },
     });
-    const code = codeFromDelivery();
-
-    fetchMock.mockResolvedValue({ ok: true, status: 201, data: {} });
-    await tryExecuteConfirm({
-      text: `CONFIRM ${code}`,
-      actor: "tester",
-      approverIds: ["tester"],
-      conversationId: CHANNEL,
-      logger: noopLogger as never,
-    });
-
-    const [path, opts] = fetchMock.mock.calls[0];
-    expect(path).toBe("/api/auth/invites/create/");
-    expect(opts.method).toBe("POST");
-    expect(JSON.parse(opts.body)).toEqual({ email: "new@example.com", role: "org_admin" });
+    const result = parse(
+      await tools.scopely_create_invite.execute("t", {
+        email: "ops-test-new@example.invalid",
+        first_name: "Synthetic",
+        last_name: "Invitee",
+        role: "standard",
+        organization: 8,
+        inviter_user_id: 47,
+        surface_key: "vip",
+      }),
+    );
+    expect(result.ok).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(sendScopelyTextMock).not.toHaveBeenCalled();
   });
 
   it("access-request approve/reject stage and hit the right endpoints on confirm", async () => {
@@ -182,7 +195,6 @@ describe("user-maintenance-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${approveCode}`,
       actor: "t",
-      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });
@@ -200,7 +212,6 @@ describe("user-maintenance-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${rejectCode}`,
       actor: "t",
-      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });
@@ -220,7 +231,6 @@ describe("user-maintenance-tools", () => {
     const wrong = await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "attacker",
-      approverIds: ["attacker"],
       conversationId: "someone-elses-channel@conference.xmpp.zoom.us",
       logger: noopLogger as never,
     });
@@ -231,7 +241,6 @@ describe("user-maintenance-tools", () => {
     const right = await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
-      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });
@@ -256,9 +265,8 @@ describe("user-maintenance-tools", () => {
     buildTools();
     fetchMock.mockResolvedValue({ ok: true, status: 200, data: {} });
     const reply = await tryExecuteConfirm({
-      text: "CONFIRM 0000",
+      text: "CONFIRM 00000000000000000000000000000000",
       actor: "t",
-      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });

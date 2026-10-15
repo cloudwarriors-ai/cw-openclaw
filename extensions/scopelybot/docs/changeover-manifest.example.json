@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "backend": { "commit": null, "image": null },
+  "plugin": { "commit": null, "image": null },
+  "rollback": {
+    "backendCommit": null,
+    "backendImage": null,
+    "pluginCommit": null,
+    "pluginImage": null,
+    "profileEvidence": null
+  },
+  "runtime": {
+    "mountSource": "./.data/openclaw",
+    "mountTarget": "/root/.openclaw",
+    "workspace": "/root/.openclaw/workspace",
+    "profileFile": "scopelybot-backend.json",
+    "tokenFile": "scopelybot-ops-token",
+    "channelEnv": "SCOPELYBOT_ZOOM_CHANNEL"
+  },
+  "evidence": {
+    "publicationGate": null,
+    "mainDeployGate": null,
+    "builds": null,
+    "migrationBackup": null,
+    "identity": null,
+    "workspaceOwnership": null,
+    "channel": null,
+    "auditPersistence": null,
+    "connectedUat": null,
+    "releaseAuthorization": null
+  }
+}

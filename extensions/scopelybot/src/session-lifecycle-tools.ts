@@ -16,6 +16,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
 import { stageWrite } from "./gated.js";
+import { opsStageWrite } from "./ops-write-client.js";
 import { scopelyFetch, jsonResult, errorResult } from "./scopely-api.js";
 
 // Validate and narrow a session id once; every tool below needs it.
@@ -61,9 +62,8 @@ export function registerSessionLifecycleTools(api: OpenClawPluginApi, logger: Au
       path: "archive",
       verb: "ARCHIVE",
       description:
-        "Archive a Scopely session — hidden from active work but SOW/pricing/DocuSign history " +
-        "remain recoverable. " +
-        STAGED,
+        "Stage archiving a native VIP/ZW draft for human confirmation. Local allowlisted synthetic " +
+        "sessions only; signed or locked orders refuse. Saved quote and audit history remain intact.",
       withReason: true,
     },
     {
@@ -110,6 +110,9 @@ export function registerSessionLifecycleTools(api: OpenClawPluginApi, logger: Au
           async execute(_id: string, params: Record<string, unknown>) {
             try {
               const id = sessionId(params);
+              if (spec.tool === "scopely_archive_session") {
+                return await opsStageWrite("sessions.archive", params);
+              }
               const reason =
                 spec.withReason && typeof params.reason === "string" ? params.reason : "";
               const summary = `${spec.verb} session ${id}${reason ? ` (reason: ${reason})` : ""}`;
@@ -272,7 +275,9 @@ export function registerSessionLifecycleTools(api: OpenClawPluginApi, logger: Au
               value: String(value),
               label,
             };
-            if (category) body.category = category;
+            if (category) {
+              body.category = category;
+            }
             const rendered = discountType === "percent" ? `${value}%` : `${value} fixed`;
             const summary = `add discount "${label}" (${rendered}${
               category ? `, category ${category}` : ", on total"

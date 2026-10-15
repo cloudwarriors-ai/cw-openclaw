@@ -4,6 +4,8 @@ The flip-switch model: **dev and prod run the same SHA**; only three things
 differ per box — `.env`, the compose profile, and the box's `openclaw.json`
 runtime config. No prod-only branches, no image surgery.
 
+For the ScopelyBot VIP/ZW migration, use the [paired read-only changeover runbook](../extensions/scopelybot/docs/changeover.md).
+
 | Surface       | Dev box (noob-root)         | Prod box (Linode)                                  |
 | ------------- | --------------------------- | -------------------------------------------------- |
 | Compose       | `docker-compose.dev.yml`    | `docker-compose.prod.yml`                          |

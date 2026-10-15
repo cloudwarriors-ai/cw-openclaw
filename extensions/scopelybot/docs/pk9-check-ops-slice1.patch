@@ -1,0 +1,217 @@
+# PK-9 checker change for the M13 slice-1 operator-layer client: adds --ops-slice1.
+# Apply from the pk9 kit directory (Plans/2026-10-12-vipbot-hookup/pk9): patch -p1 < pk9-check-ops-slice1.patch
+# Verified on a scratch copy: test_check_m1a_config.mjs 275 ok (was 265), mutants 49/49 killed (was 45/45), --selftest PASS.
+--- a/check_m1a_config.mjs
++++ b/check_m1a_config.mjs
+@@ -97,7 +97,12 @@
+  * Usage
+  *   node check_m1a_config.mjs <openclaw.json | -> --channel-id <id> --profile <path>
+  *        [--expected-allow scopely_health_check[,tool...]] [--coordinator scopelybot]
+- *        [--json] [--no-jq]
++ *        [--ops-slice1] [--json] [--no-jq]
++ *   --ops-slice1: M13 slice 1 (operator-layer client): the coordinator's
++ *   expected allow list defaults to OPS_SLICE1_ALLOW (--expected-allow still
++ *   wins), check 2 evaluates every expected tool for every other agent (it
++ *   always does; for M1a that list is the health check alone), and check 8
++ *   wants authMode "service-token" instead of "anonymous".
+  *   node check_m1a_config.mjs --selftest
+  *   Exit: 0 all eight checks PASS; 1 any FAIL or UNKNOWN; 2 usage, read or parse error.
+  */
+@@ -110,6 +115,25 @@
+ export const HEALTH_TOOL = "scopely_health_check";
+ export const DEFAULT_COORDINATOR = "scopelybot";
+ export const DEFAULT_EXPECTED_ALLOW = Object.freeze([HEALTH_TOOL]);
++/** M13 slice 1: the coordinator's tools (cw-openclaw extensions/scopelybot/src/capability-registry.ts OPS_READS). */
++export const OPS_SLICE1_ALLOW = Object.freeze([
++  HEALTH_TOOL,
++  "scopely_auth_status",
++  "scopely_list_vendors",
++  "scopely_get_vendor",
++  "scopely_vendor_config",
++  "scopely_list_project_types",
++  "scopely_list_deployment_types",
++  "scopely_list_scoping_cards",
++  "scopely_get_scoping_card",
++  "scopely_list_pricing_defaults",
++  "scopely_list_sessions",
++  "scopely_get_session",
++]);
++/** The expected coordinator allow list for these options. */
++export function expectedAllowFor(options = {}) {
++  return unique((options.expectedAllow ?? (options.opsSlice1 ? OPS_SLICE1_ALLOW : DEFAULT_EXPECTED_ALLOW)).map(normalizeToolName).filter(Boolean));
++}
+ export const SPAWN_TOOLS = Object.freeze(["sessions_spawn", "subagents"]);
+ /** PK-2 co-tenant hardening deny set (pk2/verify_lockdown.py COTENANT_DENY). */
+ export const COTENANT_DENY = Object.freeze([
+@@ -517,7 +541,8 @@
+   const ctx = {
+     cfg,
+     coordinator,
+-    expectedAllow: unique((options.expectedAllow ?? DEFAULT_EXPECTED_ALLOW).map(normalizeToolName).filter(Boolean)),
++    expectedAllow: expectedAllowFor(options),
++    authMode: options.opsSlice1 ? "service-token" : "anonymous",
+     channelId: options.channelId,
+     profile: options.profile,
+     agentsValid: isObj(cfg.agents) && Array.isArray(cfg.agents.list),
+@@ -679,7 +704,7 @@
+ }
+ 
+ export function check2(ctx) {
+-  const title = "no other agent, default or global list can run scopely_health_check";
++  const title = `no other agent, default or global list can run any of [${ctx.expectedAllow.join(", ")}]`;
+   if (!ctx.agentsValid) {
+     return result(2, title, STATUS.UNKNOWN, ["agents.list is missing or not an array"]);
+   }
+@@ -736,10 +761,15 @@
+       ev.push(`UNKNOWN agents.list[${i}] has no string id (the runtime resolves it to agent "main")`);
+       return;
+     }
+-    const r = evaluate(ctx, i, HEALTH_TOOL);
+-    if (r.pipeline) {
+-      fail = true;
+-      ev.push(`FAIL ${agentLabel(ctx, i)}: ${r.reachable ? "scopely_health_check REACHABLE" : "no layer blocks scopely_health_check (empty/absent allow = all tools); exact 2026.6.2 result: not exposed only because the optional-tool gate finds no explicit entry, which is not relied on (conservative)"} (${r.trail.join("; ")})`);
++    // Every expected coordinator tool, not only the health check: a deny that
++    // blocks one of them must not hide another (slice 1 has twelve).
++    for (const tool of ctx.expectedAllow) {
++      const r = evaluate(ctx, i, tool);
++      const name = /^[a-z0-9_]{1,64}$/.test(tool) ? tool : safe(tool);
++      if (r.pipeline) {
++        fail = true;
++        ev.push(`FAIL ${agentLabel(ctx, i)}: ${r.reachable ? `${name} REACHABLE` : `no layer blocks ${name} (empty/absent allow = all tools); exact 2026.6.2 result: not exposed only because the optional-tool gate finds no explicit entry, which is not relied on (conservative)`} (${r.trail.join("; ")})`);
++      }
+     }
+     // S14: an agent that can spawn the coordinator agent as its subagent runs
+     // scopely_health_check under the coordinator's allow list with requester
+@@ -1100,7 +1130,7 @@
+ }
+ 
+ export function check8(ctx) {
+-  const title = "backend profile is zw2 / env prod / mode read-only / prod host table only";
++  const title = `backend profile is zw2 / env prod / mode read-only / authMode ${ctx.authMode} / prod host table only`;
+   const p = ctx.profile;
+   if (!p) {
+     return result(8, title, STATUS.UNKNOWN, ["UNKNOWN no --profile given"]);
+@@ -1119,7 +1149,7 @@
+     return result(8, title, STATUS.FAIL, [...ev, ...fails.map((f) => `FAIL ${f}`)]);
+   }
+   if (v.profile !== undefined && v.profile !== "zw2") fails.push('profile must be "zw2"');
+-  if (v.authMode !== undefined && v.authMode !== "anonymous") fails.push('authMode must be "anonymous"');
++  if ((v.authMode ?? "anonymous") !== ctx.authMode) fails.push(`authMode must be "${ctx.authMode}"${ctx.authMode === "service-token" ? "" : " (--ops-slice1 expects service-token)"}`);
+   if (v.env !== "prod") fails.push(`env is ${safe(v.env ?? null)} (want "prod")`);
+   const mode = v.mode ?? "read-only";
+   if (mode !== "read-only") fails.push(`mode is ${safe(mode)} (want "read-only"; "off" is the kill switch)`);
+@@ -1160,7 +1190,7 @@
+ /** jq filters a human can run on the same input; each states its expected output. */
+ export function jqCommands(opts = {}) {
+   const coord = normalizeAgentId(opts.coordinator ?? DEFAULT_COORDINATOR);
+-  const expected = JSON.stringify(unique((opts.expectedAllow ?? DEFAULT_EXPECTED_ALLOW).map(normalizeToolName)).sort());
++  const expected = JSON.stringify(expectedAllowFor(opts).sort());
+   const isCoord = `((.id // "") | ${TRIM} | ascii_downcase) == "${coord}"`;
+   return {
+     1: [
+@@ -1276,6 +1306,7 @@
+     else if (a === "--profile") opts.profilePath = next();
+     else if (a === "--coordinator") opts.coordinator = next();
+     else if (a === "--expected-allow") opts.expectedAllow = next().split(",").map((s) => s.trim()).filter(Boolean);
++    else if (a === "--ops-slice1") opts.opsSlice1 = true;
+     else if (a.startsWith("--")) throw new Error(`unknown option ${a}`);
+     else rest.push(a);
+   }
+@@ -1375,7 +1406,7 @@
+     return 2;
+   }
+   if (opts.help) {
+-    process.stdout.write("usage: node check_m1a_config.mjs <openclaw.json|-> --channel-id <id> --profile <path> [--expected-allow a,b] [--coordinator id] [--json] [--no-jq] | --selftest\n");
++    process.stdout.write("usage: node check_m1a_config.mjs <openclaw.json|-> --channel-id <id> --profile <path> [--expected-allow a,b] [--coordinator id] [--ops-slice1] [--json] [--no-jq] | --selftest\n");
+     return 0;
+   }
+   if (opts.selftest) {
+@@ -1406,7 +1437,7 @@
+   }
+   let report;
+   try {
+-    report = runChecks(cfg, { channelId: opts.channelId, profile, coordinator: opts.coordinator, expectedAllow: opts.expectedAllow });
++    report = runChecks(cfg, { channelId: opts.channelId, profile, coordinator: opts.coordinator, expectedAllow: opts.expectedAllow, opsSlice1: opts.opsSlice1 });
+   } catch (err) {
+     process.stderr.write(`ERROR ${err.message}\n`);
+     return 2;
+@@ -1416,7 +1447,7 @@
+     configSha: sha256(raw),
+     configBytes: raw.length,
+     coordinator: normalizeAgentId(opts.coordinator ?? DEFAULT_COORDINATOR),
+-    expectedAllow: unique((opts.expectedAllow ?? DEFAULT_EXPECTED_ALLOW).map(normalizeToolName)),
++    expectedAllow: expectedAllowFor(opts),
+     profileSource: opts.profilePath,
+   };
+   if (opts.json) {
+--- a/test_check_m1a_config.mjs
++++ b/test_check_m1a_config.mjs
+@@ -110,12 +110,12 @@
+ }
+ 
+ /** profile: object | string (raw bytes) | {error} | null (= no --profile); channelId null = none. */
+-function run(mod, cfg, { profile = prof(), channelId = CH, expectedAllow, coordinator } = {}) {
++function run(mod, cfg, { profile = prof(), channelId = CH, expectedAllow, coordinator, opsSlice1 } = {}) {
+   let p;
+   if (profile === null) p = undefined;
+   else if (profile.error) p = profile;
+   else p = mod.profileFromBuffer(Buffer.from(typeof profile === "string" ? profile : JSON.stringify(profile)));
+-  return mod.runChecks(cfg, { channelId: channelId ?? undefined, profile: p, expectedAllow, coordinator });
++  return mod.runChecks(cfg, { channelId: channelId ?? undefined, profile: p, expectedAllow, coordinator, opsSlice1 });
+ }
+ 
+ const LETTER = { P: "PASS", F: "FAIL", U: "UNKNOWN" };
+@@ -313,7 +313,33 @@
+     (r) => assert(/absent = default/.test(evidence(r, 8)), "note expected")],
+   // general
+   ["g agents missing", (c) => { delete c.agents; }, { 1: "U", 2: "U", 3: "U", 4: "U", 6: "U" }],
++  // --ops-slice1 (M13 slice 1): twelve coordinator tools, authMode service-token
++  ["s1 compliant slice-1 config", (c) => ops1(c), {}],
++  ["s1 profile still anonymous", (c) => ({ ...ops1(c), profile: prof() }), { 8: "F" }],
++  ["s1 coordinator allows only the health check", (c) => { const o = ops1(c); A(c, COORD).tools.allow = ["scopely_health_check"]; return o; }, { 3: "F" },
++    (r) => assert(/missing: .*scopely_list_vendors/.test(evidence(r, 3)), "missing slice-1 tools must be named")],
++  ["s1 coordinator gets sessions_spawn", (c) => { const o = ops1(c); A(c, COORD).tools.allow.push("sessions_spawn"); return o; }, { 1: "F", 3: "F" }],
++  ["s1 another agent: deny hides only the health check", (c) => { const o = ops1(c); c.agents.list.push({ id: "x-agent", tools: { allow: [], deny: ["scopely_health_check"] } }); return o; }, { 2: "F" },
++    (r) => assert(/scopely_list_vendors/.test(evidence(r, 2)), "check 2 must evaluate every slice-1 tool")],
++  ["s1 another agent lists a slice-1 read", (c) => { const o = ops1(c); A(c, 0).tools.allow.push("scopely_list_sessions"); return o; }, { 2: "F" }],
++  ["s1 --expected-allow still wins", (c) => ({ ...ops1(c), expectedAllow: ["scopely_health_check"] }), { 3: "F" }],
++  ["m1a default: a service-token profile without the flag fails check 8", () => ({ profile: { ...prof(), authMode: "service-token" } }), { 8: "F" }],
++  ["m1a default: the same deny-hides-health agent passes check 2", (c) => { c.agents.list.push({ id: "x-agent", tools: { allow: [], deny: ["scopely_health_check"] } }); }, {}],
++];
++
++/** The slice-1 delta: coordinator allow = OPS_SLICE1_ALLOW, profile authMode service-token, --ops-slice1. */
++function ops1(c) {
++  A(c, COORD).tools.allow = [...OPS1];
++  return { profile: { ...prof(), authMode: "service-token" }, opsSlice1: true };
++}
++const OPS1 = [
++  "scopely_health_check", "scopely_auth_status", "scopely_list_vendors", "scopely_get_vendor", "scopely_vendor_config",
++  "scopely_list_project_types", "scopely_list_deployment_types", "scopely_list_scoping_cards", "scopely_get_scoping_card",
++  "scopely_list_pricing_defaults", "scopely_list_sessions", "scopely_get_session",
+ ];
++t("s1 OPS_SLICE1_ALLOW is exactly the plugin's twelve ops-bound tools", (mod) => {
++  assert(JSON.stringify(mod.OPS_SLICE1_ALLOW) === JSON.stringify(OPS1), `got ${JSON.stringify(mod.OPS_SLICE1_ALLOW)}`);
++});
+ 
+ for (const [name, mutate, nonPass, extra, opts] of CASES) {
+   t(name, (mod) => {
+@@ -645,7 +671,7 @@
+   ["M10", "profile full is not a wildcard", 'full: ["*"],', "full: [],"],
+   ["M11", "profile coding without sessions_spawn", '["sessions_spawn", "sessions", ["coding"], true],', '["sessions_spawn", "sessions", [], true],'],
+   ["M12", "check 2: drop the literal scan", "const why = forbiddenForOthers(e);", "const why = null && forbiddenForOthers(e);"],
+-  ["M13", "check 2: drop the conservative empty-allow rule", "    if (r.pipeline) {\n      fail = true;", "    if (r.reachable) {\n      fail = true;"],
++  ["M13", "check 2: drop the conservative empty-allow rule", "      if (r.pipeline) {\n        fail = true;", "      if (r.reachable) {\n        fail = true;"],
+   ["M14", "optional gate ignores the plugin id", 'for (const key of ["*", tool.name, tool.plugin, "group:plugins"]) {', 'for (const key of ["*", tool.name, "group:plugins"]) {'],
+   ["M15", "optional gate ignores group:plugins", 'for (const key of ["*", tool.name, tool.plugin, "group:plugins"]) {', 'for (const key of ["*", tool.name, tool.plugin]) {'],
+   ["M16", "check 3: extras allowed (subset instead of exact)", "  if (extra.length) {", "  if (false && extra.length) {"],
+@@ -677,6 +703,10 @@
+   ["M43", "check 2: group/sender policy presence not UNKNOWN", 'if (groupOrSender && ["allow", "alsoAllow", "deny", "profile"].some((k) => obj[k] !== undefined)) {', "if (false) {"],
+   ["M44", "check 1: coordinator per-provider lists not scanned", "if (isObj(tools.byProvider)) {", "if (false) {"],
+   ["M45", "check 1: inherited per-provider profile not scanned", "if (isObj(ctx.globalTools?.byProvider)) {", "if (false) {"],
++  ["M46", "check 2: only the health check evaluated (slice 1)", "for (const tool of ctx.expectedAllow) {\n      const r = evaluate(ctx, i, tool);", "for (const tool of [HEALTH_TOOL]) {\n      const r = evaluate(ctx, i, tool);"],
++  ["M47", "check 8: authMode not compared with the slice", '  if ((v.authMode ?? "anonymous") !== ctx.authMode) fails', '  if (false) fails'],
++  ["M48", "--ops-slice1 default allow list not applied", "(options.opsSlice1 ? OPS_SLICE1_ALLOW : DEFAULT_EXPECTED_ALLOW)", "DEFAULT_EXPECTED_ALLOW"],
++  ["M49", "--ops-slice1 auth mode not applied", 'authMode: options.opsSlice1 ? "service-token" : "anonymous",', 'authMode: "anonymous",'],
+   ["M40", "check 6: global deny coverage not required", "    if (missing.length) {\n      fail = true;\n      ev.push(`FAIL tools.deny is missing co-tenant tools", "    if (false) {\n      fail = true;\n      ev.push(`FAIL tools.deny is missing co-tenant tools"],
+ ];
+ 

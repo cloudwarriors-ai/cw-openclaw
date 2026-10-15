@@ -35,6 +35,7 @@ const state = vi.hoisted(() => ({
   isCliProviderMock: vi.fn((_: unknown) => false),
   isInternalMessageChannelMock: vi.fn((_: unknown) => false),
   createBlockReplyDeliveryHandlerMock: vi.fn(),
+  isTransientHttpErrorMock: vi.fn((_: string) => false),
   isCompactionFailureErrorMock: vi.fn((_: string | undefined) => false),
   isContextOverflowErrorMock: vi.fn((_: string | undefined) => false),
   isLikelyContextOverflowErrorMock: vi.fn((_: string | undefined) => false),
@@ -120,7 +121,7 @@ vi.mock("../../agents/embedded-agent-helpers.js", () => ({
   isOverloadedErrorMessage: (message: string) => /overloaded|capacity/i.test(message),
   isRateLimitErrorMessage: (message: string) =>
     /rate.limit|too many requests|429|usage limit/i.test(message),
-  isTransientHttpError: () => false,
+  isTransientHttpError: (message: string) => state.isTransientHttpErrorMock(message),
   sanitizeUserFacingText: (text?: string) => text ?? "",
 }));
 
@@ -167,6 +168,7 @@ vi.mock("../heartbeat.js", () => ({
 
 vi.mock("./agent-runner-utils.js", () => ({
   buildEmbeddedRunExecutionParams: (params: {
+    runId: string;
     provider: string;
     model: string;
     run: { provider?: string; authProfileId?: string; authProfileIdSource?: "auto" | "user" };
@@ -174,6 +176,7 @@ vi.mock("./agent-runner-utils.js", () => ({
     embeddedContext: {},
     senderContext: {},
     runBaseParams: {
+      runId: params.runId,
       provider: params.provider,
       model: params.model,
       authProfileId: params.provider === params.run.provider ? params.run.authProfileId : undefined,
@@ -1138,6 +1141,8 @@ describe("runAgentTurnWithFallback", () => {
     state.isInternalMessageChannelMock.mockReturnValue(false);
     state.createBlockReplyDeliveryHandlerMock.mockReset();
     state.createBlockReplyDeliveryHandlerMock.mockReturnValue(undefined);
+    state.isTransientHttpErrorMock.mockReset();
+    state.isTransientHttpErrorMock.mockReturnValue(false);
     state.isCompactionFailureErrorMock.mockReset();
     state.isCompactionFailureErrorMock.mockReturnValue(false);
     state.isContextOverflowErrorMock.mockReset();
@@ -1156,6 +1161,49 @@ describe("runAgentTurnWithFallback", () => {
   afterEach(() => {
     vi.clearAllMocks();
   });
+
+  it.each(["candidate fallback", "transient retry"])(
+    "preserves requester lifetime through real outer %s and starts a fresh turn",
+    async (mode) => {
+      const { requesterRunStartedAt } = await import("../../agents/requester-run-lifetime.js");
+      let clock = 100;
+      const clockSpy = vi.spyOn(performance, "now").mockImplementation(() => clock);
+      const seen: Array<number | undefined> = [];
+      state.isTransientHttpErrorMock.mockImplementation(() => mode === "transient retry");
+      state.runEmbeddedAgentMock.mockImplementation(async (params: { runId: string }) => {
+        seen.push(requesterRunStartedAt(params.runId));
+        clock += 100;
+        if (seen.length === 1) {
+          throw new Error("502 Bad Gateway");
+        }
+        return { payloads: [{ text: "ok" }], meta: {} };
+      });
+      if (mode === "candidate fallback") {
+        state.runWithModelFallbackMock.mockImplementation(async (params: FallbackRunnerParams) => {
+          let result: unknown;
+          try {
+            result = await params.run("anthropic", "primary");
+          } catch {
+            result = await params.run("anthropic", "fallback");
+          }
+          return { result, provider: "anthropic", model: "fallback", attempts: [] };
+        });
+      }
+      try {
+        const run = await getRunAgentTurnWithFallback();
+        const result = await run(
+          createMinimalRunAgentTurnParams({ opts: { runId: "same-logical-id" } }),
+        );
+        expect(seen, JSON.stringify(result)).toEqual([100, 100]);
+        clock = 900;
+        await run(createMinimalRunAgentTurnParams({ opts: { runId: "same-logical-id" } }));
+        expect(seen).toEqual([100, 100, 900]);
+        expect(requesterRunStartedAt("same-logical-id")).toBeUndefined();
+      } finally {
+        clockSpy.mockRestore();
+      }
+    },
+  );
 
   it("passes the reply abort signal to fallback orchestration and candidates", async () => {
     const { replyOperation } = createMockReplyOperation();

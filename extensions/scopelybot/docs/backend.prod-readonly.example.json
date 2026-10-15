@@ -1,0 +1,14 @@
+{
+  "profile": "zw2",
+  "env": "prod",
+  "baseUrl": "https://prod.tailcc6c5f.ts.net:9443",
+  "allowedHosts": [
+    "prod.tailcc6c5f.ts.net:9443"
+  ],
+  "authMode": "service-token",
+  "mode": "read-only",
+  "digestEnabled": false,
+  "maxRequestsPerMinute": 20,
+  "issueLinks": {},
+  "productionCoreWrites": false
+}

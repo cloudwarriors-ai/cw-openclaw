@@ -2,7 +2,10 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { AuditLogger } from "./audit.js";
 import { wrapToolWithAudit } from "./audit.js";
+import { assertNativeSchema } from "./capability-registry.js";
 import { describeChanges, pickBody, stageWrite } from "./gated.js";
+import { opsRead } from "./ops-client.js";
+import { opsStageWrite } from "./ops-write-client.js";
 import { errorResult, jsonResult, scopelyFetch } from "./scopely-api.js";
 
 // Vendor-config tools (Scopely VIP admin): vendors, their project types, and
@@ -32,6 +35,53 @@ const PROJECT_TYPE_FIELDS = [
 
 const TERM_FIELDS = ["scope", "key", "label"] as const;
 
+const projectTypeFields = {
+  label: Type.String({ minLength: 1, maxLength: 100 }),
+  enabled: Type.Boolean(),
+  sort_order: Type.Integer({ minimum: 0, maximum: 2147483647 }),
+  product_info_url: Type.String({ maxLength: 255 }),
+};
+const projectTypeUpdateSchema = Type.Object(
+  {
+    vendor_key: Type.String({
+      pattern: "^[-a-zA-Z0-9_]+$",
+      minLength: 1,
+      maxLength: 50,
+      description: "Exact native key from catalog reads",
+    }),
+    project_type: Type.String({
+      pattern: "^[-a-zA-Z0-9_]+$",
+      minLength: 1,
+      maxLength: 50,
+      description: "Exact native key from catalog reads",
+    }),
+    field: Type.String({
+      enum: Object.keys(projectTypeFields),
+      description: "The single field the human explicitly asked to change",
+    }),
+    value: Type.Unknown({
+      description:
+        "The exact replacement value: enabled requires a boolean; sort_order requires an integer; other fields require strings. No defaults.",
+    }),
+  },
+  { additionalProperties: false },
+);
+function prepareProjectTypeUpdate(args: unknown): Record<string, unknown> {
+  assertNativeSchema(projectTypeUpdateSchema, args);
+  const params = args as Record<string, unknown>;
+  if (!Object.hasOwn(projectTypeFields, params.field as string)) {
+    throw new Error("The selected field is unsupported.");
+  }
+  if (!Object.hasOwn(params, "value") || params.value === undefined) {
+    throw new Error("An explicit value is required for the selected field.");
+  }
+  assertNativeSchema(
+    projectTypeFields[params.field as keyof typeof projectTypeFields],
+    params.value,
+  );
+  return params;
+}
+
 export function registerVendorConfigTools(api: OpenClawPluginApi, logger: AuditLogger) {
   // ── Vendors ───────────────────────────────────────────────────────────────
   api.registerTool(() =>
@@ -39,17 +89,10 @@ export function registerVendorConfigTools(api: OpenClawPluginApi, logger: AuditL
       {
         name: "scopely_list_vendors",
         description:
-          "List Scopely VIP vendors with full admin records (key, display name, source/destination " +
-          "flags, status, extraction flag). Read-only — runs immediately.",
+          "List the enabled VIP catalog vendors (key, name, source/destination flags, logo and " +
+          "project types). Read-only — runs immediately.",
         parameters: Type.Object({}),
-        async execute() {
-          try {
-            const res = await scopelyFetch(`/api/admin/vendors/`);
-            return jsonResult({ ok: res.ok, status: res.status, data: res.data });
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+        execute: opsRead,
       },
       logger,
     ),
@@ -60,20 +103,12 @@ export function registerVendorConfigTools(api: OpenClawPluginApi, logger: AuditL
       {
         name: "scopely_get_vendor",
         description:
-          "Get a single Scopely VIP vendor's admin record by vendor key (e.g. zoom). Read-only — runs immediately.",
+          "Get one VIP catalog vendor by key (e.g. zoom): flags, logo, project types, intake " +
+          "fields and config version. Unknown or disabled vendors are not found. Read-only.",
         parameters: Type.Object({
           vendor_key: Type.String({ description: "Vendor key (e.g. zoom, ringcentral)" }),
         }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const res = await scopelyFetch(
-              `/api/admin/vendors/${encodeURIComponent(params.vendor_key as string)}/`,
-            );
-            return jsonResult({ ok: res.ok, status: res.status, data: res.data });
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+        execute: opsRead,
       },
       logger,
     ),
@@ -206,14 +241,7 @@ export function registerVendorConfigTools(api: OpenClawPluginApi, logger: AuditL
         parameters: Type.Object({
           vendor_key: Type.String({ description: "Vendor key (e.g. zoom)" }),
         }),
-        async execute(_id: string, params: Record<string, unknown>) {
-          try {
-            const res = await scopelyFetch(ptBase(params.vendor_key as string));
-            return jsonResult({ ok: res.ok, status: res.status, data: res.data });
-          } catch (err) {
-            return errorResult(err);
-          }
-        },
+        execute: opsRead,
       },
       logger,
     ),
@@ -261,37 +289,19 @@ export function registerVendorConfigTools(api: OpenClawPluginApi, logger: AuditL
       {
         name: "scopely_update_project_type",
         description:
-          "Update a project type on a Scopely VIP vendor (admin action). You ARE authorized — CALL this " +
-          "tool. Pass only fields to change. It only STAGES the change; nothing applies until `CONFIRM <code>`.",
-        parameters: Type.Object({
-          vendor_key: Type.String({ description: "Vendor key" }),
-          project_type_id: Type.Number({
-            description: "Project-type id (from scopely_list_project_types)",
-          }),
-          key: Type.Optional(Type.String()),
-          label: Type.Optional(Type.String()),
-          enabled: Type.Optional(Type.Boolean()),
-          sort_order: Type.Optional(Type.Number()),
-          product_info_url: Type.Optional(Type.String()),
-          scope_category: Type.Optional(Type.String({ description: "ucaas, ccaas, or both" })),
-          catalog_seeded: Type.Optional(Type.Boolean()),
-        }),
+          "Prepare exactly ONE native field update per human preview. Choose field and value explicitly; " +
+          "do not copy other current values or invent empty/zero defaults. For a multi-field request, ask which " +
+          "field to change first; do not stage a batch automatically. Human CONFIRM is required.",
+        parameters: projectTypeUpdateSchema,
+        prepareArguments: prepareProjectTypeUpdate,
         async execute(_id: string, params: Record<string, unknown>) {
           try {
-            const vendorKey = params.vendor_key as string;
-            const ptId = params.project_type_id as number;
-            const body = pickBody(params, PROJECT_TYPE_FIELDS);
-            if (Object.keys(body).length === 0) {
-              return jsonResult({ ok: false, error: "No fields to update." });
-            }
-            return stageWrite(
-              `update project type id ${ptId} on ${vendorKey}: ${describeChanges(body)}`,
-              () =>
-                scopelyFetch(`${ptBase(vendorKey)}${ptId}/`, {
-                  method: "PATCH",
-                  body: JSON.stringify(body),
-                }),
-            );
+            const args = prepareProjectTypeUpdate(params);
+            return opsStageWrite("catalog.project_types.update", {
+              vendor_key: args.vendor_key,
+              project_type: args.project_type,
+              [args.field as string]: args.value,
+            });
           } catch (err) {
             return errorResult(err);
           }

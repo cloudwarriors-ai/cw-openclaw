@@ -1,3 +1,7 @@
+// This domain fixture supplies explicit server eligibility; roster authority is tested separately.
+vi.mock("./ops-roster-client.js", () => ({
+  isCurrentApprover: async (actor: string) => ["t"].includes(actor),
+}));
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fetchMock = vi.fn();
@@ -20,8 +24,13 @@ vi.mock("./comfort.js", () => ({
   sendComfortMessage: () => {},
 }));
 
+import { setBackendProfileForTest } from "./backend-profile.js";
 import { tryExecuteConfirm } from "./confirm.js";
 import { registerDeploymentConfigTools } from "./deployment-config-tools.js";
+
+// These tests exercise the CONFIRM staging path, which exists only while the
+// live backend profile is read-write (gated.ts refuses staging otherwise).
+setBackendProfileForTest({ mode: "read-write" });
 
 type ToolDef = {
   name: string;
@@ -47,7 +56,7 @@ const CHANNEL = "vipbot@conference.xmpp.zoom.us";
 // codeOf(await stage(...)): the tool result is code-free by design; the code is
 // read from the channel delivery spy (sendScopelyText prompt, arg index 1).
 const codeOf = (_res: { content: { text: string }[] }) =>
-  String(sendScopelyTextMock.mock.calls.at(-1)?.[1] ?? "").match(/CONFIRM (\d{4})/)?.[1];
+  String(sendScopelyTextMock.mock.calls.at(-1)?.[1] ?? "").match(/CONFIRM ([a-f0-9]{32})/)?.[1];
 
 const WRITE_ARGS: Record<string, Record<string, unknown>> = {
   scopely_create_deployment_type: {
@@ -58,9 +67,10 @@ const WRITE_ARGS: Record<string, Record<string, unknown>> = {
   },
   scopely_update_deployment_type: {
     vendor_key: "zoom",
-    project_type_id: 4,
-    id: 8,
-    label: "AutoPilot",
+    project_type: "ucaas",
+    deployment_type: "autopilot",
+    field: "label",
+    value: "AutoPilot",
   },
   scopely_delete_deployment_type: { vendor_key: "zoom", project_type_id: 4, id: 8 },
   scopely_create_deployment_type_template: { key: "autopilot", label: "Autopilot" },
@@ -78,13 +88,22 @@ describe("deployment-config-tools", () => {
     delete process.env.SCOPELYBOT_ZOOM_CHANNEL;
   });
 
+  // Slice-1 reads go only to the operator layer (ops-client.ts opsRead): with
+  // no registry call context they refuse and reach no legacy path.
+  it("slice-1 reads never call a legacy path", async () => {
+    const t = buildTools();
+    for (const name of ["scopely_list_deployment_types"]) {
+      const result = JSON.parse(
+        (await t[name].execute("x", { vendor_key: "zoom", project_type: "ucaas" })).content[0].text,
+      );
+      expect(result.ok, name).toBe(false);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("read tools hit the correct BFF paths immediately", async () => {
     const t = buildTools();
     fetchMock.mockResolvedValue({ ok: true, status: 200, data: [] });
-    await t.scopely_list_deployment_types.execute("x", { vendor_key: "zoom", project_type_id: 4 });
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/admin/vendors/zoom/project-types/4/deployment-types/",
-    );
     await t.scopely_list_deployment_type_templates.execute("x", {});
     expect(fetchMock).toHaveBeenCalledWith("/api/admin/deployment-type-templates/");
   });
@@ -94,7 +113,13 @@ describe("deployment-config-tools", () => {
     const t = buildTools();
     for (const [name, args] of Object.entries(WRITE_ARGS)) {
       const res = parse(await t[name].execute("x", args));
-      expect(res.staged, `${name} must stage`).toBe(true);
+      if (name === "scopely_update_deployment_type") {
+        // This migrated tool requires a local operator profile/current sender;
+        // old BFF staging must never be a fallback.
+        expect(res.ok).toBe(false);
+      } else {
+        expect(res.staged, `${name} must stage`).toBe(true);
+      }
     }
     expect(fetchMock, "no write tool may call scopelyFetch before CONFIRM").not.toHaveBeenCalled();
   });
@@ -113,7 +138,6 @@ describe("deployment-config-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
-      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });
@@ -132,7 +156,6 @@ describe("deployment-config-tools", () => {
     await tryExecuteConfirm({
       text: `CONFIRM ${code}`,
       actor: "t",
-      approverIds: ["t"],
       conversationId: CHANNEL,
       logger: noopLogger as never,
     });

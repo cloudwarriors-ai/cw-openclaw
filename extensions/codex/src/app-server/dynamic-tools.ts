@@ -195,7 +195,9 @@ export function createCodexDynamicToolBridge(params: {
       try {
         // Prepare before marking side-effect evidence; argument preparation can
         // fail without the target tool actually starting.
-        const preparedArgs = tool.prepareArguments ? tool.prepareArguments(args) : args;
+        // Preparation owns raw argument validation. Converting malformed JSON
+        // values to {} first could broaden a strict read into an unfiltered one.
+        const preparedArgs = tool.prepareArguments ? tool.prepareArguments(call.arguments) : args;
         didStartExecution = true;
         const rawResult = await tool.execute(call.callId, preparedArgs, signal);
         const rawIsError = isToolResultError(rawResult);
