@@ -547,16 +547,63 @@ describe("cross-process lock", () => {
     expect(fs.readFileSync(lockFile(), "utf8")).toBe("other-writer\n"); // never released by us
   });
 
-  it("the stale threshold is 10 s: a 9.5 s old lock is respected, a 10.5 s old one is taken over", () => {
-    const now = Date.now();
-    holdLock(9_500, now);
-    setAuditDepsForTest({ sleep: vi.fn(), now: () => now });
-    expect(() => getAuditWriter(workspace).append(row())).toThrow(
-      expect.objectContaining({ code: "LOCK" }),
-    );
-    holdLock(10_500, now);
-    expect(() => getAuditWriter(workspace).append(row())).not.toThrow();
-  });
+  it.each([-30_000, 0, 9_500, 10_000, 10_500, 11_000, 86_400_000])(
+    "never steals a lock aged %i ms; age cannot establish writer death",
+    (ageMs) => {
+      const now = Date.now();
+      holdLock(ageMs, now);
+      const before = fs.statSync(lockFile());
+      const sleep = vi.fn();
+      setAuditDepsForTest({ sleep, now: () => now });
+      expect(() => getAuditWriter(workspace).append(row())).toThrow(
+        expect.objectContaining({ code: "LOCK" }),
+      );
+      expect(sleep).toHaveBeenCalledTimes(5);
+      expect(fs.readFileSync(lockFile(), "utf8")).toBe("other-writer\n");
+      const after = fs.statSync(lockFile());
+      expect([after.dev, after.ino, after.mtimeMs]).toEqual([
+        before.dev,
+        before.ino,
+        before.mtimeMs,
+      ]);
+      expect(fs.existsSync(auditFile(workspace))).toBe(false);
+    },
+  );
+
+  it.each([-30_000, 0, 9_500, 10_000, 10_500, 11_000, 86_400_000])(
+    "preserves an existing ledger when another writer holds a lock aged %i ms",
+    (ageMs) => {
+      getAuditWriter(workspace).append(row());
+      const ledgerBefore = fs.readFileSync(auditFile(workspace));
+      const ledgerStatBefore = fs.statSync(auditFile(workspace));
+      const ledgerHashBefore = createHash("sha256").update(ledgerBefore).digest("hex");
+      const now = Date.now();
+      holdLock(ageMs, now);
+      const lockBefore = fs.statSync(lockFile());
+      const sleep = vi.fn();
+      setAuditDepsForTest({ sleep, now: () => now });
+      expect(() => getAuditWriter(workspace).append(row(1))).toThrow(
+        expect.objectContaining({ code: "LOCK" }),
+      );
+      expect(sleep).toHaveBeenCalledTimes(5);
+      const ledgerAfter = fs.readFileSync(auditFile(workspace));
+      const ledgerStatAfter = fs.statSync(auditFile(workspace));
+      expect(ledgerAfter).toEqual(ledgerBefore);
+      expect(createHash("sha256").update(ledgerAfter).digest("hex")).toBe(ledgerHashBefore);
+      expect([ledgerStatAfter.dev, ledgerStatAfter.ino, ledgerStatAfter.mtimeMs]).toEqual([
+        ledgerStatBefore.dev,
+        ledgerStatBefore.ino,
+        ledgerStatBefore.mtimeMs,
+      ]);
+      expect(fs.readFileSync(lockFile(), "utf8")).toBe("other-writer\n");
+      const lockAfter = fs.statSync(lockFile());
+      expect([lockAfter.dev, lockAfter.ino, lockAfter.mtimeMs]).toEqual([
+        lockBefore.dev,
+        lockBefore.ino,
+        lockBefore.mtimeMs,
+      ]);
+    },
+  );
 
   it.each([
     ["a directory", (p: string) => fs.mkdirSync(p)],
@@ -571,15 +618,6 @@ describe("cross-process lock", () => {
       }),
     );
     expect(fs.existsSync(auditFile(workspace))).toBe(false);
-  });
-
-  it("a stale lock (> 10 s) is stolen and the append proceeds", () => {
-    const now = Date.now();
-    holdLock(11_000, now);
-    setAuditDepsForTest({ sleep: vi.fn(), now: () => now });
-    expect(() => getAuditWriter(workspace).append(row())).not.toThrow();
-    expect(readAuditRows(workspace)).toHaveLength(1);
-    expect(fs.existsSync(lockFile())).toBe(false);
   });
 
   it("releases only its own lock: a lock taken over meanwhile by another writer stays", () => {

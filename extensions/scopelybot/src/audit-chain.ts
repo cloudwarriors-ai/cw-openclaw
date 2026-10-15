@@ -88,7 +88,6 @@ const MAX_V1_BYTES = 8 * 1024 * 1024;
 const MAX_TEXT = 253;
 const SOFT_RECORD_BYTES = 8 * 1024;
 const MAX_RECORD_BYTES = 16 * 1024;
-const LOCK_STALE_MS = 10_000;
 const LOCK_RETRIES = 5;
 const LOCK_SLEEP_MS = 20;
 const TERMINAL = new Set(["http_outcome", "redirect_blocked", "rate_limited"]);
@@ -445,15 +444,8 @@ function createAuditWriter(file: string): AuditWriter {
           `${lockFile} is not a regular file (inspect and remove it)`,
         );
       }
-      const mtime = held.mtimeMs;
-      if (d.now() - mtime > LOCK_STALE_MS) {
-        try {
-          d.fs.unlinkSync(lockFile); // a crashed holder: steal (best-effort, advisory)
-        } catch {
-          // another stealer won; retry the open
-        }
-        continue;
-      }
+      // Age cannot prove that a paused writer is dead. Never steal its lock:
+      // operator recovery must quiesce all writers and preserve the ledger.
       if (attempt >= LOCK_RETRIES) {
         break;
       }
@@ -606,7 +598,7 @@ function createAuditWriter(file: string): AuditWriter {
     }
     try {
       const buf = Buffer.from(out, "utf8");
-      for (let off = 0; off < buf.length;) {
+      for (let off = 0; off < buf.length; ) {
         off += d.fs.writeSync(fd, buf, off, buf.length - off);
       }
       d.fs.fsyncSync(fd);
