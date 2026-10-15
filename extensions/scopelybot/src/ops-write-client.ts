@@ -119,7 +119,7 @@ export async function opsStageWrite(capability: LocalWrite, args: Record<string,
               },
         };
       },
-      { scope },
+      { scope, pendingActionId: pendingId },
     );
   } catch (error) {
     return errorResult(error);

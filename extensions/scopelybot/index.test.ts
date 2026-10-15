@@ -101,7 +101,7 @@ describe("scopelybot confirm claim scoping", () => {
   });
 
   it.each(["CONFIRM", "CONFIRM 1234", `CONFIRM ${"a".repeat(32)} suffix`])(
-    "claims malformed commands without dispatching or echoing them: %s",
+    "leaves malformed confirmation prose to ordinary dispatch: %s",
     async (content) => {
       const handler = registerAndGetBeforeDispatch();
       const result = await handler(
@@ -113,12 +113,7 @@ describe("scopelybot confirm claim scoping", () => {
           senderId: "someone",
         },
       );
-      expect(result).toEqual({
-        handled: true,
-        text: expect.stringContaining("Copy the complete CONFIRM line"),
-      });
-      expect(result?.text).not.toContain("a".repeat(32));
-      expect(result?.text).not.toContain("1234");
+      expect(result).toBeUndefined();
     },
   );
 

@@ -126,7 +126,10 @@ function fuseCooldownMs(): number {
 // a confirmation code — the one thing the confirm-gate design forbids (codes
 // are posted deterministically by stageWrite, never through the LLM).
 // Also block old-format relays; this is egress detection, not approval parsing.
-const CONFIRM_CODE_RE = /\bCONFIRM\s+(?:[a-f0-9]{32}|\d{4})\b/i;
+// Codes may be all letters and are case-insensitive. Ambiguous code-shaped
+// words are deliberately blocked on egress; requiring digits or capitals would
+// miss valid code relays. Ordinary inbound prose still follows normal dispatch.
+const CONFIRM_CODE_RE = /\bCONFIRM\s+(?:[2-9a-hjkmnp-z]{8}|[a-f0-9]{32}|\d{4})\b/i;
 
 // Conservative secret shapes: JWTs, PEM private keys, bearer/api-key tokens,
 // and explicit "the password is X" constructions. Deliberately narrow — a

@@ -10,49 +10,58 @@ import { createHmac, timingSafeEqual } from "node:crypto";
  *
  * Message format: v0:<timestamp>:<payload>
  */
-export function verifyZoomWebhook(params: {
+type ZoomWebhookVerification = {
   payload: string;
   signature: string;
   timestamp: string;
   secret: string;
-}): boolean {
+};
+type ZoomWebhookRejection =
+  | "missing_signature"
+  | "malformed_timestamp"
+  | "expired_timestamp"
+  | "future_timestamp"
+  | "invalid_signature";
+
+/** Bounded diagnostic labels only; never log credentials, headers or payloads. */
+export function zoomWebhookRejection(
+  params: ZoomWebhookVerification,
+): ZoomWebhookRejection | undefined {
   const { payload, signature, timestamp, secret } = params;
-
   if (!signature || !timestamp || !secret) {
-    return false;
+    return "missing_signature";
   }
-
-  // Local admission policy: at most five minutes old, with 30 seconds of
-  // future clock skew. HMAC authenticates the timestamp but does not age it.
   if (!/^[1-9]\d{0,15}$/.test(timestamp)) {
-    return false;
+    return "malformed_timestamp";
   }
   const seconds = Number(timestamp);
-  const now = Math.floor(Date.now() / 1000);
-  if (!Number.isSafeInteger(seconds) || seconds < now - 300 || seconds > now + 30) {
-    return false;
+  if (!Number.isSafeInteger(seconds)) {
+    return "malformed_timestamp";
   }
-
-  // Build message: v0:<timestamp>:<payload>
-  const message = `v0:${timestamp}:${payload}`;
-
-  // Compute expected hash
-  const hash = createHmac("sha256", secret).update(message).digest("hex");
-  const expected = `v0=${hash}`;
-
-  // Use timing-safe comparison
+  const expected = `v0=${createHmac("sha256", secret).update(`v0:${timestamp}:${payload}`).digest("hex")}`;
   try {
-    const sigBuffer = Buffer.from(signature);
-    const expectedBuffer = Buffer.from(expected);
-
-    if (sigBuffer.length !== expectedBuffer.length) {
-      return false;
+    const actual = Buffer.from(signature);
+    const wanted = Buffer.from(expected);
+    if (actual.length !== wanted.length || !timingSafeEqual(actual, wanted)) {
+      return "invalid_signature";
     }
-
-    return timingSafeEqual(sigBuffer, expectedBuffer);
   } catch {
-    return false;
+    return "invalid_signature";
   }
+  // Same freshness policy; diagnostics distinguish signed clock/delivery issues
+  // from HMAC failures. event_ts is not this signed request-header timestamp.
+  const now = Math.floor(Date.now() / 1000);
+  if (seconds < now - 300) {
+    return "expired_timestamp";
+  }
+  if (seconds > now + 30) {
+    return "future_timestamp";
+  }
+  return undefined;
+}
+
+export function verifyZoomWebhook(params: ZoomWebhookVerification): boolean {
+  return zoomWebhookRejection(params) === undefined;
 }
 
 /**
@@ -150,15 +159,15 @@ export function createZoomWebhookRequestHandler(deps: {
         return;
       }
 
-      const valid = verifyZoomWebhook({
+      const rejection = zoomWebhookRejection({
         payload: rawBody,
         signature,
         timestamp,
         secret: webhookSecretToken,
       });
 
-      if (!valid) {
-        log.warn("invalid webhook signature");
+      if (rejection) {
+        log.warn(`zoom webhook rejected: ${rejection}`);
         res.status(401).json({ error: "invalid signature" });
         return;
       }

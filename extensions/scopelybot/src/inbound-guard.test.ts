@@ -161,7 +161,7 @@ describe("rate limit (P4, own flag)", () => {
     for (let i = 0; i < 10; i++) {
       guard(`flood ${i}`, { now: 1_000_000 + i });
     }
-    expect(guard("CONFIRM 4821", { now: 1_000_020 })).toBeUndefined();
+    expect(guard("CONFIRM ABCDEFGH", { now: 1_000_020 })).toBeUndefined();
     expect(guard(`CONFIRM ${"a".repeat(32)}`, { now: 1_000_020 })).toBeUndefined();
     expect(auditMock).not.toHaveBeenCalledWith(
       expect.objectContaining({ params: expect.objectContaining({ signal: "confirm" }) }),

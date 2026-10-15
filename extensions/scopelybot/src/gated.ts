@@ -7,6 +7,7 @@
 // when a human replies `CONFIRM <code>`. The LLM cannot fabricate that inbound message,
 // so the bot cannot self-mutate. Tests assert scopelyFetch is not called during execute().
 
+import { createHash } from "node:crypto";
 import { readBackendProfile } from "./backend-profile.js";
 import { capabilityRefusal, currentToolName } from "./capability-registry.js";
 import { getChannelThreadAnchor, sendScopelyText } from "./comfort.js";
@@ -23,6 +24,7 @@ type FetchResult = Promise<{ ok: boolean; status: number; data: unknown }>;
 // One staged mutation awaiting flush into a confirm prompt.
 type StagedItem = {
   summary: string;
+  backendAction?: { pending_action_id: string; preview_sha256: string };
   displaySummary?: string;
   run: (ctx?: { actor?: string }) => FetchResult;
 };
@@ -99,6 +101,7 @@ async function flushItems(
       code,
       conversationId: channel,
       summary: items[0].summary,
+      ...(items[0].backendAction ? { backendAction: items[0].backendAction } : {}),
       ...(items[0].displaySummary === undefined ? {} : { displaySummary: items[0].displaySummary }),
       run: items[0].run,
     };
@@ -202,7 +205,7 @@ function flushBundle(channel: string): void {
 export async function stageWrite(
   summary: string,
   run: (ctx?: { actor?: string }) => FetchResult,
-  localBackend: boolean | { scope: string } = false,
+  localBackend: boolean | { scope: string; pendingActionId?: string } = false,
 ) {
   // READ-ONLY REFUSAL (INV-2/INV-8): unless the live backend profile says
   // read-write, refuse BEFORE a code is minted, a pending action stored or a
@@ -260,7 +263,21 @@ export async function stageWrite(
     }
     await flushItems(
       channel,
-      [{ summary, displaySummary, run }],
+      [
+        {
+          summary,
+          displaySummary,
+          run,
+          ...(typeof localBackend === "object" && localBackend.pendingActionId
+            ? {
+                backendAction: {
+                  pending_action_id: localBackend.pendingActionId,
+                  preview_sha256: createHash("sha256").update(summary).digest("hex"),
+                },
+              }
+            : {}),
+        },
+      ],
       profile.env === "prod" ? "PRODUCTION" : "LOCAL SYNTHETIC DATA",
       scope,
     );

@@ -173,6 +173,8 @@ describe("offline release preflight", () => {
     expect(result.report.pendingChecks).toHaveLength(10);
   });
   it.each([
+    { productionCoreWrites: true },
+    { baseUrl: "https://api.vip.pscx.ai", allowedHosts: ["api.vip.pscx.ai"] },
     { mode: "read-write" },
     { mode: "off" },
     { authMode: "anonymous" },

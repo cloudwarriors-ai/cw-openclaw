@@ -3,6 +3,7 @@ import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { basename, posix, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseBackendProfile } from "../src/backend-profile.js";
+import { isReviewedProductionOrigin } from "../src/ops-write-policy.js";
 
 const MAX_BYTES = 64 * 1024;
 const EVIDENCE_KEYS = [
@@ -89,6 +90,8 @@ export function validateDeclarations(profileRaw: string, manifestRaw: string): P
     "error" in profile ||
     profile.profile.env !== "prod" ||
     profile.profile.mode !== "read-only" ||
+    profile.profile.productionCoreWrites === true ||
+    !isReviewedProductionOrigin(profile.profile.baseUrl) ||
     profile.profile.authMode !== "service-token" ||
     profile.profile.digestEnabled
   ) {

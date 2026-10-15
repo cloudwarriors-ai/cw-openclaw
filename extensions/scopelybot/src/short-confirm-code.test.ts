@@ -214,11 +214,11 @@ it.each([299_999, 300_000, 300_001])(
 );
 
 it.each(["2222222", "222222222", "00000000", "IIIIIIII", "22222222 extra"])(
-  "intercepts malformed short code %s",
+  "malformed short code falls through without consuming pending: %s",
   async (value) => {
     entropy.mockReturnValue(0);
     await stageWrite(preview, run, true);
-    expect(await confirm(value)).toContain("Copy the complete CONFIRM line");
+    expect(await confirm(value)).toBeNull();
     expect(run).not.toHaveBeenCalled();
     expect(await confirm("22222222")).toContain("Done");
   },

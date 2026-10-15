@@ -169,6 +169,7 @@ export interface AuditEntry {
   error?: string;
   /** Set by wrapToolWithAudit; other producers (supervisor, voice judge, inbound guard) leave it unset. */
   event?: "tool_call";
+  backendAction?: { pending_action_id: string; preview_sha256: string };
   paramsSha256?: string | null;
   policySnapshot?: Readonly<AuditPolicy>;
 }
@@ -201,7 +202,19 @@ function legacyRow(entry: AuditEntry): [AuditEventType, AuditFields] {
     const result = { status: failed ? "error" : "ok" };
     const missing = { ...SYSTEM_PRINCIPAL, reason: "missing" as const };
     const fields = { trigger: "confirm" as const, requester: missing, approver: human };
-    return [failed ? "confirm_error" : "confirm_ok", { ...fields, result, detail }];
+    // Typed server correlation is not free-form text: preserve complete IDs and
+    // digests outside the redacted/truncated human description. Validate shapes
+    // before admitting metadata to the ledger; never exempt arbitrary params.
+    const backend = entry.backendAction;
+    const action =
+      backend &&
+      /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(
+        backend.pending_action_id,
+      ) &&
+      /^[a-f0-9]{64}$/.test(backend.preview_sha256)
+        ? { pending_action_id: backend.pending_action_id, preview_sha256: backend.preview_sha256 }
+        : undefined;
+    return [failed ? "confirm_error" : "confirm_ok", { ...fields, action, result, detail }];
   }
   return [
     "supervisor",

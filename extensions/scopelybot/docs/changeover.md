@@ -31,7 +31,7 @@ Verify normal app login/reset/admin access and the app release's existing smoke 
 
 Bot activation can slip without blocking the main application release. Only after write fixes/reviews, explicit authority-policy acceptance and a selected isolated vendor/quote may the owner enable the approved families and matched profile. Run one human-approved change; inspect quote/history/audit and replay protection; record feedback. No safe target or failed gate means keep the bot read only.
 
-Existing approval semantics permit a rostered requester to confirm their own change and a native platform admin to use a personal credential. The bot service credential can assert a linked Zoom sender; it is therefore a trusted-gateway credential, not a general user token. Those policies require owner acceptance before production activation. Private networking alone does not authenticate an individual human.
+Production Core7 writes require the configured gateway principal, verified Zoom sender and current confirmer roster. Direct person tokens cannot stage or confirm production writes; their authorized reads remain available. A rostered requester may confirm their own change. Claude production writes are deferred. The bot service credential can assert a linked Zoom sender; it is therefore a trusted-gateway credential, not a general user token. Those policies require owner acceptance before production activation. Private networking alone does not authenticate an individual human.
 
 ## Freeze and rollback
 
@@ -39,4 +39,24 @@ Disable business writes and withdraw only the owned private entrance as needed. 
 
 Restore only the reviewed compatible code/image/config pair. Forward additive migrations may remain when older code ignores their tables/nullable column; verify this for the actual combined release. Do not automatically reverse populated migrations or restore a database over newer writes. Database recovery is a separate decision.
 
-The legacy offline `preflight-readonly.ts` fixture check validates its explicit template inputs only. It neither verifies this production procedure nor grants deployment readiness. Current live/private evidence, operator inputs and go/no-go remain in the private release packet; no private security patch or credentials belong in this public repository.
+The offline `preflight-readonly.ts` check requires the reviewed private production origin, service-token auth, read-only mode and productionCoreWrites disabled in its explicit template inputs. It neither verifies this production procedure nor grants deployment readiness. Current live/private evidence, operator inputs and go/no-go remain in the private release packet; no private security patch or credentials belong in this public repository.
+
+## Shared gateway clock and delivery acceptance
+
+The timestamp freshness fence applies to every bot on the gateway. Before any
+restart, verify host clock synchronisation and measured clock error comfortably
+within the30-second future allowance; retain evidence and monitoring. Signature,
+malformed timestamp, expired timestamp and future timestamp refusals have distinct
+bounded log reasons. No headers, signing secrets or payloads are logged.
+
+The policy remains300seconds old and30seconds future. It checks the HMAC-signed
+request-header timestamp, not the event's original event_ts. [Zoom documents](https://developers.zoom.us/docs/api/webhooks/)
+three retry intervals:5minutes, then20minutes, then60minutes. Those docs do not
+promise whether a retry reuses or refreshes its signed header timestamp. Local
+fixtures prove freshly signed old events can dispatch; they do not establish
+provider retry behavior. Test a genuine retried delivery and other bots on the
+matched gateway in the dedicated window. Do not widen the replay window or relax
+signature checks to guess around a failed retry. Freeze on unexplained drops.
+
+This bot release has its own CAB/window. It does not amend the separate approved
+application release, its schema assumptions, cleanup approvals or deployment lock.

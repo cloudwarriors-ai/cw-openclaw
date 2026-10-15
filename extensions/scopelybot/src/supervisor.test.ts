@@ -131,10 +131,13 @@ describe("gating", () => {
 });
 
 describe("reviewDraft checks", () => {
-  it.each(["4821", "a1".repeat(16)])("blocks CONFIRM code relays: %s", (code) => {
-    const v = reviewDraft(`Reply CONFIRM ${code} to proceed.`, ev());
-    expect(v).toMatchObject({ ok: false, checkId: "confirm_code_leak" });
-  });
+  it.each(["4821", "ABCDEFGH", "23456789", "a1".repeat(16)])(
+    "blocks CONFIRM code relays: %s",
+    (code) => {
+      const v = reviewDraft(`Reply CONFIRM ${code} to proceed.`, ev());
+      expect(v).toMatchObject({ ok: false, checkId: "confirm_code_leak" });
+    },
+  );
 
   it("blocks secret-shaped values", () => {
     const jwt = `token: eyJ${"a".repeat(24)}.${"b".repeat(16)}`;

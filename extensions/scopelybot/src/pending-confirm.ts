@@ -8,6 +8,7 @@ export type PendingAction = {
   code: string;
   conversationId: string; // channel the CONFIRM must come from
   summary: string; // exact server/legacy description, audited unchanged
+  backendAction?: { pending_action_id: string; preview_sha256: string };
   displaySummary?: string; // validated native presentation; never execution input
   // Executes the staged mutation. Receives the confirming actor's id so actions
   // that record WHO approved them (e.g. approver grants) can do so; most staged

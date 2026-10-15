@@ -293,3 +293,68 @@ describe("signed webhook freshness", () => {
     },
   );
 });
+
+describe("webhook rejection diagnostics", () => {
+  const secret = "synthetic-diagnostic-secret";
+  it.each([
+    ["expired_timestamp", -301],
+    ["future_timestamp", 31],
+  ])("logs %s distinctly without exposing headers or payload", async (reason, offset) => {
+    const timestamp = String(1234567890 + Number(offset));
+    const body = { event: "bot_notification", payload: { plainToken: "synthetic-sensitive-body" } };
+    const rawBody = JSON.stringify(body);
+    const signature = `v0=${createHmac("sha256", secret).update(`v0:${timestamp}:${rawBody}`).digest("hex")}`;
+    const warn = vi.fn();
+    const handleMessage = vi.fn();
+    const handler = createZoomWebhookRequestHandler({
+      webhookSecretToken: secret,
+      log: { warn, debug: vi.fn(), error: vi.fn() },
+      handleMessage,
+    });
+    const status = vi.fn().mockReturnValue({ json: vi.fn() });
+    await handler(
+      {
+        body,
+        rawBody,
+        headers: { "x-zm-signature": signature, "x-zm-request-timestamp": timestamp },
+      },
+      { status },
+    );
+    expect(status).toHaveBeenCalledWith(401);
+    expect(handleMessage).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(`zoom webhook rejected: ${reason}`);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(signature);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(timestamp);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(body.payload.plainToken);
+  });
+  it.each(["synthetic-bot-a", "synthetic-bot-b"])(
+    "freshly signed old events retain dispatch for %s",
+    async (bot) => {
+      const timestamp = "1234567890";
+      const body = {
+        event: "bot_notification",
+        event_ts: (1234567890 - 5100) * 1000,
+        payload: { plainToken: bot },
+      };
+      const rawBody = JSON.stringify(body);
+      const signature = `v0=${createHmac("sha256", secret).update(`v0:${timestamp}:${rawBody}`).digest("hex")}`;
+      const handleMessage = vi.fn();
+      const handler = createZoomWebhookRequestHandler({
+        webhookSecretToken: secret,
+        log: { warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
+        handleMessage,
+      });
+      const status = vi.fn().mockReturnValue({ json: vi.fn() });
+      await handler(
+        {
+          body,
+          rawBody,
+          headers: { "x-zm-signature": signature, "x-zm-request-timestamp": timestamp },
+        },
+        { status },
+      );
+      expect(status).toHaveBeenCalledWith(200);
+      expect(handleMessage).toHaveBeenCalledWith(body);
+    },
+  );
+});
