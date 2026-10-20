@@ -10,7 +10,49 @@ const output = path.join(root, "planning_artifacts/vip-dev-bot-alignment");
 const destination = path.join(output, "core-runtime");
 const sha = (value) => createHash("sha256").update(value).digest("hex");
 const files = {};
-await fs.mkdir(destination, { recursive: true });
+// Local operator custody assumes no concurrent adversarial filesystem writer.
+// Reject preexisting ancestry aliases and hardlinks BEFORE creating/copying.
+const canonicalRoot = await fs.realpath(root);
+let ancestor = canonicalRoot;
+for (const segment of ["planning_artifacts", "vip-dev-bot-alignment", "core-runtime"]) {
+  ancestor = path.join(ancestor, segment);
+  try {
+    const info = await fs.lstat(ancestor);
+    if (!info.isDirectory() || info.isSymbolicLink()) {
+      throw new Error(`Unsafe staging ancestry: ${ancestor}`);
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
+    await fs.mkdir(ancestor, { mode: 0o700 });
+  }
+}
+async function preflight(directory) {
+  for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+    const target = path.join(directory, entry.name);
+    const info = await fs.lstat(target);
+    if (info.isSymbolicLink() || (info.isFile() && info.nlink !== 1)) {
+      throw new Error(`Unsafe preexisting staging link: ${target}`);
+    }
+    if (info.isDirectory()) {
+      await preflight(target);
+    } else if (!info.isFile()) {
+      throw new Error(`Unsafe preexisting staging node: ${target}`);
+    }
+  }
+}
+await preflight(destination);
+try {
+  const info = await fs.lstat(path.join(output, "core-build-manifest.json"));
+  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) {
+    throw new Error("Unsafe preexisting build manifest");
+  }
+} catch (error) {
+  if (error.code !== "ENOENT") {
+    throw error;
+  }
+}
 async function stage(directory, prefix = "") {
   for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
     const relative = path.posix.join(prefix, entry.name);
