@@ -21,7 +21,11 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { boundedText } from "./audit-chain.js";
 import { auditBackendEvent, readBackendProfile } from "./backend-profile.js";
 import { currentCall, requesterFromToolCtx, runInCall } from "./call-context.js";
-import { productionCoreEnabled, PRODUCTION_CORE_TOOLS } from "./ops-write-policy.js";
+import {
+  developmentCoreEnabled,
+  productionCoreEnabled,
+  PRODUCTION_CORE_TOOLS,
+} from "./ops-write-policy.js";
 import { captureRequesterEpoch } from "./requester-epoch.js";
 import { jsonResult, type OpsCapability } from "./scopely-api.js";
 
@@ -438,7 +442,8 @@ export function capabilityFor(tool: string): Capability | undefined {
     enablement: ops ? "read-live-on-prod" : enablement,
     status: ops
       ? "live"
-      : productionCoreEnabled(readBackendProfile()) &&
+      : (productionCoreEnabled(readBackendProfile()) ||
+            developmentCoreEnabled(readBackendProfile())) &&
           (Object.hasOwn(PRODUCTION_CORE_TOOLS, tool) || tool === "scopely_list_approvers")
         ? "live"
         : [

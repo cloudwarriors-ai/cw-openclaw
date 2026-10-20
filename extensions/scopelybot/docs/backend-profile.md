@@ -43,6 +43,44 @@ Production native writes are implemented but default off. Enabling them requires
 
 Only the seven reviewed native pricing/catalog operations and supporting controls are eligible. Legacy raw writes, account/lifecycle/delivery actions and unrelated tools do not become production-enabled through this profile.
 
+## Private Noob development bot
+
+The lasting development bot uses its own native service principal, token and
+server roster against the migrated development database. It does not borrow a
+Claude connector credential. Its reviewed private Docker profile is:
+
+```json
+{
+  "profile": "zw2",
+  "env": "dev",
+  "mode": "read-write",
+  "authMode": "service-token",
+  "baseUrl": "http://vip-noob-bot-native:8000",
+  "allowedHosts": ["vip-noob-bot-native:8000"],
+  "developmentCoreWrites": true,
+  "digestEnabled": false,
+  "maxRequestsPerMinute": 20
+}
+```
+
+Only that exact origin, one allowed host, no Host override and service-token
+authentication admit development Core7 writes. Public development URLs and the
+old sprint IP do not. The native backend must independently enable `noob_bot`,
+pin its database/principal/channel/vendor and exact real Zoom identity mappings,
+and recheck the human's current native permissions and roster. Every mutation
+still needs the human confirmation code; raw legacy mutations are refused.
+The trusted gateway constructs sender/channel headers from verified inbound
+context. A compromised principal credential holder is inside that trust
+boundary; the header alone is not independent proof of human presence.
+The request guard emits the fixed bare internal hostname for native ingress's
+exact Host fence; operators and tool arguments cannot choose that header.
+
+Deploy the matched gateway/plugin build on private ingress with persistent
+token, audit and code-reservation custody. Retain reservations through rollback.
+An offline test or this profile file does not prove a lasting bot was deployed:
+acceptance must identify its loaded image/plugin hashes and actual request
+destination, then verify a human-confirmed action against the live native DB.
+
 ## Local synthetic profile
 
 Local native testing uses `env: "local"` and the code-reviewed loopback origin. Development host/header overrides are separately constrained in `backend-profile.ts`; do not copy a synthetic principal, user, vendor or channel into production. A profile's environment is operator-supplied and must be checked against the actual stack.

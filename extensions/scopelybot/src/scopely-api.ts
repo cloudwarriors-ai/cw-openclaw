@@ -55,6 +55,8 @@ import {
 } from "./backend-profile.js";
 import {
   nativeWriteScope,
+  developmentCoreEnabled,
+  isReviewedDevelopmentProfile,
   productionCoreEnabled,
   productionCapabilityAllowed,
 } from "./ops-write-policy.js";
@@ -274,10 +276,14 @@ function admit(
   isOps: boolean,
   nativeInvoke = false,
 ): void {
-  if (profile.env === "prod" && !SAFE_METHODS.has(method) && !nativeInvoke) {
+  if (
+    (profile.env === "prod" || isReviewedDevelopmentProfile(profile)) &&
+    !SAFE_METHODS.has(method) &&
+    !nativeInvoke
+  ) {
     refuse(
       "write_blocked_read_only",
-      "Production permits only admitted native capabilities.",
+      "This profile permits only admitted native capabilities.",
       http,
     );
   }
@@ -335,6 +341,10 @@ function guardHeaders(
   }
   if (profile.hostHeader) {
     headers.host = profile.hostHeader;
+  } else if (isReviewedDevelopmentProfile(profile)) {
+    // Native ingress compares an exact bare Host, independently of bearer
+    // authority. Normalize only this reviewed direct origin, never caller input.
+    headers.host = new URL(profile.baseUrl).hostname;
   }
   return headers;
 }
@@ -355,7 +365,7 @@ function checkOpsInvocation(op: OpsInvocation, http: HttpFields, profile: Backen
     profile.mode === "read-write" &&
     profile.baseUrl === "http://127.0.0.1:8100";
   const production =
-    productionCoreEnabled(profile) &&
+    (productionCoreEnabled(profile) || developmentCoreEnabled(profile)) &&
     productionCapabilityAllowed(op.capability) &&
     nativeWriteScope(profile, process.env.SCOPELYBOT_ZOOM_CHANNEL);
   if (!read && !local && !production) {
@@ -544,7 +554,8 @@ async function executeGuardedRequest(
     headers[OPS_BOT_AUDIT_HEADER] = auditId;
     if (
       (OPS_LOCAL_WRITE_CAPABILITIES as readonly string[]).includes(op.capability) ||
-      (profile.env === "prod" && productionCapabilityAllowed(op.capability))
+      ((productionCoreEnabled(profile) || developmentCoreEnabled(profile)) &&
+        productionCapabilityAllowed(op.capability))
     ) {
       const channel = process.env.SCOPELYBOT_ZOOM_CHANNEL;
       if (!channel || channel.length > 200 || /[\r\n]/.test(channel)) {

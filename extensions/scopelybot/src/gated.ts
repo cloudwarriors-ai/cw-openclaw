@@ -278,7 +278,11 @@ export async function stageWrite(
             : {}),
         },
       ],
-      profile.env === "prod" ? "PRODUCTION" : "LOCAL SYNTHETIC DATA",
+      profile.env === "prod"
+        ? "PRODUCTION"
+        : profile.env === "dev"
+          ? "VIP NOOB DEVELOPMENT"
+          : "LOCAL SYNTHETIC DATA",
       scope,
     );
     return jsonResult({
