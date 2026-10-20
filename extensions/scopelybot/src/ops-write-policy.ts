@@ -42,6 +42,24 @@ export function productionCoreEnabled(p: BackendProfile, reviewed = PRODUCTION_O
     p.allowedHosts.every((host) => isReviewedProductionOrigin(`https://${host}`, reviewed))
   );
 }
+// Dedicated gateway-only Docker ingress. Public dev hosts and the person
+// connector are deliberately excluded even though they share the native DB.
+export function isReviewedDevelopmentProfile(p: BackendProfile): boolean {
+  return (
+    p.env === "dev" &&
+    p.authMode === "service-token" &&
+    p.productionCoreWrites !== true &&
+    p.baseUrl === "http://vip-noob-bot-native:8000" &&
+    !p.hostHeader &&
+    p.allowedHosts.length === 1 &&
+    p.allowedHosts[0] === "vip-noob-bot-native:8000"
+  );
+}
+export function developmentCoreEnabled(p: BackendProfile): boolean {
+  return (
+    p.mode === "read-write" && p.developmentCoreWrites === true && isReviewedDevelopmentProfile(p)
+  );
+}
 export function productionCapabilityAllowed(capability: string): boolean {
   return [...Object.values(PRODUCTION_CORE_TOOLS), ...PRODUCTION_SUPPORT].includes(
     capability as (typeof PRODUCTION_SUPPORT)[number],
@@ -54,10 +72,10 @@ export function nativeWriteScope(
 ): string | undefined {
   const local =
     p.env === "local" && p.mode === "read-write" && p.baseUrl === "http://127.0.0.1:8100";
-  const production =
-    productionCoreEnabled(p, reviewed) &&
+  const reviewedCore =
+    (productionCoreEnabled(p, reviewed) || developmentCoreEnabled(p)) &&
     /^[a-f0-9]{32}@conference\.xmpp\.zoom\.us$/.test(channel ?? "");
-  return channel && (local || production)
+  return channel && (local || reviewedCore)
     ? JSON.stringify([
         p.env,
         p.mode,
@@ -65,6 +83,7 @@ export function nativeWriteScope(
         p.authMode,
         channel,
         p.productionCoreWrites === true,
+        p.developmentCoreWrites === true,
       ])
     : undefined;
 }

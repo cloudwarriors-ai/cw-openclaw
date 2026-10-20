@@ -36,7 +36,7 @@ export async function opsStageWrite(capability: LocalWrite, args: Record<string,
     if (
       !scope ||
       !requester ||
-      (profile.env === "prod" && !productionCapabilityAllowed(capability))
+      (profile.env !== "local" && !productionCapabilityAllowed(capability))
     ) {
       return jsonResult({
         ok: false,

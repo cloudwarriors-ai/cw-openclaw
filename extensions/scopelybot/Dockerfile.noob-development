@@ -1,0 +1,13 @@
+# Full matched gateway/Zoom/VIP build from PR102, with the reviewed dev policy.
+# Do not mount the shared gateway's old src/ or extensions/ over this image.
+FROM sha256:4e8bf696e649f8d6b50bdf81c113feda26513ebb006661cf7dcd7a121d75165e
+COPY extensions/scopelybot/src/backend-profile.ts /app/extensions/scopelybot/src/backend-profile.ts
+COPY extensions/scopelybot/src/ops-write-policy.ts /app/extensions/scopelybot/src/ops-write-policy.ts
+COPY extensions/scopelybot/src/scopely-api.ts /app/extensions/scopelybot/src/scopely-api.ts
+COPY extensions/scopelybot/src/capability-registry.ts /app/extensions/scopelybot/src/capability-registry.ts
+COPY extensions/scopelybot/src/ops-write-client.ts /app/extensions/scopelybot/src/ops-write-client.ts
+COPY extensions/scopelybot/src/gated.ts /app/extensions/scopelybot/src/gated.ts
+# Run node scripts/build-noob-vip-runtime.mjs in the reviewed source tree first.
+# The gateway loads dist/extensions, so source copies alone are insufficient.
+COPY planning_artifacts/vip-dev-bot-alignment/scopelybot-runtime.js /app/dist/extensions/scopelybot/index.js
+COPY planning_artifacts/vip-dev-bot-alignment/bundle-manifest.json /app/dist/extensions/scopelybot/noob-build-manifest.json

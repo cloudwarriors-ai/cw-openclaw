@@ -23,7 +23,11 @@ import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { userInfo } from "node:os";
 import { join } from "node:path";
 import { type AuditPolicy, auditEventBestEffort, noteAuditPolicy } from "./audit.js";
-import { isReviewedProductionOrigin, productionCoreEnabled } from "./ops-write-policy.js";
+import {
+  isReviewedDevelopmentProfile,
+  isReviewedProductionOrigin,
+  productionCoreEnabled,
+} from "./ops-write-policy.js";
 
 export type BackendMode = "off" | "read-only" | "read-write";
 export type AuthMode = "anonymous" | "service-token";
@@ -45,6 +49,8 @@ export type BackendProfile = {
   mode: BackendMode;
   /** Explicit default-off Core7 production admission; never grants app authority. */
   productionCoreWrites?: boolean;
+  /** Explicit default-off admission for the private Noob development bot. */
+  developmentCoreWrites?: boolean;
   digestEnabled: boolean;
   maxRequestsPerMinute: number;
   /** Family id -> tracking issue URL (the only source of "Tracked in" links). */
@@ -66,7 +72,7 @@ const ISSUE_LINK_PREFIX = "https://github.com/cloudwarriors-ai/";
 // change, not a file edit.
 const ENV_APP_HOSTS: Record<BackendProfile["env"], readonly string[]> = {
   prod: ["api.vip.pscx.ai"],
-  dev: ["100.114.142.100:8022"],
+  dev: ["100.114.142.100:8022", "vip-noob-bot-native:8000"],
   local: ["127.0.0.1:8100"],
 };
 // The ONLY Host overrides (dev only): the virtual hosts the zw2-sprint stack
@@ -156,6 +162,10 @@ export function parseBackendProfile(raw: string): ParseResult {
   if (typeof productionCoreWrites !== "boolean" || (productionCoreWrites && env !== "prod")) {
     return { error: "productionCoreWrites must be a boolean enabled only for prod" };
   }
+  const developmentCoreWrites = value.developmentCoreWrites ?? false;
+  if (typeof developmentCoreWrites !== "boolean" || (developmentCoreWrites && env !== "dev")) {
+    return { error: "developmentCoreWrites must be a boolean enabled only for dev" };
+  }
 
   const hosts = value.allowedHosts;
   if (!Array.isArray(hosts) || hosts.length === 0) {
@@ -222,6 +232,7 @@ export function parseBackendProfile(raw: string): ParseResult {
     authMode: authMode as AuthMode,
     mode: mode as BackendMode,
     ...(productionCoreWrites ? { productionCoreWrites: true } : {}),
+    ...(developmentCoreWrites ? { developmentCoreWrites: true } : {}),
     digestEnabled,
     maxRequestsPerMinute: rpm as number,
     ...(hostHeader ? { hostHeader } : {}),
@@ -231,6 +242,9 @@ export function parseBackendProfile(raw: string): ParseResult {
     return {
       error: "Production writes require explicit Core7 admission on a reviewed private origin",
     };
+  }
+  if (developmentCoreWrites && !isReviewedDevelopmentProfile(profile)) {
+    return { error: "Development writes require the dedicated private native bot origin" };
   }
   return { profile };
 }

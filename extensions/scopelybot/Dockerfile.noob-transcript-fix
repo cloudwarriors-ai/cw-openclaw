@@ -1,0 +1,7 @@
+# Reviewed own development bot only; shared gateway/Claude images stay frozen.
+FROM sha256:3ac885c9b5698038c608a2ada5de85f1b8c9c78a2b477561aba55c4445a980b9
+# Standard tsdown output from this same matched gateway source, excluding every
+# dist/extensions file. Preserve the loaded VIP and Zoom plugin bytes exactly.
+COPY planning_artifacts/vip-dev-bot-alignment/core-runtime/ /app/dist/
+COPY src/agents/transcript-redact.ts /app/src/agents/transcript-redact.ts
+COPY planning_artifacts/vip-dev-bot-alignment/core-build-manifest.json /app/noob-core-build-manifest.json
