@@ -342,9 +342,9 @@ function guardHeaders(
   if (profile.hostHeader) {
     headers.host = profile.hostHeader;
   } else if (isReviewedDevelopmentProfile(profile)) {
-    // Native ingress compares an exact bare Host, independently of bearer
+    // Native bot ingress compares the exact private URL authority, independently of bearer
     // authority. Normalize only this reviewed direct origin, never caller input.
-    headers.host = new URL(profile.baseUrl).hostname;
+    headers.host = new URL(profile.baseUrl).host;
   }
   return headers;
 }

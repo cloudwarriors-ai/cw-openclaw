@@ -56,7 +56,7 @@ it.each([...OPS_READ_CAPABILITIES, ...Object.values(PRODUCTION_CORE_TOOLS), ...P
     expect(new URL(url).origin).toBe(origin);
     expect(new URL(url).pathname).toBe("/api/spine/v1/ops/invoke/");
     expect(options.headers.authorization).toBe(`Bearer ${token}`);
-    expect(options.headers.host).toBe("vip-noob-bot-native");
+    expect(options.headers.host).toBe("vip-noob-bot-native:8000");
     expect(options.headers["x-ops-requester-zoom-id"]).toBe("provider-user32");
     if (!OPS_READ_CAPABILITIES.includes(capability as (typeof OPS_READ_CAPABILITIES)[number])) {
       expect(options.headers["x-ops-surface"]).toBe(channel);
@@ -109,7 +109,7 @@ it("keeps native reads working after the operator switches to read-only", async 
     args: {},
   });
   expect(network).toHaveBeenCalledTimes(1);
-  expect(network.mock.calls[0][1].headers.host).toBe("vip-noob-bot-native");
+  expect(network.mock.calls[0][1].headers.host).toBe("vip-noob-bot-native:8000");
   await expect(
     scopelyOpsInvoke({
       capability: "pricing.items.create",

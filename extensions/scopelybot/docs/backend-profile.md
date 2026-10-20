@@ -72,7 +72,7 @@ still needs the human confirmation code; raw legacy mutations are refused.
 The trusted gateway constructs sender/channel headers from verified inbound
 context. A compromised principal credential holder is inside that trust
 boundary; the header alone is not independent proof of human presence.
-The request guard emits the fixed bare internal hostname for native ingress's
+The request guard emits the fixed internal hostname and port for native ingress's
 exact Host fence; operators and tool arguments cannot choose that header.
 
 Deploy the matched gateway/plugin build on private ingress with persistent
